@@ -263,6 +263,17 @@ button.stat:hover { border-color: var(--gold); }
 .slot-choice button { text-align: left; }
 .slot-choice button:disabled { opacity: .4; cursor: not-allowed; }
 
+/* КД, эффекты, повышение уровня */
+.ac-mode { margin: 4px 0 8px; }
+.li.eff .meter { margin: 6px 0 0; height: 6px; }
+.li.eff .meter > div { background: var(--blue); }
+.eff-left { font-weight: 700; color: var(--gold2); min-width: 70px; text-align: right; }
+.lvl-list { margin: 4px 0; padding-left: 20px; }
+.lvl-list li { margin: 2px 0; }
+.lvl-feats { display: grid; gap: 4px; }
+.db-list h3 { margin: 10px 0 2px; font-size: 15px; }
+.db-row .li-title .muted { display: block; font-weight: 400; }
+
 /* Генерация характеристик */
 .gen-pool { display: flex; gap: 6px; flex-wrap: wrap; align-items: center; min-height: 50px; padding: 8px; margin: 8px 0; border: 1px dashed var(--line); border-radius: 9px; }
 .gchip { display: inline-flex; align-items: center; justify-content: center; min-width: 42px; height: 32px; padding: 0 8px; border-radius: 8px; background: #5a431c; border: 1px solid var(--gold); color: var(--gold2); font-weight: 700; font-size: 16px; cursor: grab; user-select: none; }

@@ -86,6 +86,7 @@
           <label>Размер<select data-bind="info.size"><option>Крошечный</option><option>Маленький</option><option>Средний</option><option>Большой</option></select></label>
         </div>
         <div class="row gap mt">
+          <button class="primary" data-act="levelUp">⬆ Новый уровень</button>
           <button data-act="applyClass">⚙ Применить шаблон класса</button>
           <button data-act="calcHp">❤ Рассчитать макс. хиты (среднее)</button>
           <span class="muted small" id="xpHint"></span>
@@ -138,11 +139,24 @@
       <div class="card">
         <h2>Защита и движение</h2>
         <div class="form-grid three">
-          <label>Класс доспеха<input type="number" data-bind="combat.ac" data-num></label>
+          <label>Класс доспеха<input type="number" data-bind="combat.ac" data-num id="acInput"></label>
           <label>Бонус инициативы (доп.)<input type="number" data-bind="combat.initBonus" data-num></label>
           <label>Скорость, фт<input type="number" step="5" data-bind="combat.speed" data-num></label>
         </div>
-        <label>Сопротивления, иммунитеты, уязвимости<textarea rows="2" data-bind="combat.defenses"></textarea></label>
+        <div class="row gap wrap ac-mode">
+          <label class="inline">Расчёт КД <select data-bind="armor.mode"><option value="manual">Вручную</option><option value="auto">Автоматически</option></select></label>
+          <button data-act="openCatalog" data-t="armor">📖 Доспехи</button>
+        </div>
+        <div id="acAuto" hidden>
+          <div class="form-grid">
+            <label>Доспех<select data-bind="armor.id" id="armorSelect"></select></label>
+            <label>Без доспеха<select data-bind="armor.unarmored" id="unarmSelect"></select></label>
+            <label>Прочие бонусы к КД<input type="number" data-bind="armor.bonus" data-num title="Кольцо защиты, стиль «Оборона» и т.п."></label>
+          </div>
+          <label class="check"><input type="checkbox" data-bind="armor.shield"> Щит (+2)</label>
+          <div id="acInfo" class="muted small mt"></div>
+        </div>
+        <label class="mt">Сопротивления, иммунитеты, уязвимости<textarea rows="2" data-bind="combat.defenses"></textarea></label>
         <h3>Истощение</h3>
         <div id="exhBox" class="exh"></div>
         <h3>Концентрация</h3>
@@ -155,7 +169,20 @@
       </div>
 
       <div class="card span-all">
-        <div class="row between"><h2>Атаки</h2><button data-act="addAttack">＋ Атака</button></div>
+        <div class="row between wrap gap"><h2>Эффекты и длительности</h2>
+          <div class="row gap wrap">
+            <span class="badge">Раунд <b id="roundNum"></b></span>
+            <button class="primary" data-act="nextRound">▶ Следующий раунд</button>
+            <button data-act="passMinute" title="Сдвинуть все эффекты на 10 раундов">+1 минута</button>
+            <button class="ghost" data-act="roundReset" title="Сбросить счётчик раундов">новый бой</button>
+            <button data-act="addEffect">＋ Эффект</button>
+          </div>
+        </div>
+        <div id="effList" class="list"></div>
+      </div>
+
+      <div class="card span-all">
+        <div class="row between wrap gap"><h2>Атаки</h2><div class="row gap"><button data-act="openCatalog" data-t="weapons">📖 Каталог оружия</button><button data-act="addAttack">＋ Атака</button></div></div>
         <div id="attackList" class="list"></div>
       </div>
     </div>
@@ -220,6 +247,7 @@
           <div class="row gap wrap">
             <input id="itemFilter" placeholder="Поиск…" class="w-search">
             <select id="itemCat"><option value="">Все категории</option></select>
+            <button data-act="openCatalog" data-t="gear">📖 Каталог</button>
             <button data-act="addItem">＋ Предмет</button>
           </div>
         </div>

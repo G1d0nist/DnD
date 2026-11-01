@@ -27,7 +27,9 @@ function blankChar() {
     abil,
     saves: Object.fromEntries(Object.keys(abil).map((k) => [k, false])),
     skills: {},
-    combat: { ac: 10, initBonus: 0, speed: 30, hp: 10, hpMax: 10, temp: 0, hdDie: 8, hdUsed: 0, deathS: 0, deathF: 0, inspiration: false, exhaustion: 0, conc: '', conditions: [], jack: false, defenses: '' },
+    combat: { ac: 10, initBonus: 0, speed: 30, hp: 10, hpMax: 10, temp: 0, hdDie: 8, hdUsed: 0, deathS: 0, deathF: 0, inspiration: false, exhaustion: 0, conc: '', conditions: [], jack: false, defenses: '', round: 1 },
+    armor: { mode: 'manual', id: '', shield: false, unarmored: '', bonus: 0 },
+    effects: [],
     attacks: [{ id: uid(), n: 'Безоружный удар', ability: 'str', prof: true, hit: 0, dmg: '1', addMod: true, dmgBonus: 0, type: 'дробящий', mastery: '', range: '5 фт', x: '' }],
     spellcasting: { ability: 'int', casterType: 'none', bonus: 0 },
     slots: Array.from({ length: 9 }, () => ({ max: 0, used: 0 })),
@@ -111,23 +113,51 @@ const spellMod = (c) => am(c, c.spellcasting.ability);
 const spellDC = (c) => 8 + pb(c) + spellMod(c) + (+c.spellcasting.bonus || 0);
 const spellAtk = (c) => pb(c) + spellMod(c) + (+c.spellcasting.bonus || 0);
 const SPEED_ZERO = ['grappled', 'paralyzed', 'petrified', 'restrained', 'unconscious'];
-const curSpeed = (c) => (c.combat.conditions.some((k) => SPEED_ZERO.includes(k)) ? 0 : Math.max(0, (+c.combat.speed || 0) - 5 * (c.combat.exhaustion || 0)));
-const atkAbilMod = (c, a) => (a.ability === 'spell' ? spellMod(c) + (+c.spellcasting.bonus || 0) : am(c, a.ability));
+// Расчёт КД по доспеху/щиту/защите без доспехов; notes — предупреждения для отображения
+function computeAC(c) {
+  const A = c.armor, dex = am(c, 'dex'), notes = [];
+  const arm = ARMOR.find((x) => x.id === A.id);
+  let ac, src;
+  if (arm) {
+    const d = arm.type === 'heavy' ? 0 : arm.type === 'medium' ? Math.min(2, dex) : dex;
+    ac = arm.ac + d;
+    src = `${arm.n} ${arm.ac}${arm.type === 'heavy' ? '' : ` ${fmt(d)} Лов${arm.type === 'medium' ? ' (макс. +2)' : ''}`}`;
+    if (arm.stealth) notes.push('помеха на Ловкость (Скрытность)');
+    if (arm.str && (+c.abil.str || 0) < arm.str) notes.push(`Сила ниже ${arm.str} — скорость −10 фт`);
+  } else {
+    let u = UNARMORED[A.unarmored] || UNARMORED[''];
+    if (u.noShield && A.shield) { notes.push('защита монаха не работает со щитом'); u = UNARMORED['']; }
+    const k = u.k ? am(c, u.k) : 0;
+    ac = u.base + dex + k;
+    src = `${u.base} ${fmt(dex)} Лов${u.k ? ` ${fmt(k)} ${ABILITIES.find((a) => a.k === u.k).s}` : ''}`;
+  }
+  if (A.shield) { ac += 2; src += ' + щит 2'; }
+  if (+A.bonus) { ac += +A.bonus; src += ` ${fmt(+A.bonus)} прочее`; }
+  return { ac, src, notes, arm };
+}
+const armorStealthDis = (c) => c.armor.mode === 'auto' && !!ARMOR.find((x) => x.id === c.armor.id && x.stealth);
+const armorSlow = (c) => { const a = c.armor.mode === 'auto' && ARMOR.find((x) => x.id === c.armor.id); return a && a.str && (+c.abil.str || 0) < a.str ? 10 : 0; };
+const curSpeed = (c) => (c.combat.conditions.some((k) => SPEED_ZERO.includes(k)) ? 0 : Math.max(0, (+c.combat.speed || 0) - 5 * (c.combat.exhaustion || 0) - armorSlow(c)));
+// ability: характеристика, 'spell' — заклинательная, 'fin' — лучшая из Силы и Ловкости (фехтовальное оружие)
+const abilFor = (c, a) => (a.ability === 'spell' ? spellMod(c) : a.ability === 'fin' ? Math.max(am(c, 'str'), am(c, 'dex')) : am(c, a.ability));
+const atkAbilMod = (c, a) => abilFor(c, a) + (a.ability === 'spell' ? (+c.spellcasting.bonus || 0) : 0);
 const attackBonus = (c, a) => atkAbilMod(c, a) + (a.prof ? pb(c) : 0) + (+a.hit || 0);
-const dmgMod = (c, a) => (a.addMod ? (a.ability === 'spell' ? spellMod(c) : am(c, a.ability)) : 0) + (+a.dmgBonus || 0);
+const dmgMod = (c, a) => (a.addMod ? abilFor(c, a) : 0) + (+a.dmgBonus || 0);
 const scaleDice = (e, k) => String(e).replace(/(\d*)[dк](\d+)/gi, (_, n, s) => `${(parseInt(n || '1')) * k}d${s}`);
 const withMod = (e, m) => (m ? `${e}${m > 0 ? '+' : '-'}${Math.abs(m)}` : e);
 const dmgExpr = (c, a, crit) => withMod(crit ? scaleDice(a.dmg || '0', 2) : (a.dmg || '0'), dmgMod(c, a));
 const coinGp = (co) => (+co.cp || 0) / 100 + (+co.sp || 0) / 10 + (+co.ep || 0) / 2 + (+co.gp || 0) + (+co.pp || 0) * 10;
 
+// Ячейки по типу заклинателя и уровню (без Магии договора)
+function slotsFor(t, L) {
+  if (t === 'full') return SLOT_TABLE[L - 1];
+  if (t === 'half') return SLOT_TABLE[Math.ceil(L / 2) - 1];
+  if (t === 'third') return L >= 3 ? SLOT_TABLE[Math.ceil(L / 3) - 1] : [];
+  return [];
+}
 function autoSlots(c) {
   const t = c.spellcasting.casterType, L = lvl(c);
-  let arr = null;
-  if (t === 'full') arr = SLOT_TABLE[L - 1];
-  else if (t === 'half') arr = SLOT_TABLE[Math.ceil(L / 2) - 1];
-  else if (t === 'third') arr = L >= 3 ? SLOT_TABLE[Math.ceil(L / 3) - 1] : [];
-  else if (t === 'none' || t === 'pact') arr = [];
-  if (arr) c.slots.forEach((s, i) => { s.max = arr[i] || 0; });
+  if (t !== 'manual') { const arr = slotsFor(t, L); c.slots.forEach((s, i) => { s.max = arr[i] || 0; }); }
   if (t === 'pact') { const [n, l] = PACT_TABLE[L - 1]; c.pact.max = n; c.pact.level = l; }
   else if (t !== 'manual') c.pact.max = 0;
   c.slots.forEach((s) => { s.used = clamp(s.used, 0, s.max); });
@@ -253,6 +283,7 @@ function render() {
   const c = ch();
   autoSlots(c);
   autoResources(c);
+  if (c.armor.mode === 'auto') c.combat.ac = computeAC(c).ac;
   fillBound();
   renderHeader(); renderAbil(); renderSkills(); renderCombat(); renderSpells(); renderInventory(); renderFeatures();
 }
@@ -266,6 +297,9 @@ function fillBound() {
   });
   const manual = c.spellcasting.casterType === 'manual';
   $$('#slotList input').forEach((i) => { i.disabled = !manual; });
+  const acAuto = c.armor.mode === 'auto';
+  $('#acInput').disabled = acAuto;
+  $('#acAuto').hidden = !acAuto;
 }
 
 function renderHeader() {
@@ -291,11 +325,15 @@ function renderHeader() {
   const al = [];
   if (hp <= 0) al.push(`<span class="alert" data-act="goTab" data-tab-go="combat">💀 0 хитов — спасброски от смерти (${cb.deathS}✔ / ${cb.deathF}✘)</span>`);
   if (pendingConc) al.push(`<span class="alert gold" data-act="concSave">🎯 Спасбросок концентрации ТЕЛ, СЛ ${pendingConc} — бросить</span>`);
-  if (cb.conc) al.push(`<span class="alert info" data-act="goTab" data-tab-go="combat">◎ Концентрация: ${esc(cb.conc)}</span>`);
+  if (cb.conc) {
+    const ce = c.effects.find((e) => e.conc);
+    al.push(`<span class="alert info" data-act="goTab" data-tab-go="combat">◎ Концентрация: ${esc(cb.conc)}${ce ? ' · ' + fmtRounds(ce.left) : ''}</span>`);
+  }
+  c.effects.filter((e) => !e.conc).forEach((e) => al.push(`<span class="alert info" data-act="goTab" data-tab-go="combat">⏳ ${esc(e.n)} · ${fmtRounds(e.left)}</span>`));
   if (cb.exhaustion) al.push(`<span class="alert" data-act="condInfo" data-k="exhaustion">Истощение ${cb.exhaustion}: −${exhPen(c)} к к20, −${cb.exhaustion * 5} фт</span>`);
   cb.conditions.forEach((k) => { const d = CONDITIONS.find((x) => x.k === k); if (d) al.push(`<span class="alert" data-act="condInfo" data-k="${k}">${esc(d.n)}</span>`); });
   const L = lvl(c);
-  if (L < 20 && (+c.info.xp || 0) >= XP_TABLE[L]) al.push(`<span class="alert gold" data-act="goTab" data-tab-go="main">⬆ Достаточно опыта для ${L + 1} уровня</span>`);
+  if (L < 20 && (+c.info.xp || 0) >= XP_TABLE[L]) al.push(`<span class="alert gold" data-act="levelUp">⬆ Достаточно опыта для ${L + 1} уровня — повысить</span>`);
   $('#qbAlerts').innerHTML = al.join('');
   $('#xpHint').textContent = L < 20 ? `До ${L + 1} уровня: ${Math.max(0, XP_TABLE[L] - (+c.info.xp || 0))} опыта` : 'Максимальный уровень';
 }
@@ -314,7 +352,7 @@ function renderSkills() {
     const p = c.skills[s.k] || 0;
     const ab = ABILITIES.find((a) => a.k === s.a);
     return `<div class="skill"><button class="prof-dot p${p}" data-act="skillProf" data-k="${s.k}" title="${['Нет владения', 'Владение', 'Компетентность'][p]}"></button>
-      <button class="sname" data-act="skillInfo" data-k="${s.k}">${s.n}</button><span class="sabil">${ab.s}</span>
+      <button class="sname" data-act="skillInfo" data-k="${s.k}">${s.n}${s.k === 'stealth' && armorStealthDis(c) ? ' <span class="tag" title="Из-за доспеха">помеха</span>' : ''}</button><span class="sabil">${ab.s}</span>
       <button class="sbonus" data-act="rollSkill" data-k="${s.k}">${fmt(skillBonus(c, s))}</button></div>`;
   }).join('');
   const pas = (k) => 10 + skillBonus(c, SKILLS.find((s) => s.k === k));
@@ -357,6 +395,21 @@ function renderCombat() {
       <button class="ghost" data-act="editAttack" data-id="${a.id}" title="Изменить">✎</button><button class="ghost" data-act="delAttack" data-id="${a.id}" title="Удалить">✕</button></span>
     </div>${openSet.has(a.id) && (a.x || m?.d) ? `<div class="li-desc">${esc(a.x)}${a.x && m?.d ? '\n\n' : ''}${m?.d ? '<b>' + m.n + ':</b> ' + esc(m.d) : ''}</div>` : ''}</div>`;
   }).join('') || '<div class="muted">Нет атак</div>';
+
+  if (c.armor.mode === 'auto') {
+    const r = computeAC(c);
+    $('#acInfo').innerHTML = `КД <b>${r.ac}</b> = ${esc(r.src)}${r.notes.map((n) => `<div class="gen-warn">⚠ ${esc(n)}</div>`).join('')}`;
+  }
+
+  $('#roundNum').textContent = cb.round;
+  $('#effList').innerHTML = c.effects.map((e) => `<div class="li eff"><div class="li-head">
+      <span class="li-title" data-act="toggleOpen" data-id="${e.id}">${esc(e.n)}</span>${e.conc ? '<span class="tag c">К</span>' : ''}
+      <span class="eff-left">${fmtRounds(e.left)}</span>
+      <span class="btns"><button data-act="effAdj" data-id="${e.id}" data-d="-1" title="−1 раунд">−1р</button><button data-act="effAdj" data-id="${e.id}" data-d="1" title="+1 раунд">+1р</button>
+      <button class="ghost" data-act="delEffect" data-id="${e.id}" title="Завершить">✕</button></span></div>
+      <div class="meter"><div style="width:${e.total ? Math.min(100, e.left / e.total * 100) : 0}%"></div></div>
+      ${openSet.has(e.id) && e.x ? `<div class="li-desc">${esc(e.x)}</div>` : ''}</div>`).join('') ||
+    '<div class="muted small">Нет активных эффектов. Заклинания с длительностью добавляются сюда автоматически при сотворении.</div>';
 }
 
 function renderSpells() {
@@ -599,6 +652,171 @@ function openAbilGen() {
   renderGen();
 }
 
+/* ---------- Эффекты и длительности (в раундах: 1 минута = 10 раундов) ---------- */
+function parseDuration(d) {
+  const m = String(d || '').toLowerCase().match(/(\d+)\s*(раунд|минут|час|д[не])/);
+  if (!m) return 0;
+  const n = +m[1], u = m[2];
+  return u.startsWith('раунд') ? n : u.startsWith('минут') ? n * 10 : u.startsWith('час') ? n * 600 : n * 14400;
+}
+function fmtRounds(r) {
+  if (r < 10) return `${r} р.`;
+  if (r < 600) return `${Math.floor(r / 10)} мин${r % 10 ? ` ${r % 10} р.` : ''}`;
+  const m = Math.floor((r % 600) / 10);
+  return `${Math.floor(r / 600)} ч${m ? ` ${m} мин` : ''}`;
+}
+// Новый эффект заменяет одноимённый; новый эффект с концентрацией заменяет прежний
+function addEffect(c, e) {
+  c.effects = c.effects.filter((x) => x.n !== e.n && !(e.conc && x.conc));
+  c.effects.push({ id: uid(), x: '', ...e, total: e.left });
+}
+function advanceEffects(c, rounds) {
+  const ended = [];
+  c.effects.forEach((e) => { e.left -= rounds; if (e.left <= 0) ended.push(e); });
+  if (!ended.length) return;
+  c.effects = c.effects.filter((e) => e.left > 0);
+  ended.forEach((e) => { if (e.conc && c.combat.conc === e.n) c.combat.conc = ''; });
+  toast(`⌛ Закончилось: ${ended.map((e) => esc(e.n)).join(', ')}`);
+}
+function endConc(c) { c.combat.conc = ''; c.effects = c.effects.filter((e) => !e.conc); }
+
+/* ---------- Повышение уровня ---------- */
+let lvlState = null;
+function featuresAt(c, L) {
+  const row = (CLASS_FEATURES[c.info.cls.trim()] || [])[L - 1] || '';
+  const sub = 'Умение подкласса' + (c.info.subclass ? `: ${c.info.subclass}` : '');
+  return row.split(';').map((s) => s.trim()).filter(Boolean)
+    .map((s) => (s === 'ASI' ? ASI_NAME : s === 'SUB' ? sub : s === 'EPIC' ? EPIC_NAME : s));
+}
+function openLevelUp() {
+  const c = ch();
+  if (lvl(c) >= 20) { toast('Персонаж уже 20 уровня'); return; }
+  lvlState = { hpMode: 'avg', roll: null, asi: 'plus2', a1: 'str', a2: 'dex', skip: new Set() };
+  openModal('<h2>⬆ Повышение уровня</h2><div id="lvlBody"></div>');
+  modalRefresh = renderLevelUp;
+  $('#modalBody').onchange = (e) => {
+    const el = e.target, S = lvlState;
+    if (el.name === 'hpMode') S.hpMode = el.value;
+    else if (el.dataset.lv) S[el.dataset.lv] = el.value;
+    else if (el.dataset.feat != null) { el.checked ? S.skip.delete(+el.dataset.feat) : S.skip.add(+el.dataset.feat); return; }
+    else return;
+    renderLevelUp();
+  };
+  renderLevelUp();
+}
+function lvlGain(c) {
+  const S = lvlState, hd = +c.combat.hdDie;
+  const base = S.hpMode === 'avg' ? hd / 2 + 1 : S.roll;
+  return base == null ? null : Math.max(1, base + am(c, 'con'));
+}
+function renderLevelUp() {
+  const box = $('#lvlBody');
+  if (!box) return;
+  const c = ch(), S = lvlState, L = lvl(c), N = L + 1, hd = +c.combat.hdDie, con = am(c, 'con');
+  const gain = lvlGain(c);
+  const feats = featuresAt(c, N);
+  const hasAsi = feats.includes(ASI_NAME);
+  const changes = [];
+  const pbN = 2 + Math.floor((N - 1) / 4);
+  if (pbN !== pb(c)) changes.push(`Бонус мастерства: ${fmt(pb(c))} → <b>${fmt(pbN)}</b>`);
+  changes.push(`Кости хитов: ${L} → <b>${N}</b> (к${hd})`);
+  const t = c.spellcasting.casterType;
+  if (t !== 'manual' && t !== 'none') {
+    const a = slotsFor(t, L), b = slotsFor(t, N);
+    b.forEach((n, i) => { if (n !== (a[i] || 0)) changes.push(`Ячейки ${i + 1} ур.: ${a[i] || 0} → <b>${n}</b>`); });
+    if (t === 'pact') {
+      const [n1, l1] = PACT_TABLE[L - 1], [n2, l2] = PACT_TABLE[N - 1];
+      if (n1 !== n2 || l1 !== l2) changes.push(`Магия договора: ${n1} × ${l1} ур. → <b>${n2} × ${l2} ур.</b>`);
+    }
+    changes.push('Подготовьте новые заклинания, если положено по таблице класса');
+  }
+  c.resources.filter((r) => CLASS_RESOURCES[r.auto]).forEach((r) => {
+    const m = CLASS_RESOURCES[r.auto].f(N, c).max;
+    if (m !== r.max) changes.push(`${esc(r.n)}: ${r.max} → <b>${m}</b>`);
+  });
+  const abilOpts = (sel) => ABILITIES.map((a) => `<option value="${a.k}" ${sel === a.k ? 'selected' : ''}>${a.n} (${c.abil[a.k]})</option>`).join('');
+
+  box.innerHTML = `<p class="muted">${esc(c.info.name)}${c.info.cls ? ` — ${esc(c.info.cls)}` : ''}: <b>${L} → ${N} уровень</b></p>
+    <h3>Хиты</h3>
+    <div class="row gap wrap">
+      <label class="check"><input type="radio" name="hpMode" value="avg" ${S.hpMode === 'avg' ? 'checked' : ''}> Среднее (${hd / 2 + 1})</label>
+      <label class="check"><input type="radio" name="hpMode" value="roll" ${S.hpMode === 'roll' ? 'checked' : ''}> Бросок к${hd}</label>
+      ${S.hpMode === 'roll' ? `<button data-act="lvlRoll">🎲 ${S.roll == null ? 'Бросить' : `Выпало ${S.roll} — перебросить`}</button>` : ''}
+    </div>
+    <p>${gain == null ? '<span class="muted">Бросьте кость хитов</span>' : `+<b>${gain}</b> хитов (${S.hpMode === 'avg' ? hd / 2 + 1 : S.roll} ${fmt(con)} Тел${gain === 1 && (S.hpMode === 'avg' ? hd / 2 + 1 : S.roll) + con < 1 ? ', минимум 1' : ''}) · максимум ${c.combat.hpMax} → <b>${+c.combat.hpMax + gain}</b>`}</p>
+    <h3>Что изменится</h3><ul class="lvl-list">${changes.map((x) => `<li>${x}</li>`).join('')}</ul>
+    ${feats.some((f) => f !== ASI_NAME) ? `<h3>Новые умения</h3><p class="muted small">Отмеченные добавятся во вкладку «Способности». Описания — в Книге игрока.</p>
+      <div class="lvl-feats">${feats.map((f, i) => (f === ASI_NAME ? '' : `<label class="check"><input type="checkbox" data-feat="${i}" ${S.skip.has(i) ? '' : 'checked'}> ${esc(f)}</label>`)).join('')}</div>`
+    : hasAsi ? ''
+    : c.info.cls && !CLASS_FEATURES[c.info.cls.trim()] ? '<p class="muted small">Класс не из списка — умения добавьте вручную.</p>' : !c.info.cls ? '<p class="muted small">Укажите класс, чтобы увидеть новые умения.</p>' : ''}
+    ${hasAsi ? `<h3>Увеличение характеристик</h3>
+      <div class="row gap wrap"><select data-lv="asi"><option value="plus2" ${S.asi === 'plus2' ? 'selected' : ''}>+2 к одной</option><option value="plus11" ${S.asi === 'plus11' ? 'selected' : ''}>+1 к двум</option><option value="feat" ${S.asi === 'feat' ? 'selected' : ''}>Взять черту вместо этого</option></select>
+      ${S.asi !== 'feat' ? `<select data-lv="a1">${abilOpts(S.a1)}</select>` : ''}${S.asi === 'plus11' ? `<select data-lv="a2">${abilOpts(S.a2)}</select>` : ''}</div>
+      ${S.asi === 'plus11' && S.a1 === S.a2 ? '<p class="small gen-warn">Выберите две разные характеристики</p>' : ''}
+      ${S.asi === 'feat' ? '<p class="muted small">Черта добавится в «Способности» — впишите её название и описание.</p>' : '<p class="muted small">Значение не может превысить 20.</p>'}` : ''}
+    <div class="modal-actions"><button data-act="closeModal">Отмена</button><button class="primary" data-act="lvlApply" ${gain == null || (hasAsi && S.asi === 'plus11' && S.a1 === S.a2) ? 'disabled' : ''}>Повысить до ${N} уровня</button></div>`;
+}
+
+/* ---------- Каталог снаряжения ---------- */
+let catTab = 'weapons';
+function openCatalog(tab) {
+  if (tab) catTab = tab;
+  openModal(`<h2>📖 Каталог снаряжения</h2><div class="row gap wrap"><div class="seg" id="catSeg"></div><input id="catQ" placeholder="Поиск…" style="flex:1;min-width:140px"></div><div id="catList" class="db-list"></div>
+    <p class="muted small">Цены и вес — по Книге игрока 2024. Оружие добавляется в атаки с владением; фехтовальное использует лучшую из Силы и Ловкости.</p>`);
+  modalRefresh = renderCatalog;
+  $('#catQ').addEventListener('input', renderCatalog);
+  renderCatalog();
+  setTimeout(() => $('#catQ')?.focus(), 30);
+}
+function renderCatalog() {
+  if (!$('#catList')) return;
+  const c = ch(), q = $('#catQ').value.trim().toLowerCase();
+  const match = (...t) => !q || t.join(' ').toLowerCase().includes(q);
+  $('#catSeg').innerHTML = [['weapons', 'Оружие'], ['armor', 'Доспехи'], ['gear', 'Снаряжение']]
+    .map(([k, t]) => `<button data-act="catTab" data-t="${k}" class="${catTab === k ? 'on' : ''}">${t}</button>`).join('');
+  let html = '';
+  if (catTab === 'weapons') {
+    Object.entries(WEAPON_CATS).forEach(([cat, title]) => {
+      const rows = WEAPONS.map((w, i) => [w, i]).filter(([w]) => w.cat === cat && match(w.n, w.props, MASTERY[w.m].n));
+      if (!rows.length) return;
+      html += `<h3>${title}</h3>` + rows.map(([w, i]) => `<div class="db-row"><span class="li-title">${esc(w.n)}
+        <span class="muted small">${w.dmg} ${w.type} · ${esc(w.props)} · ⚔ ${MASTERY[w.m].n} · ${w.w} фнт · ${w.cost}</span></span>
+        <button data-act="catWeapon" data-i="${i}" data-to="atk" title="Добавить в атаки">⚔ В атаки</button><button data-act="catWeapon" data-i="${i}" data-to="inv" title="Добавить в инвентарь">🎒</button></div>`).join('');
+    });
+  } else if (catTab === 'armor') {
+    Object.entries(ARMOR_TYPES).forEach(([type, title]) => {
+      const rows = ARMOR.filter((a) => a.type === type && match(a.n));
+      if (!rows.length) return;
+      html += `<h3>${title} доспех</h3>` + rows.map((a) => `<div class="db-row"><span class="li-title">${esc(a.n)}
+        <span class="muted small">КД ${a.ac}${type === 'light' ? ' + Лов' : type === 'medium' ? ' + Лов (макс. 2)' : ''}${a.str ? ` · Сила ${a.str}` : ''}${a.stealth ? ' · помеха Скрытности' : ''} · ${a.w} фнт · ${a.cost}</span></span>
+        ${c.armor.mode === 'auto' && c.armor.id === a.id ? '<span class="tag g">надет</span>' : `<button data-act="catArmor" data-id="${a.id}">Надеть</button>`}<button data-act="catArmor" data-id="${a.id}" data-to="inv" title="Только в инвентарь">🎒</button></div>`).join('');
+    });
+    if (match(SHIELD.n)) html += `<h3>Щит</h3><div class="db-row"><span class="li-title">${SHIELD.n} <span class="muted small">+2 КД · ${SHIELD.w} фнт · ${SHIELD.cost}</span></span>
+      ${c.armor.shield ? '<span class="tag g">в руке</span>' : '<button data-act="catShield">Взять</button>'}</div>`;
+  } else {
+    html = GEAR.map((g, i) => [g, i]).filter(([g]) => match(g.n, g.x)).map(([g, i]) => `<div class="db-row"><span class="li-title">${esc(g.n)}
+      <span class="muted small">${g.cost} · ${g.w} фнт${g.x ? ' · ' + esc(g.x) : ''}</span></span><button data-act="catGear" data-i="${i}">🎒 Добавить</button></div>`).join('');
+  }
+  $('#catList').innerHTML = html || '<p class="muted">Ничего не найдено</p>';
+}
+function addInvItem(c, item) {
+  const same = c.items.find((x) => x.n === item.n && !x.att);
+  if (same) { same.qty = (+same.qty || 0) + (item.qty || 1); return same; }
+  const it = { id: uid(), cat: 'Снаряжение', qty: 1, w: 0, cost: '', chMax: 0, ch: 0, eq: false, att: false, attuned: false, x: '', ...item };
+  c.items.push(it);
+  return it;
+}
+function weaponAttack(w) {
+  const thrown = w.props.match(/Метательное \((\d+\/\d+)\)/), ammo = w.props.match(/Боеприпасы \((\d+\/\d+)\)/);
+  const ranged = w.cat === 'sr' || w.cat === 'mr';
+  const reach = w.props.includes('Досягаемость') ? '10 фт' : '5 фт';
+  return {
+    id: uid(), n: w.n, ability: w.props.includes('Фехтовальное') ? 'fin' : ranged ? 'dex' : 'str', prof: true, hit: 0, dmg: w.dmg,
+    addMod: true, dmgBonus: 0, type: w.type, mastery: w.m,
+    range: ammo ? `${ammo[1]} фт` : thrown ? `${reach} · бросок ${thrown[1]} фт` : reach, x: w.props === '—' ? '' : w.props,
+  };
+}
+
 /* ---------- Действия ---------- */
 let pendingConc = 0;
 const findById = (arr, id) => arr.find((x) => x.id === id);
@@ -620,7 +838,7 @@ function applyDamage(n) {
     else if (!wasZero) {
       msg += '. 0 хитов — без сознания';
       if (!cb.conditions.includes('unconscious')) cb.conditions.push('unconscious');
-      if (cb.conc) { msg += `, концентрация на «${cb.conc}» прервана`; cb.conc = ''; }
+      if (cb.conc) { msg += `, концентрация на «${cb.conc}» прервана`; endConc(c); }
     }
   }
   if (cb.conc && n > 0) { pendingConc = Math.min(30, Math.max(10, Math.floor(n / 2))); msg += `. Спасбросок концентрации: СЛ ${pendingConc}`; }
@@ -654,8 +872,11 @@ function doCast(s, castLvl, how) {
   let msg = `✨ ${esc(s.n)}${how ? ' — ' + how : ''}`;
   if (s.cn) {
     if (cb.conc && cb.conc !== s.n) msg += `<div class="rd">Концентрация на «${esc(cb.conc)}» прервана</div>`;
+    endConc(c);
     cb.conc = s.n; pendingConc = 0;
   }
+  const dur = parseDuration(s.d);
+  if (dur) { addEffect(c, { n: s.n, left: dur, conc: !!s.cn, x: s.d }); msg += `<div class="rd">⏳ ${esc(s.d)} — добавлено в эффекты</div>`; }
   toast(msg);
   if (s.f) {
     let expr = s.f;
@@ -667,7 +888,7 @@ function doCast(s, castLvl, how) {
 }
 const ATTACK_FIELDS = () => [
   { k: 'n', label: 'Название', full: true },
-  { k: 'ability', label: 'Характеристика', type: 'select', options: [...ABILITIES.map((a) => [a.k, a.n]), ['spell', 'Заклинательная']] },
+  { k: 'ability', label: 'Характеристика', type: 'select', options: [...ABILITIES.map((a) => [a.k, a.n]), ['fin', 'Сила или Ловкость (фехтовальное)'], ['spell', 'Заклинательная']] },
   { k: 'hit', label: 'Доп. бонус к попаданию', type: 'number' },
   { k: 'dmg', label: 'Кости урона', ph: '1d8' },
   { k: 'dmgBonus', label: 'Доп. бонус к урону', type: 'number' },
@@ -734,7 +955,7 @@ function showSpellDb() {
   };
   ['#dbQ', '#dbL', '#dbC'].forEach((s) => $(s).addEventListener('input', modalRefresh));
   modalRefresh();
-  setTimeout(() => $('#dbQ').focus(), 30);
+  setTimeout(() => $('#dbQ')?.focus(), 30);
 }
 
 const ACT = {
@@ -784,6 +1005,7 @@ const ACT = {
     const c = ch();
     c.pact.used = 0;
     c.resources.forEach((r) => { if (r.recharge === 'short') r.used = 0; });
+    advanceEffects(c, 600); // прошёл час
     closeModal(); toast('☕ Короткий отдых завершён');
   },
   longRest() {
@@ -792,7 +1014,7 @@ const ACT = {
     cb.hp = cb.hpMax; cb.temp = 0; cb.hdUsed = 0; cb.deathS = 0; cb.deathF = 0;
     cb.exhaustion = Math.max(0, cb.exhaustion - 1);
     cb.conditions = cb.conditions.filter((k) => k !== 'unconscious');
-    cb.conc = ''; pendingConc = 0;
+    c.effects = []; endConc(c); pendingConc = 0;
     c.slots.forEach((s) => { s.used = 0; }); c.pact.used = 0;
     c.resources.forEach((r) => { if (r.recharge !== 'none') r.used = 0; });
     toast('🌙 Долгий отдых завершён — всё восстановлено');
@@ -823,7 +1045,11 @@ const ACT = {
   },
   rollCheck(el) { const a = ABILITIES.find((x) => x.k === el.dataset.k); rollD20(`Проверка: ${a.n}`, am(ch(), a.k)); },
   rollSave(el) { const a = ABILITIES.find((x) => x.k === el.dataset.k); rollD20(`Спасбросок: ${a.n}`, saveBonus(ch(), a.k)); },
-  rollSkill(el) { const s = SKILLS.find((x) => x.k === el.dataset.k); rollD20(s.n, skillBonus(ch(), s)); },
+  rollSkill(el) {
+    const s = SKILLS.find((x) => x.k === el.dataset.k);
+    if (s.k === 'stealth' && armorStealthDis(ch()) && advMode === 0) setAdv(-1);
+    rollD20(s.n, skillBonus(ch(), s));
+  },
   skillProf(el) { const c = ch(), k = el.dataset.k; c.skills[k] = ((c.skills[k] || 0) + 1) % 3; },
   skillInfo(el) {
     const s = SKILLS.find((x) => x.k === el.dataset.k), a = ABILITIES.find((x) => x.k === s.a);
@@ -843,11 +1069,11 @@ const ACT = {
   deathPip(el) { const cb = ch().combat, key = el.dataset.type === 'S' ? 'deathS' : 'deathF', i = +el.dataset.i; cb[key] = cb[key] === i + 1 ? i : i + 1; },
   deathReset() { const cb = ch().combat; cb.deathS = 0; cb.deathF = 0; },
   exh(el) { ch().combat.exhaustion = +el.dataset.v; },
-  dropConc() { if (ch().combat.conc) toast(`Концентрация на «${esc(ch().combat.conc)}» прервана`); ch().combat.conc = ''; pendingConc = 0; },
+  dropConc() { if (ch().combat.conc) toast(`Концентрация на «${esc(ch().combat.conc)}» прервана`); endConc(ch()); pendingConc = 0; },
   concSave() {
     const c = ch(), dc = pendingConc || 10;
     const r = rollD20(`Концентрация (СЛ ${dc})`, saveBonus(c, 'con'), { dc });
-    if (r.total < dc && c.combat.conc) { toast(`Концентрация на «${esc(c.combat.conc)}» потеряна`, 'fumble'); c.combat.conc = ''; }
+    if (r.total < dc && c.combat.conc) { toast(`Концентрация на «${esc(c.combat.conc)}» потеряна`, 'fumble'); endConc(c); }
     pendingConc = 0;
   },
   cond(el) { const cb = ch().combat, k = el.dataset.k; cb.conditions = cb.conditions.includes(k) ? cb.conditions.filter((x) => x !== k) : [...cb.conditions, k]; },
@@ -953,6 +1179,85 @@ const ACT = {
   addFeature() { formModal('Новое умение', FEAT_FIELDS(), {}, (v) => ch().features.push({ id: uid(), ...v })); },
   editFeature(el) { const f = findById(ch().features, el.dataset.id); formModal('Изменить умение', FEAT_FIELDS(), f, (v) => Object.assign(f, v)); },
   delFeature(el) { const c = ch(), f = findById(c.features, el.dataset.id); if (confirmBox(`Удалить «${f.n}»?`)) c.features = c.features.filter((x) => x !== f); },
+  levelUp() { openLevelUp(); },
+  lvlRoll() { const c = ch(); lvlState.roll = die(+c.combat.hdDie); logRoll('Хиты за уровень', lvlState.roll, `к${c.combat.hdDie} [${lvlState.roll}]`); renderLevelUp(); },
+  lvlApply() {
+    const c = ch(), S = lvlState, N = lvl(c) + 1, gain = lvlGain(c);
+    if (gain == null || N > 20) return;
+    const feats = featuresAt(c, N), hasAsi = feats.includes(ASI_NAME);
+    if (hasAsi && S.asi === 'plus11' && S.a1 === S.a2) return;
+    c.info.level = N;
+    c.combat.hpMax = (+c.combat.hpMax || 0) + gain;
+    c.combat.hp = (+c.combat.hp || 0) + gain;
+    const notes = [`+${gain} хитов`];
+    if (hasAsi && S.asi !== 'feat') {
+      const inc = S.asi === 'plus2' ? [[S.a1, 2]] : [[S.a1, 1], [S.a2, 1]];
+      inc.forEach(([k, n]) => { c.abil[k] = Math.min(20, (+c.abil[k] || 0) + n); });
+      notes.push(inc.map(([k, n]) => `${ABILITIES.find((a) => a.k === k).s} +${n}`).join(', '));
+    }
+    const src = `${c.info.cls.trim()} ${N}`;
+    feats.forEach((f, i) => {
+      if (f === ASI_NAME ? S.asi !== 'feat' : S.skip.has(i)) return;
+      const n = f === ASI_NAME ? 'Черта (впишите название)' : f === EPIC_NAME ? 'Эпический дар (впишите черту)' : f;
+      if (!c.features.some((x) => x.n === n && x.src === src)) c.features.push({ id: uid(), n, src, x: '' });
+    });
+    if (c.info.cls.trim() === 'Бард' && N >= 2) c.combat.jack = true;
+    closeModal();
+    toast(`⬆ ${N} уровень! ${notes.join(' · ')}`, 'crit');
+  },
+  openCatalog(el) { openCatalog(el.dataset.t); },
+  catTab(el) { catTab = el.dataset.t; renderCatalog(); },
+  catWeapon(el) {
+    const c = ch(), w = WEAPONS[+el.dataset.i];
+    if (el.dataset.to === 'atk') { c.attacks.push(weaponAttack(w)); toast(`⚔ ${esc(w.n)} добавлен в атаки`); }
+    else { addInvItem(c, { n: w.n, cat: 'Оружие', w: w.w, cost: w.cost, x: `${w.dmg} ${w.type}. ${w.props}. Приём: ${MASTERY[w.m].n}.` }); toast(`🎒 ${esc(w.n)} в инвентаре`); }
+    renderCatalog();
+  },
+  catArmor(el) {
+    const c = ch(), a = ARMOR.find((x) => x.id === el.dataset.id);
+    const it = addInvItem(c, { n: a.n, cat: 'Доспех', w: a.w, cost: a.cost, x: `КД ${a.ac}${a.type === 'light' ? ' + Лов' : a.type === 'medium' ? ' + Лов (макс. 2)' : ''}. ${ARMOR_TYPES[a.type]} доспех.${a.str ? ` Сила ${a.str}.` : ''}${a.stealth ? ' Помеха Скрытности.' : ''}` });
+    if (el.dataset.to === 'inv') { toast(`🎒 ${esc(a.n)} в инвентаре`); renderCatalog(); return; }
+    c.items.forEach((x) => { if (x.cat === 'Доспех' && x !== it) x.eq = false; });
+    it.eq = true;
+    Object.assign(c.armor, { mode: 'auto', id: a.id, unarmored: '' });
+    toast(`🛡 Надет: ${esc(a.n)} — КД ${computeAC(c).ac}`);
+    renderCatalog();
+  },
+  catShield() {
+    const c = ch();
+    addInvItem(c, { n: SHIELD.n, cat: 'Доспех', w: SHIELD.w, cost: SHIELD.cost, x: '+2 к КД.' }).eq = true;
+    c.armor.shield = true;
+    if (c.armor.mode !== 'auto') { c.armor.mode = 'auto'; }
+    toast(`🛡 Щит в руке — КД ${computeAC(c).ac}`);
+    renderCatalog();
+  },
+  catGear(el) {
+    const g = GEAR[+el.dataset.i];
+    addInvItem(ch(), { n: g.n, cat: g.cat, w: g.w, cost: g.cost, x: g.x, qty: g.qty || 1, chMax: g.ch || 0, ch: g.ch || 0 });
+    toast(`🎒 ${esc(g.n)} добавлено`);
+  },
+  nextRound() { const c = ch(); c.combat.round = (+c.combat.round || 1) + 1; advanceEffects(c, 1); },
+  passMinute() { advanceEffects(ch(), 10); toast('Прошла 1 минута (10 раундов)'); },
+  roundReset() { ch().combat.round = 1; toast('Новый бой: раунд 1'); },
+  addEffect() {
+    formModal('Новый эффект', [
+      { k: 'n', label: 'Название', full: true, ph: 'Благословение, Ярость, Ускорение…' },
+      { k: 'num', label: 'Длительность', type: 'number' },
+      { k: 'unit', label: 'Единицы', type: 'select', options: [['1', 'раунды'], ['10', 'минуты'], ['600', 'часы']] },
+      { k: 'conc', label: 'Концентрация', type: 'check' },
+      { k: 'x', label: 'Заметка', type: 'textarea', rows: 2 },
+    ], { num: 1, unit: '10' }, (v) => {
+      const c = ch(), left = Math.max(1, Math.round((+v.num || 1) * +v.unit));
+      if (v.conc) { endConc(c); c.combat.conc = v.n; }
+      addEffect(c, { n: v.n, left, conc: v.conc, x: v.x });
+    });
+  },
+  effAdj(el) { const e = findById(ch().effects, el.dataset.id); e.left = Math.max(1, e.left + +el.dataset.d); e.total = Math.max(e.total, e.left); },
+  delEffect(el) {
+    const c = ch(), e = findById(c.effects, el.dataset.id);
+    if (e.conc && c.combat.conc === e.n) c.combat.conc = '';
+    c.effects = c.effects.filter((x) => x !== e);
+  },
   abilGen() { openAbilGen(); },
   genMode(el) { gen.mode = el.dataset.mode; renderGen(); },
   genPb(el) {
@@ -993,7 +1298,7 @@ const ACT = {
   goTab(el) { switchTab(el.dataset.tabGo); },
 };
 // Действия, которые не меняют персонажа (не нужно сохранять/перерисовывать)
-const NO_RENDER = new Set(['exportChar', 'importChar', 'toggleDice', 'clearLog', 'closeModal', 'skillInfo', 'condInfo', 'masteryInfo', 'addSpellDb', 'addClassRes', 'shortRest','addAttack', 'editAttack', 'addSpellCustom', 'editSpell', 'addItem', 'editItem', 'addResource', 'editRes', 'addFeature', 'editFeature', 'goTab', 'abilGen', 'genMode', 'genPb', 'genRoll', 'genReset']);
+const NO_RENDER = new Set(['exportChar', 'importChar', 'toggleDice', 'clearLog', 'closeModal', 'skillInfo', 'condInfo', 'masteryInfo', 'addSpellDb', 'addClassRes', 'shortRest','addAttack', 'editAttack', 'addSpellCustom', 'editSpell', 'addItem', 'editItem', 'addResource', 'editRes', 'addFeature', 'editFeature', 'goTab', 'abilGen', 'genMode', 'genPb', 'genRoll', 'genReset', 'levelUp', 'lvlRoll', 'openCatalog', 'catTab', 'addEffect']);
 
 function switchTab(t) {
   curTab = t; lsSet('dnd55-tab', t);
@@ -1013,6 +1318,9 @@ function buildStatic() {
     `<div class="slot-row pact" id="pactRow"><span class="lv">Договор</span><input type="number" min="0" max="4" data-bind="pact.max" data-num title="Кол-во ячеек"><span id="pactPips"></span>
       <span class="row gap"><span class="muted small" id="pactCnt"></span><input type="number" min="1" max="5" data-bind="pact.level" data-num title="Уровень ячеек договора" style="width:48px"></span></div>`;
   $('#saSelect').innerHTML = ABILITIES.map((a) => `<option value="${a.k}">${a.n}</option>`).join('');
+  $('#armorSelect').innerHTML = '<option value="">Без доспеха</option>' + Object.entries(ARMOR_TYPES).map(([t, title]) =>
+    `<optgroup label="${title}">${ARMOR.filter((a) => a.type === t).map((a) => `<option value="${a.id}">${a.n} (${a.ac})</option>`).join('')}</optgroup>`).join('');
+  $('#unarmSelect').innerHTML = Object.entries(UNARMORED).map(([k, u]) => `<option value="${k}">${u.n}</option>`).join('');
   $('#itemCat').innerHTML += ITEM_CATEGORIES.map((c) => `<option>${c}</option>`).join('');
   $('#refLevel').innerHTML += [0, 1, 2, 3, 4, 5, 6, 7, 8, 9].map((l) => `<option value="${l}">${l ? l + ' уровень' : 'Заговоры'}</option>`).join('');
   $('#refClass').innerHTML += SPELL_CLASSES.map((c) => `<option>${c}</option>`).join('');
