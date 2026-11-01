@@ -67,6 +67,7 @@
   <button data-tab="features">Способности</button>
   <button data-tab="notes">Заметки</button>
   <button data-tab="ref">Справочник</button>
+  <button data-tab="table">🗺 Стол</button>
 </nav>
 
 <main>
@@ -318,6 +319,28 @@
     </div>
   </section>
 
+  <!-- ИГРОВОЙ СТОЛ (table.js) -->
+  <section class="tab" id="tab-table">
+    <div id="tblLobby"></div>
+    <div id="tblGame" hidden>
+      <div class="card tbl-bar">
+        <div class="row gap wrap"><b id="tblName"></b><span class="badge" id="tblCode" title="Код приглашения"></span><button data-tbl="copy" title="Скопировать ссылку-приглашение">🔗 Пригласить</button></div>
+        <div class="row gap wrap tbl-tools" id="tblTools"></div>
+        <div class="row gap"><button data-tbl="zoomOut" title="Отдалить">−</button><span id="tblZoom" class="muted small"></span><button data-tbl="zoomIn" title="Приблизить">＋</button><button data-tbl="leave" class="danger" id="tblLeave"></button></div>
+      </div>
+      <div class="tbl-main">
+        <div class="tbl-wrap" id="tblWrap"><div class="tbl-sizer" id="tblSizer"><div class="tbl-board" id="tblBoard">
+          <canvas id="tblTerrain"></canvas><canvas id="tblRange"></canvas><div id="tblTokens"></div><div id="tblHint" class="tbl-hint" hidden></div>
+        </div></div></div>
+        <aside class="tbl-side">
+          <div class="card"><div class="row between"><h3>Инициатива</h3><span class="badge" id="tblRound"></span></div><div id="tblInit"></div></div>
+          <div class="card" id="tblSel" hidden></div>
+          <div class="card"><h3>Участники</h3><div id="tblMembers"></div></div>
+        </aside>
+      </div>
+    </div>
+  </section>
+
   <!-- СПРАВОЧНИК -->
   <section class="tab" id="tab-ref">
     <div class="card">
@@ -365,6 +388,7 @@
 <script src="data2.js"></script>
 <script src="app.js"></script>
 <script type="module" src="sync.js"></script>
+<script type="module" src="table.js"></script>
 <script>
   if ('serviceWorker' in navigator && location.protocol !== 'file:') {
     window.addEventListener('load', () => navigator.serviceWorker.register('sw.js').catch(() => {}));

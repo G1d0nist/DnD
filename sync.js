@@ -31,13 +31,22 @@ if (firebaseConfig) start().catch((e) => { btn.hidden = false; setStatus('err', 
 async function start() {
   btn.hidden = false;
   setStatus('load');
-  const [{ initializeApp }, A, F] = await Promise.all([
-    import(SDK + 'firebase-app.js'), import(SDK + 'firebase-auth.js'), import(SDK + 'firebase-firestore.js'),
+  const [{ initializeApp }, A, F, R] = await Promise.all([
+    import(SDK + 'firebase-app.js'), import(SDK + 'firebase-auth.js'), import(SDK + 'firebase-firestore.js'), import(SDK + 'firebase-database.js'),
   ]);
   const fbApp = initializeApp(firebaseConfig);
   const auth = A.getAuth(fbApp);
   const db = F.initializeFirestore(fbApp, { localCache: F.persistentLocalCache({ tabManager: F.persistentMultipleTabManager() }) });
   const provider = new A.GoogleAuthProvider();
+  // Realtime Database — для игрового стола (частые обновления: токены, инициатива, кто онлайн)
+  const authListeners = [];
+  window.dndFirebase = {
+    R, rtdb: firebaseConfig.databaseURL ? R.getDatabase(fbApp) : null,
+    user: () => user,
+    onUser: (fn) => { authListeners.push(fn); fn(user); },
+    signIn: () => signIn(),
+  };
+  document.dispatchEvent(new Event('dnd-firebase'));
   A.getRedirectResult(auth).catch((e) => app.toast(`Вход не удался: ${esc(e.code || e.message)}`, 'fumble'));
 
   let unsub = null;
@@ -59,6 +68,7 @@ async function start() {
   A.onAuthStateChanged(auth, (u) => {
     if (unsub) { unsub(); unsub = null; }
     user = u;
+    authListeners.forEach((fn) => fn(u));
     if (!u) { setStatus('out'); return; }
     setStatus('sync');
     let first = true;

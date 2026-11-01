@@ -205,6 +205,27 @@ window.dndApp = {
   toast: (html, cls) => toast(html, cls),
   openModal: (html) => openModal(html),
   closeModal: () => closeModal(),
+  // Для игрового стола: сводка персонажа, бросок инициативы, отсчёт раунда в начале своего хода
+  summary(id) {
+    const c = state.chars[id];
+    if (!c) return null;
+    const cb = c.combat;
+    return { name: c.info.name || 'Без имени', cls: classLabel(c), hp: +cb.hp || 0, hpMax: +cb.hpMax || 1, temp: +cb.temp || 0, ac: +cb.ac || 10,
+      cond: [...cb.conditions, ...(cb.exhaustion ? [`истощение ${cb.exhaustion}`] : [])], conc: cb.conc || '', speed: curSpeed(c), init: initBonus(c), size: c.info.size || 'Средний' };
+  },
+  rollInit(id) {
+    if (state.current !== id && state.chars[id]) { state.current = id; render(); }
+    return rollD20('Инициатива', initBonus(ch()), { kind: 'init', abil: 'dex' }).total;
+  },
+  tickRound(id) {
+    const c = state.chars[id];
+    if (!c) return;
+    c.combat.round = (+c.combat.round || 1) + 1;
+    advanceEffects(c, 1);
+    if (c === ch()) { save(); render(); } else { c.updatedAt = Date.now(); lsSet(STORE, JSON.stringify(state)); }
+  },
+  esc: (s) => esc(s),
+  confirm: (t) => confirmBox(t),
 };
 
 /* ---------- Производные значения ---------- */
@@ -666,6 +687,7 @@ function render() {
   fillBound();
   renderUndo();
   renderHeader(); renderAbil(); renderSkills(); renderProfs(); renderCombat(); renderClassPanel(); renderQuickSpells(); renderSpells(); renderInventory(); renderFeatures();
+  document.dispatchEvent(new Event('dnd-render')); // игровой стол обновляет токен персонажа
 }
 
 // Список дополнительных классов; перестраивается только при добавлении/удалении, чтобы не сбивать ввод
@@ -2558,6 +2580,7 @@ function switchTab(t) {
   $$('#tabs button').forEach((b) => b.classList.toggle('on', b.dataset.tab === t));
   $$('.tab').forEach((s) => s.classList.toggle('on', s.id === 'tab-' + t));
   if (t === 'ref') renderRef();
+  document.dispatchEvent(new CustomEvent('dnd-tab', { detail: t }));
 }
 
 /* ---------- Инициализация ---------- */

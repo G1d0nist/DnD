@@ -9,4 +9,5 @@ export const firebaseConfig = {
   storageBucket: 'dnd-sheet-4d594.firebasestorage.app',
   messagingSenderId: '661867101284',
   appId: '1:661867101284:web:1a305a99a40742e043b371',
+  databaseURL: 'https://dnd-sheet-4d594-default-rtdb.europe-west1.firebasedatabase.app',
 };

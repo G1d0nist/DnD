@@ -286,6 +286,48 @@ button.stat:hover { border-color: var(--gold); }
 .multi h3 { margin-top: 10px; }
 @media (max-width: 760px) { .multi-row { grid-template-columns: 1fr 1fr; } }
 
+/* Игровой стол */
+.tbl-bar { display: flex; flex-wrap: wrap; justify-content: space-between; align-items: center; gap: 8px; margin-bottom: 12px; padding: 10px 14px; }
+.tbl-tools .seg button { padding: 5px 9px; }
+.tbl-main { display: grid; grid-template-columns: 1fr 280px; gap: 12px; align-items: start; }
+.tbl-wrap { position: relative; overflow: auto; height: calc(100vh - 260px); min-height: 380px; border: 1px solid var(--line); border-radius: var(--radius); background: #141210; touch-action: none; }
+.tbl-sizer { position: relative; }
+.tbl-board { position: absolute; left: 0; top: 0; transform-origin: 0 0; user-select: none; touch-action: none; }
+.tbl-board canvas { position: absolute; left: 0; top: 0; pointer-events: none; }
+.tbl-board[data-tool="wall"], .tbl-board[data-tool="difficult"], .tbl-board[data-tool="water"], .tbl-board[data-tool="erase"], .tbl-board[data-tool="enemy"], .tbl-board[data-tool="place"] { cursor: crosshair; }
+#tblTokens { position: absolute; inset: 0; }
+.tok { position: absolute; transition: left .35s ease, top .35s ease; cursor: default; }
+.tok.mine { cursor: grab; }
+.tok.dragging { transition: none; z-index: 5; cursor: grabbing; opacity: .85; }
+.tok-face { position: absolute; inset: 3px; border-radius: 50%; display: flex; align-items: center; justify-content: center; font-weight: 700; color: #fff; text-shadow: 0 1px 2px #000;
+  background: radial-gradient(circle at 35% 30%, color-mix(in srgb, var(--tc) 70%, #fff), var(--tc) 60%, color-mix(in srgb, var(--tc) 60%, #000)); border: 2px solid rgba(0,0,0,.5); box-shadow: 0 2px 6px rgba(0,0,0,.6); font-size: 13px; }
+.tok.npc .tok-face { border-radius: 8px; }
+.tok.sel .tok-face { outline: 3px solid #fff; outline-offset: 1px; }
+.tok.turn .tok-face { box-shadow: 0 0 0 3px var(--gold2), 0 0 16px 4px rgba(240,199,106,.7); animation: turnPulse 1.4s ease-in-out infinite; }
+@keyframes turnPulse { 50% { box-shadow: 0 0 0 3px var(--gold2), 0 0 26px 8px rgba(240,199,106,.45); } }
+.tok.hid { opacity: .45; }
+.tok.down .tok-face { filter: grayscale(1) brightness(.6); }
+.tok-hp { position: absolute; left: 4px; right: 4px; bottom: -3px; height: 5px; background: #000a; border-radius: 3px; overflow: hidden; }
+.tok-hp > div { height: 100%; transition: width .3s; }
+.tok-name { position: absolute; left: 50%; top: 100%; transform: translateX(-50%); margin-top: 3px; white-space: nowrap; font-size: 10px; padding: 0 4px; border-radius: 4px; background: #000b; color: #eee; pointer-events: none; }
+.tok-cond { color: #f3b1a8; }
+.tbl-hint { position: absolute; z-index: 10; padding: 2px 8px; border-radius: 6px; background: #000d; color: var(--gold2); font-size: 12px; pointer-events: none; white-space: nowrap; }
+.tbl-side { display: grid; gap: 10px; }
+.tbl-side .card { padding: 10px 12px; }
+.tbl-side h3 { margin: 0 0 6px; }
+.init-row { display: grid; grid-template-columns: 34px 1fr auto; align-items: center; gap: 6px; padding: 4px 8px; border-radius: 7px; background: var(--bg2); border: 1px solid var(--line); }
+.init-row b { color: var(--gold2); text-align: center; }
+.init-row.npc span { color: #f3b1a8; }
+.init-row.cur { border-color: var(--gold); background: #3b2e17; }
+.mem { display: grid; grid-template-columns: 10px 1fr auto auto; align-items: center; gap: 8px; padding: 4px 0; }
+.mem .dot { width: 8px; height: 8px; border-radius: 50%; background: #555; }
+.mem.on .dot { background: var(--green); box-shadow: 0 0 6px var(--green); }
+.mem .muted { display: block; }
+@media (max-width: 900px) {
+  .tbl-main { grid-template-columns: 1fr; }
+  .tbl-wrap { height: 60vh; }
+}
+
 /* Владения */
 .prof-sec h3 { margin: 10px 0 4px; font-size: 15px; }
 .prof-sec .chips { align-items: center; }
