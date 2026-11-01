@@ -1,0 +1,318 @@
+<!doctype html>
+<html lang="ru">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Лист персонажа D&amp;D 5.5</title>
+  <meta name="theme-color" content="#15120f">
+  <link rel="manifest" href="manifest.webmanifest">
+  <link rel="icon" href="icon.svg" type="image/svg+xml">
+  <link rel="apple-touch-icon" href="icon.svg">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="mobile-web-app-capable" content="yes">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link href="https://fonts.googleapis.com/css2?family=Cormorant+SC:wght@600;700&family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+<header class="topbar">
+  <div class="brand">⚔ <span>Лист персонажа</span> <small>D&amp;D 5.5 · 2024</small></div>
+  <div class="charpick">
+    <select id="charSelect" title="Выбрать персонажа"></select>
+    <button data-act="newChar" title="Новый персонаж">＋ Новый</button>
+    <button data-act="dupChar" title="Копия персонажа">⧉</button>
+    <button data-act="exportChar" title="Экспорт в файл JSON">⭳ Экспорт</button>
+    <button data-act="importChar" title="Импорт из файла JSON">⭱ Импорт</button>
+    <button data-act="deleteChar" class="danger" title="Удалить персонажа">🗑</button>
+  </div>
+</header>
+
+<div class="quickbar">
+  <div class="qb-who"><div id="qbName" class="qb-name"></div><div id="qbSub" class="muted small"></div></div>
+  <div class="hpbox">
+    <div class="hpbar" title="Хиты"><div class="hpfill" id="hpFill"></div><div class="hptemp" id="hpTempFill"></div><div class="hptext" id="hpText"></div></div>
+    <div class="hpctl">
+      <input type="number" id="hpAmount" min="0" placeholder="0" inputmode="numeric" aria-label="Количество">
+      <button class="dmg" data-act="damage">− Урон</button>
+      <button class="heal" data-act="heal">＋ Лечение</button>
+      <button data-act="tempHp" title="Временные хиты (не суммируются)">Врем.</button>
+    </div>
+  </div>
+  <div class="qb-stats">
+    <div class="pill" title="Класс доспеха"><b id="qbAc"></b><span>КД</span></div>
+    <button class="pill" data-act="rollInit" title="Бросить инициативу"><b id="qbInit"></b><span>Иниц.</span></button>
+    <div class="pill"><b id="qbSpeed"></b><span>Скор.</span></div>
+    <div class="pill"><b id="qbPb"></b><span>БМ</span></div>
+    <button class="pill insp" id="qbInsp" data-act="toggleInsp" title="Героическое вдохновение">★<span>Вдохн.</span></button>
+  </div>
+  <div class="qb-right">
+    <div class="advmode" role="radiogroup" aria-label="Режим броска">
+      <button data-adv="-1">Помеха</button><button data-adv="0" class="on">Обычно</button><button data-adv="1">Преим.</button>
+    </div>
+    <div class="rests">
+      <button data-act="shortRest">☕ Короткий отдых</button>
+      <button data-act="longRest">🌙 Долгий отдых</button>
+    </div>
+  </div>
+  <div id="qbAlerts" class="qb-alerts"></div>
+</div>
+
+<nav class="tabs" id="tabs">
+  <button data-tab="main" class="on">Персонаж</button>
+  <button data-tab="combat">Бой</button>
+  <button data-tab="spells">Заклинания</button>
+  <button data-tab="inventory">Инвентарь</button>
+  <button data-tab="features">Способности</button>
+  <button data-tab="notes">Заметки</button>
+  <button data-tab="ref">Справочник</button>
+</nav>
+
+<main>
+  <!-- ПЕРСОНАЖ -->
+  <section class="tab on" id="tab-main">
+    <div class="grid g-main">
+      <div class="card span-all">
+        <h2>Основное</h2>
+        <div class="form-grid">
+          <label class="w2">Имя<input data-bind="info.name"></label>
+          <label>Класс<input data-bind="info.cls" list="dlClasses"></label>
+          <label>Подкласс<input data-bind="info.subclass"></label>
+          <label>Уровень<input type="number" min="1" max="20" data-bind="info.level" data-num></label>
+          <label>Вид (раса)<input data-bind="info.species" list="dlSpecies"></label>
+          <label>Предыстория<input data-bind="info.background" list="dlBackgrounds"></label>
+          <label>Мировоззрение<input data-bind="info.alignment" list="dlAlign"></label>
+          <label>Опыт<input type="number" min="0" data-bind="info.xp" data-num></label>
+          <label>Размер<select data-bind="info.size"><option>Крошечный</option><option>Маленький</option><option>Средний</option><option>Большой</option></select></label>
+        </div>
+        <div class="row gap mt">
+          <button data-act="applyClass">⚙ Применить шаблон класса</button>
+          <button data-act="calcHp">❤ Рассчитать макс. хиты (среднее)</button>
+          <span class="muted small" id="xpHint"></span>
+        </div>
+      </div>
+
+      <div class="card">
+        <div class="row between wrap gap"><h2>Характеристики</h2><button data-act="abilGen" title="Стандартный набор, покупка очков или бросок 4d6">🎲 Генерация</button></div>
+        <div class="abil-grid" id="abilGrid"></div>
+        <p class="muted small">Нажмите на модификатор — проверка, на «Спас» — спасбросок. Галочка — владение спасброском.</p>
+      </div>
+
+      <div class="card">
+        <h2>Навыки <span class="muted small">— клик по кружку: нет → владение → компетентность</span></h2>
+        <div id="skillList" class="skill-list"></div>
+        <label class="check mt"><input type="checkbox" data-bind="combat.jack"> Мастер на все руки (½ БМ к навыкам без владения)</label>
+        <div class="passives" id="passives"></div>
+      </div>
+
+      <div class="card">
+        <h2>Владения и языки</h2>
+        <label>Доспехи<textarea rows="2" data-bind="prof.armor"></textarea></label>
+        <label>Оружие<textarea rows="2" data-bind="prof.weapons"></textarea></label>
+        <label>Инструменты<textarea rows="2" data-bind="prof.tools"></textarea></label>
+        <label>Языки<textarea rows="2" data-bind="prof.languages"></textarea></label>
+        <label>Чувства (тёмное зрение и т.п.)<input data-bind="prof.senses"></label>
+      </div>
+    </div>
+  </section>
+
+  <!-- БОЙ -->
+  <section class="tab" id="tab-combat">
+    <div class="grid g-combat">
+      <div class="card">
+        <h2>Хиты</h2>
+        <div class="form-grid three">
+          <label>Текущие<input type="number" data-bind="combat.hp" data-num></label>
+          <label>Максимум<input type="number" data-bind="combat.hpMax" data-num></label>
+          <label>Временные<input type="number" data-bind="combat.temp" data-num></label>
+        </div>
+        <h3>Кости хитов</h3>
+        <div class="row gap wrap">
+          <label class="inline">Кость <select data-bind="combat.hdDie" data-num><option value="6">к6</option><option value="8">к8</option><option value="10">к10</option><option value="12">к12</option></select></label>
+          <span id="hdInfo" class="badge"></span>
+          <button data-act="spendHd">🎲 Потратить кость</button>
+        </div>
+        <div id="deathBox" class="death mt"></div>
+      </div>
+
+      <div class="card">
+        <h2>Защита и движение</h2>
+        <div class="form-grid three">
+          <label>Класс доспеха<input type="number" data-bind="combat.ac" data-num></label>
+          <label>Бонус инициативы (доп.)<input type="number" data-bind="combat.initBonus" data-num></label>
+          <label>Скорость, фт<input type="number" step="5" data-bind="combat.speed" data-num></label>
+        </div>
+        <label>Сопротивления, иммунитеты, уязвимости<textarea rows="2" data-bind="combat.defenses"></textarea></label>
+        <h3>Истощение</h3>
+        <div id="exhBox" class="exh"></div>
+        <h3>Концентрация</h3>
+        <div class="row gap"><input data-bind="combat.conc" placeholder="Нет — заклинание с концентрацией"><button data-act="dropConc">Прервать</button><button data-act="concSave">Спасбросок</button></div>
+      </div>
+
+      <div class="card span-all">
+        <h2>Состояния</h2>
+        <div id="condList" class="chips"></div>
+      </div>
+
+      <div class="card span-all">
+        <div class="row between"><h2>Атаки</h2><button data-act="addAttack">＋ Атака</button></div>
+        <div id="attackList" class="list"></div>
+      </div>
+    </div>
+  </section>
+
+  <!-- ЗАКЛИНАНИЯ -->
+  <section class="tab" id="tab-spells">
+    <div class="grid g-spells">
+      <div class="card">
+        <h2>Колдовство</h2>
+        <div class="form-grid">
+          <label>Характеристика<select data-bind="spellcasting.ability" id="saSelect"></select></label>
+          <label>Тип заклинателя<select data-bind="spellcasting.casterType">
+            <option value="none">Нет</option><option value="full">Полный (бард, жрец, друид, чародей, волшебник)</option>
+            <option value="half">Половинный (паладин, следопыт)</option><option value="third">Треть (мист. рыцарь, мист. ловкач)</option>
+            <option value="pact">Магия договора (колдун)</option><option value="manual">Вручную / мультикласс</option></select></label>
+          <label>Доп. бонус к СЛ и атаке<input type="number" data-bind="spellcasting.bonus" data-num></label>
+        </div>
+        <div class="statrow" id="spellStats"></div>
+      </div>
+      <div class="card">
+        <h2>Ячейки заклинаний</h2>
+        <div id="slotList" class="slots"></div>
+        <p class="muted small" id="slotHint"></p>
+      </div>
+      <div class="card span-all">
+        <div class="row between wrap gap">
+          <h2>Заклинания <span class="muted small" id="prepCount"></span></h2>
+          <div class="row gap wrap">
+            <input id="spellFilter" placeholder="Поиск…" class="w-search">
+            <label class="check"><input type="checkbox" id="spellOnlyPrep"> Только подготовленные</label>
+            <button data-act="addSpellDb">📖 Из справочника</button>
+            <button data-act="addSpellCustom">＋ Своё</button>
+          </div>
+        </div>
+        <div id="spellList"></div>
+      </div>
+    </div>
+  </section>
+
+  <!-- ИНВЕНТАРЬ -->
+  <section class="tab" id="tab-inventory">
+    <div class="grid g-inv">
+      <div class="card">
+        <h2>Монеты</h2>
+        <div class="coins">
+          <label class="coin cp">ММ<input type="number" min="0" data-bind="coins.cp" data-num></label>
+          <label class="coin sp">СМ<input type="number" min="0" data-bind="coins.sp" data-num></label>
+          <label class="coin ep">ЭМ<input type="number" min="0" data-bind="coins.ep" data-num></label>
+          <label class="coin gp">ЗМ<input type="number" min="0" data-bind="coins.gp" data-num></label>
+          <label class="coin pp">ПМ<input type="number" min="0" data-bind="coins.pp" data-num></label>
+        </div>
+        <div class="muted small" id="coinTotal"></div>
+      </div>
+      <div class="card">
+        <h2>Нагрузка</h2>
+        <div id="loadBox"></div>
+      </div>
+      <div class="card span-all">
+        <div class="row between wrap gap">
+          <h2>Предметы</h2>
+          <div class="row gap wrap">
+            <input id="itemFilter" placeholder="Поиск…" class="w-search">
+            <select id="itemCat"><option value="">Все категории</option></select>
+            <button data-act="addItem">＋ Предмет</button>
+          </div>
+        </div>
+        <div id="itemList" class="list"></div>
+      </div>
+    </div>
+  </section>
+
+  <!-- СПОСОБНОСТИ -->
+  <section class="tab" id="tab-features">
+    <div class="grid g-feat">
+      <div class="card span-all">
+        <div class="row between wrap gap"><h2>Ресурсы (Ци, Ярость, Божественный канал…)</h2>
+          <div class="row gap"><button data-act="addClassRes">⚙ Ресурсы класса</button><button data-act="addResource">＋ Свой ресурс</button></div></div>
+        <div id="resList" class="res-grid"></div>
+      </div>
+      <div class="card span-all">
+        <div class="row between"><h2>Умения, черты и особенности</h2><button data-act="addFeature">＋ Умение</button></div>
+        <div id="featList" class="list"></div>
+      </div>
+    </div>
+  </section>
+
+  <!-- ЗАМЕТКИ -->
+  <section class="tab" id="tab-notes">
+    <div class="grid g-notes">
+      <div class="card"><h2>Личность</h2>
+        <label>Черты характера<textarea rows="3" data-bind="notes.traits"></textarea></label>
+        <label>Идеалы<textarea rows="2" data-bind="notes.ideals"></textarea></label>
+        <label>Привязанности<textarea rows="2" data-bind="notes.bonds"></textarea></label>
+        <label>Слабости<textarea rows="2" data-bind="notes.flaws"></textarea></label>
+      </div>
+      <div class="card"><h2>Внешность и история</h2>
+        <label>Внешность<textarea rows="3" data-bind="notes.appearance"></textarea></label>
+        <label>Предыстория<textarea rows="7" data-bind="notes.backstory"></textarea></label>
+      </div>
+      <div class="card span-all"><h2>Союзники, организации, квесты</h2>
+        <textarea rows="5" data-bind="notes.allies"></textarea>
+      </div>
+      <div class="card span-all"><h2>Журнал сессий</h2>
+        <textarea rows="12" data-bind="notes.journal" placeholder="Что произошло, имена NPC, зацепки…"></textarea>
+      </div>
+    </div>
+  </section>
+
+  <!-- СПРАВОЧНИК -->
+  <section class="tab" id="tab-ref">
+    <div class="card">
+      <div class="row gap wrap">
+        <div class="seg" id="refSeg">
+          <button data-ref="spells" class="on">Заклинания</button>
+          <button data-ref="skills">Навыки</button>
+          <button data-ref="conditions">Состояния</button>
+          <button data-ref="actions">Действия</button>
+          <button data-ref="mastery">Приёмы оружия</button>
+          <button data-ref="rules">Правила</button>
+        </div>
+        <input id="refFilter" placeholder="Поиск…" class="w-search">
+        <select id="refLevel"><option value="">Все уровни</option></select>
+        <select id="refClass"><option value="">Все классы</option></select>
+      </div>
+      <div id="refList" class="ref-list mt"></div>
+    </div>
+  </section>
+</main>
+
+<button id="diceFab" class="dice-fab" data-act="toggleDice" title="Кости и журнал бросков">🎲</button>
+<aside id="dicePanel" class="dice-panel">
+  <div class="row between"><b>Кости</b><button class="ghost" data-act="clearLog">очистить</button></div>
+  <div class="dice-btns">
+    <button data-roll="1d4">к4</button><button data-roll="1d6">к6</button><button data-roll="1d8">к8</button>
+    <button data-roll="1d10">к10</button><button data-roll="1d12">к12</button><button data-roll="1d20">к20</button><button data-roll="1d100">к100</button>
+  </div>
+  <form class="row gap" id="diceForm"><input id="diceExpr" placeholder="напр. 2d6+3"><button>Бросить</button></form>
+  <div id="rollLog" class="roll-log"></div>
+</aside>
+<div id="toasts" class="toasts"></div>
+
+<div id="modal" class="modal" hidden>
+  <div class="modal-box" role="dialog" aria-modal="true">
+    <button class="modal-x" data-act="closeModal" aria-label="Закрыть">×</button>
+    <div id="modalBody"></div>
+  </div>
+</div>
+<input type="file" id="importFile" accept=".json,application/json" hidden>
+
+<datalist id="dlClasses"></datalist><datalist id="dlSpecies"></datalist><datalist id="dlBackgrounds"></datalist><datalist id="dlAlign"></datalist>
+
+<script src="data.js"></script>
+<script src="app.js"></script>
+<script>
+  if ('serviceWorker' in navigator && location.protocol !== 'file:') {
+    window.addEventListener('load', () => navigator.serviceWorker.register('sw.js').catch(() => {}));
+  }
+</script>
+</body>
+</html>
