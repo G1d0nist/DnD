@@ -47,6 +47,7 @@ input[type=checkbox] { width: auto; accent-color: var(--gold); }
 input[type=number] { -moz-appearance: textfield; }
 button { cursor: pointer; padding: 6px 11px; background: var(--card2); transition: background .15s, border-color .15s; white-space: nowrap; }
 button:hover { border-color: var(--gold); background: #362e25; }
+button:disabled, button:disabled:hover { opacity: .45; cursor: not-allowed; border-color: var(--line); background: var(--card2); }
 button.ghost { background: none; border: none; color: var(--muted); padding: 2px 6px; }
 button.ghost:hover { color: var(--gold2); }
 button.danger:hover { border-color: var(--red); background: #3a1f1b; }
@@ -263,6 +264,13 @@ button.stat:hover { border-color: var(--gold); }
 .slot-choice button { text-align: left; }
 .slot-choice button:disabled { opacity: .4; cursor: not-allowed; }
 
+/* Мастер создания */
+.wiz-steps { flex-wrap: wrap; }
+.wiz-steps button:disabled { opacity: .45; }
+.skill-pick { display: grid; grid-template-columns: repeat(auto-fill, minmax(170px, 1fr)); gap: 4px 10px; }
+.skill-pick label.check.muted { color: var(--muted); }
+#wizNav .muted { margin-right: auto; }
+
 /* Мультикласс */
 .multi-row { display: grid; grid-template-columns: 1.3fr 1.3fr 90px auto; gap: 0 10px; align-items: end; }
 .multi-row button { margin-bottom: 8px; }
@@ -272,6 +280,8 @@ button.stat:hover { border-color: var(--gold); }
 /* Черты */
 .afinal { font-size: 11px; color: var(--green); min-height: 14px; margin-top: 2px; }
 .badge.free { border-color: var(--gold); }
+.badge.over { border-color: var(--red); color: #f3b1a8; }
+.badge.over b { color: #f3b1a8; }
 .feat-pick { background: var(--bg2); border: 1px solid var(--line); border-radius: 9px; padding: 8px 10px; }
 .feat-pick select { width: auto; max-width: 100%; }
 .feat-pick p { margin: 6px 0 0; }
@@ -305,6 +315,8 @@ button.stat:hover { border-color: var(--gold); }
 .lvl-list { margin: 4px 0; padding-left: 20px; }
 .lvl-list li { margin: 2px 0; }
 .lvl-feats { display: grid; gap: 4px; }
+.lvl-feat { align-items: flex-start !important; }
+.lvl-feat input { margin-top: 3px; }
 #lvlBody .row > label.check, #featAddBody .row > label.check { white-space: nowrap; }
 .db-list h3 { margin: 10px 0 2px; font-size: 15px; }
 .db-row .li-title .muted { display: block; font-weight: 400; }

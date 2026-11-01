@@ -31,7 +31,8 @@ function blankChar() {
     combat: { ac: 10, initBonus: 0, speed: 30, hp: 10, hpMax: 10, temp: 0, hdDie: 8, hdUsed: 0, hdUsedBy: {}, deathS: 0, deathF: 0, inspiration: false, exhaustion: 0, conc: '', conditions: [], jack: false, defenses: '', round: 1 },
     armor: { mode: 'auto', id: '', shield: false, unarmored: '', bonus: 0, v: 1 },
     effects: [],
-    feats: [], // { id, key, slot, a, a1, a2, mode, lvl }
+    feats: [], // { id, key, slot, a, a1, a2, mode, lvl, bg }
+    bgAbil: {}, // прибавки к характеристикам от предыстории: { str: 2, dex: 1 }
     attacks: [{ id: uid(), n: 'Безоружный удар', ability: 'str', prof: true, hit: 0, dmg: '1', addMod: true, dmgBonus: 0, type: 'дробящий', mastery: '', range: '5 фт', x: '' }],
     spellcasting: { ability: 'int', casterType: 'none', bonus: 0 },
     slots: Array.from({ length: 9 }, () => ({ max: 0, used: 0 })),
@@ -149,9 +150,9 @@ function featAbilBonus(c, k) {
   });
   return { gen, epic };
 }
-// Итоговое значение характеристики: базовое (введённое) + черты + умение 20 уровня
+// Итоговое значение характеристики: базовое (введённое) + предыстория + черты + умение 20 уровня
 function score(c, k) {
-  const base = +c.abil[k] || 0, { gen, epic } = featAbilBonus(c, k);
+  const base = +c.abil[k] || 0, fb = featAbilBonus(c, k), epic = fb.epic, gen = fb.gen + (+(c.bgAbil || {})[k] || 0);
   let v = base + gen > 20 ? Math.max(base, 20) : base + gen;
   if (Object.entries(CAPSTONE).some(([n, cap]) => clsLvl(c, n) >= 20 && cap[1].includes(k))) v = Math.max(v, Math.min(25, v + 4));
   if (epic) v = Math.max(v, Math.min(30, v + epic));
@@ -305,7 +306,36 @@ function resLevels(c) {
   const map = {};
   classList(c).forEach((e) => { (CLASSES[e.cls] || { res: [] }).res.forEach((k) => { map[k] = (map[k] || 0) + e.lvl; }); });
   if (hasFeat(c, 'lucky')) map.luckyFeat = lvl(c);
+  (speciesOf(c)?.res || []).forEach((k) => { map[k] = lvl(c); });
   return map;
+}
+const speciesOf = (c) => SPECIES_DATA.find((s) => s.n === String(c.info.species || '').trim());
+const backgroundOf = (c) => BACKGROUND_DATA.find((b) => b.n === String(c.info.background || '').trim());
+// Применить вид: скорость, размер, тёмное зрение, черты вида (заменяют прежние), навыки на выбор
+function applySpecies(c, sp, o = {}) {
+  const lin = o.lin || '';
+  c.info.species = sp.n;
+  c.info.size = sp.size.includes(o.size) ? o.size : sp.size[0];
+  c.info.lineage = lin;
+  c.combat.speed = /Лесной эльф/.test(lin) ? 35 : sp.speed;
+  const dv = /Дроу/.test(lin) ? 120 : sp.dv;
+  c.prof.senses = dv ? `Тёмное зрение ${dv} фт` : '';
+  c.features = c.features.filter((f) => f.src !== 'Вид');
+  sp.t.forEach(([n, x]) => c.features.push({ id: uid(), n, src: 'Вид', x }));
+  if (lin) c.features.push({ id: uid(), n: `Происхождение: ${lin}`, src: 'Вид', x: 'Подробности выбранного происхождения — в Книге игрока.' });
+  (o.skills || []).forEach((k) => { c.skills[k] = Math.max(1, c.skills[k] || 0); });
+}
+// Применить предысторию: навыки, инструмент, бонусы характеристик, черта происхождения
+function applyBackground(c, bg, o) {
+  c.info.background = bg.n;
+  bg.sk.forEach((k) => { c.skills[k] = Math.max(1, c.skills[k] || 0); });
+  if (!c.prof.tools.includes(bg.tool)) c.prof.tools = [c.prof.tools, bg.tool].filter(Boolean).join(', ');
+  c.bgAbil = o.mode === '111' ? Object.fromEntries(bg.abil.map((k) => [k, 1])) : { [o.a1]: 2, [o.a2]: 1 };
+  const old = c.feats.find((f) => f.bg);
+  if (old) { featHp(c, old.key, -1); c.feats = c.feats.filter((f) => f !== old); }
+  if (featFree(c, 'origin') > 0) addFeat(c, 'origin', { key: bg.feat }, lvl(c));
+  const f = c.feats[c.feats.length - 1];
+  if (f && f.key === bg.feat) { f.bg = true; if (bg.featNote) f.note = bg.featNote; }
 }
 function autoResources(c) {
   const levels = resLevels(c), wanted = Object.keys(levels);
@@ -619,12 +649,16 @@ function renderCombat() {
     return `<div class="li"><div class="li-head">
       <span class="li-title" data-act="toggleOpen" data-id="${a.id}">${esc(a.n)}</span>
       <span class="li-sub">${fmt(attackBonus(c, a))} к попаданию · ${esc(dmgExpr(c, a))} ${esc(a.type)}${a.range ? ' · ' + esc(a.range) : ''}</span>
+      ${a.ammo ? `<span class="tag ${ammoLeft(c, a) ? 'r' : 'c'}" title="Боеприпасы из инвентаря">🏹 ${esc(a.ammo)}: ${ammoLeft(c, a)}</span>` : ''}
       ${a.ma ? `<span class="tag e" title="Кость урона растёт с уровнем: к6 → к8 (5) → к10 (11) → к12 (17)">Боевые искусства</span>` : ''}
       ${a.mastery && m ? `<span class="tag g" data-act="masteryInfo" data-k="${a.mastery}" style="cursor:pointer">⚔ ${m.n}</span>` : ''}
       <span class="btns"><button data-act="atkRoll" data-id="${a.id}">🎯 Атака</button><button data-act="dmgRoll" data-id="${a.id}">Урон</button><button data-act="dmgRoll" data-crit="1" data-id="${a.id}">Крит</button>
       <button class="ghost" data-act="editAttack" data-id="${a.id}" title="Изменить">✎</button><button class="ghost" data-act="delAttack" data-id="${a.id}" title="Удалить">✕</button></span>
     </div>${openSet.has(a.id) && (a.x || m?.d) ? `<div class="li-desc">${esc(a.x)}${a.x && m?.d ? '\n\n' : ''}${m?.d ? '<b>' + m.n + ':</b> ' + esc(m.d) : ''}</div>` : ''}</div>`;
   }).join('') || '<div class="muted">Нет атак</div>';
+  const spent = Object.values(cb.ammoSpent || {}).reduce((s, n) => s + n, 0);
+  $('#recoverAmmo').hidden = !spent;
+  $('#recoverAmmo').textContent = `🏹 Собрать боеприпасы (${Math.floor(spent / 2)} из ${spent})`;
 
   if (c.armor.mode === 'auto') {
     const r = computeAC(c);
@@ -647,6 +681,18 @@ function renderCombat() {
     '<div class="muted small">Нет активных эффектов. Заклинания с длительностью добавляются сюда автоматически при сотворении.</div>';
 }
 
+// Сколько заклинаний можно подготовить и сколько знать заговоров (сумма по классам); null — класс без таблицы
+function spellLimits(c) {
+  let prep = null, cantrips = null;
+  const parts = [];
+  classList(c).forEach((e) => {
+    const p = PREP_TABLE[e.cls], k = CANTRIP_TABLE[e.cls];
+    if (p) { prep = (prep || 0) + p[e.lvl - 1]; parts.push(`${e.cls}: ${p[e.lvl - 1]}`); }
+    if (k) cantrips = (cantrips || 0) + k[e.lvl >= 10 ? 2 : e.lvl >= 4 ? 1 : 0];
+  });
+  return { prep, cantrips, note: parts.length ? `Подготовленных заклинаний — ${parts.join(', ')}. «Всегда подготовленные» не считаются.` : '' };
+}
+const spellCounts = (c) => ({ prep: c.spells.filter((s) => s.l > 0 && s.prep && !s.always).length, cantrips: c.spells.filter((s) => +s.l === 0).length });
 function renderSpells() {
   const c = ch(), sc = c.spellcasting, t = sc.casterType;
   $('#spellStats').innerHTML = `<div class="stat"><b>${spellDC(c)}</b><span>СЛ спасброска</span></div>
@@ -669,17 +715,22 @@ function renderSpells() {
 
   const q = $('#spellFilter').value.trim().toLowerCase();
   const onlyPrep = $('#spellOnlyPrep').checked;
-  const prepared = c.spells.filter((s) => s.l > 0 && s.prep).length;
-  $('#prepCount').textContent = c.spells.length ? `— всего ${c.spells.length}, подготовлено ${prepared}` : '';
+  const lim = spellLimits(c), cnt = spellCounts(c);
+  const over = (n, m) => (m != null && n > m ? ' over' : '');
+  $('#prepCount').innerHTML = lim.prep == null && lim.cantrips == null
+    ? (c.spells.length ? `— всего ${c.spells.length}, подготовлено ${cnt.prep}` : '')
+    : `<span class="badge${over(cnt.prep, lim.prep)}" title="${esc(lim.note)}">Подготовлено <b>${cnt.prep}/${lim.prep ?? '—'}</b></span>
+       <span class="badge${over(cnt.cantrips, lim.cantrips)}">Заговоры <b>${cnt.cantrips}/${lim.cantrips ?? '—'}</b></span>
+       ${cnt.prep > (lim.prep ?? 99) || cnt.cantrips > (lim.cantrips ?? 99) ? '<span class="small gen-warn">больше, чем позволяют правила</span>' : ''}`;
   let html = '';
   for (let l = 0; l <= 9; l++) {
-    const list = c.spells.filter((s) => +s.l === l && (!q || (s.n + ' ' + (s.e || '')).toLowerCase().includes(q)) && (!onlyPrep || l === 0 || s.prep))
+    const list = c.spells.filter((s) => +s.l === l && (!q || (s.n + ' ' + (s.e || '')).toLowerCase().includes(q)) && (!onlyPrep || l === 0 || s.prep || s.always))
       .sort((a, b) => a.n.localeCompare(b.n, 'ru'));
     if (!list.length) continue;
     const slot = l ? c.slots[l - 1] : null;
     html += `<div class="spell-lvl"><h3>${l ? l + ' уровень' : 'Заговоры'}${slot && slot.max ? pipsHtml(slot.max, slot.used, 'slotPip', `data-l="${l - 1}"`) : ''}</h3><div class="list">`;
-    html += list.map((s) => `<div class="li ${l && !s.prep ? 'dim' : ''}"><div class="li-head">
-        ${l ? `<input type="checkbox" class="prep" data-act="togglePrep" data-id="${s.id}" ${s.prep ? 'checked' : ''} title="Подготовлено">` : ''}
+    html += list.map((s) => `<div class="li ${l && !s.prep && !s.always ? 'dim' : ''}"><div class="li-head">
+        ${l ? (s.always ? '<span class="tag g" title="Всегда подготовлено — не входит в лимит">всегда</span>' : `<input type="checkbox" class="prep" data-act="togglePrep" data-id="${s.id}" ${s.prep ? 'checked' : ''} title="Подготовлено">`) : ''}
         <span class="li-title" data-act="toggleOpen" data-id="${s.id}">${esc(s.n)}</span>
         ${s.cn ? '<span class="tag c" title="Концентрация">К</span>' : ''}${s.rt ? '<span class="tag r" title="Ритуал">Р</span>' : ''}
         <span class="li-sub">${esc(s.t || '')}${s.r ? ' · ' + esc(s.r) : ''}</span>
@@ -753,15 +804,20 @@ function renderFeatures() {
     return `<div class="li"><div class="li-head">
       <span class="li-title" data-act="toggleOpen" data-id="${f.id}">${esc(d.n)}</span>
       <span class="tag">${esc(FEAT_SLOTS[f.slot] ? FEAT_SLOTS[f.slot].n : '')}</span>${eff ? `<span class="tag e">${eff}</span>` : ''}
+      ${f.bg ? `<span class="tag g" title="Черта от предыстории">предыстория${f.note ? `: ${esc(f.note)}` : ''}</span>` : ''}
       ${f.lvl ? `<span class="li-sub">${f.lvl} ур.</span>` : ''}
       <span class="btns"><button class="ghost" data-act="delFeat" data-id="${f.id}" title="Убрать черту">✕</button></span>
     </div>${openSet.has(f.id) ? `<div class="li-desc">${esc(d.x)}</div>` : ''}</div>`;
   }).join('') || '<div class="muted small">Черт пока нет. Черту происхождения даёт предыстория на 1 уровне.</div>';
 
-  $('#featList').innerHTML = c.features.map((f) => `<div class="li"><div class="li-head">
-      <span class="li-title" data-act="toggleOpen" data-id="${f.id}">${esc(f.n)}</span>${f.src ? `<span class="tag">${esc(f.src)}</span>` : ''}
+  // Описание: своё (если вписано) или из справочника по классу из источника («Монах 5» → Монах)
+  $('#featList').innerHTML = c.features.map((f) => {
+    const desc = f.x || featureDesc(String(f.src || '').split(' ')[0], f.n);
+    return `<div class="li"><div class="li-head">
+      <span class="li-title" data-act="toggleOpen" data-id="${f.id}">${esc(f.n)}${desc ? ' <span class="muted small">▾</span>' : ''}</span>${f.src ? `<span class="tag">${esc(f.src)}</span>` : ''}
       <span class="btns"><button class="ghost" data-act="editFeature" data-id="${f.id}">✎</button><button class="ghost" data-act="delFeature" data-id="${f.id}">✕</button></span>
-    </div>${openSet.has(f.id) && f.x ? `<div class="li-desc">${esc(f.x)}</div>` : ''}</div>`).join('') || '<div class="muted">Добавьте умения класса, черты (feats), особенности вида и предыстории.</div>';
+    </div>${openSet.has(f.id) && desc ? `<div class="li-desc">${esc(desc)}</div>` : ''}</div>`;
+  }).join('') || '<div class="muted">Добавьте умения класса, черты (feats), особенности вида и предыстории.</div>';
 }
 
 // Боевые умения класса/вида: значения по уровню и кнопки бросков
@@ -817,7 +873,7 @@ function renderQuickSpells() {
   $('#qsStats').innerHTML = `<span class="badge">СЛ <b>${spellDC(c)}</b></span><button data-act="spellAttack">🎯 Атака ${fmt(spellAtk(c))}</button>`;
   $('#qsSlots').innerHTML = c.slots.map((s, i) => (s.max ? `<span class="qs-slot"><b>${i + 1}</b>${pipsHtml(s.max, s.used, 'slotPip', `data-l="${i}"`)}</span>` : '')).join('')
     + (c.pact.max ? `<span class="qs-slot pact"><b>Д${c.pact.level}</b>${pipsHtml(c.pact.max, c.pact.used, 'pactPip', '')}</span>` : '');
-  const list = c.spells.filter((s) => +s.l === 0 || s.prep).sort((a, b) => a.l - b.l || a.n.localeCompare(b.n, 'ru'));
+  const list = c.spells.filter((s) => +s.l === 0 || s.prep || s.always).sort((a, b) => a.l - b.l || a.n.localeCompare(b.n, 'ru'));
   $('#qsList').innerHTML = list.map((s) => `<div class="li qs"><div class="li-head">
       <span class="lvl-badge" title="${s.l ? s.l + ' уровень' : 'Заговор'}">${s.l || 'З'}</span>
       <span class="li-title" data-act="toggleOpen" data-id="${s.id}">${esc(s.n)}</span>
@@ -872,9 +928,12 @@ function genPlace(k, idx) {
   asg[k] = idx;
 }
 
+// embed — генератор встроен в мастер создания: бонусы берутся из выбранной предыстории, без своих кнопок
 function renderGen() {
   const box = $('#genBody');
   if (!box) return;
+  const embed = box.dataset.embed === '1';
+  const bonusOf = (k) => (embed ? (wizBgAbil()[k] || 0) : +gen.bonus[k] || 0);
   const mode = gen.mode, pool = genPool(), asg = genAssign();
   const left = PB_POOL - pbSpent();
   const tabs = [['standard', 'Стандартный набор'], ['pointbuy', 'Покупка очков'], ['roll', 'Бросок 4d6']]
@@ -898,10 +957,10 @@ function renderGen() {
     html += `<div class="gen-pool" data-gpool>${chips || '<span class="muted small">Все числа распределены — можно перетаскивать между характеристиками</span>'}</div>`;
   }
 
-  const bonusSum = ABILITIES.reduce((s, a) => s + (+gen.bonus[a.k] || 0), 0);
-  html += `<div class="gen-grid mt"><div class="gen-row head"><span>Характеристика</span><span>Значение</span><span>Бонус</span><span>Итог</span></div>`;
+  const bonusSum = ABILITIES.reduce((s, a) => s + bonusOf(a.k), 0);
+  html += `<div class="gen-grid mt"><div class="gen-row head"><span>Характеристика</span><span>Значение</span><span>${embed ? 'Предыст.' : 'Бонус'}</span><span>Итог</span></div>`;
   html += ABILITIES.map((a) => {
-    const base = genBase(a.k), b = +gen.bonus[a.k] || 0;
+    const base = genBase(a.k), b = bonusOf(a.k);
     const total = base == null ? null : Math.min(20, base + b);
     let ctl;
     if (mode === 'pointbuy') {
@@ -920,9 +979,10 @@ function renderGen() {
         <select data-gsel="${a.k}" aria-label="${a.n}"><option value="">—</option>${opts}</select>`;
     }
     return `<div class="gen-row"><span class="gname">${a.n}</span><div class="gctl">${ctl}</div>
-      <select data-gbonus="${a.k}" title="Бонус предыстории/расы">${[0, 1, 2].map((n) => `<option value="${n}" ${b === n ? 'selected' : ''}>+${n}</option>`).join('')}</select>
+      ${embed ? `<span class="muted">${b ? '+' + b : '—'}</span>` : `<select data-gbonus="${a.k}" title="Бонус предыстории/расы">${[0, 1, 2].map((n) => `<option value="${n}" ${b === n ? 'selected' : ''}>+${n}</option>`).join('')}</select>`}
       <span class="gtotal">${total ?? '—'}<small>${total == null ? '' : fmt(mod(total))}</small></span></div>`;
   }).join('') + '</div>';
+  if (embed) { box.innerHTML = html; renderWizNav(); return; }
 
   html += `<p class="muted small">Бонус: в D&D 2024 предыстория даёт +2 и +1 или +1 к трём характеристикам; в 5e 2014 — бонусы расы. Итог не выше 20.</p>`;
   if (bonusSum > 3) html += `<p class="small gen-warn">Сумма бонусов ${bonusSum} — обычно не больше 3.</p>`;
@@ -937,14 +997,23 @@ function renderGen() {
 function openAbilGen() {
   openModal('<h2>Генерация характеристик</h2><div id="genBody"></div>');
   modalRefresh = renderGen;
-  const mb = $('#modalBody');
-  mb.onchange = (e) => {
-    const el = e.target;
-    if (el.dataset.gsel) {
-      if (el.value === '') genAssign()[el.dataset.gsel] = null; else genPlace(el.dataset.gsel, +el.value);
-      renderGen();
-    } else if (el.dataset.gbonus) { gen.bonus[el.dataset.gbonus] = +el.value; renderGen(); }
-  };
+  $('#modalBody').onchange = genChange;
+  installGenDrag($('#modalBody'));
+  renderGen();
+}
+// Изменения в генераторе (выбор числа, бонус); true — событие обработано
+function genChange(e) {
+  const el = e.target;
+  if (el.dataset.gsel) {
+    if (el.value === '') genAssign()[el.dataset.gsel] = null; else genPlace(el.dataset.gsel, +el.value);
+    renderGen();
+    return true;
+  }
+  if (el.dataset.gbonus) { gen.bonus[el.dataset.gbonus] = +el.value; renderGen(); return true; }
+  return false;
+}
+// Перетаскивание чисел генератора внутри контейнера mb
+function installGenDrag(mb) {
   mb.ondragstart = (e) => {
     const chip = e.target.closest && e.target.closest('[data-gidx]');
     if (!chip) return;
@@ -968,7 +1037,192 @@ function openAbilGen() {
     } else if (d.from) asg[d.from] = null; // вернуть число в общий набор
     renderGen();
   };
-  renderGen();
+}
+
+/* ---------- Мастер создания персонажа ---------- */
+// mode: 'new' — новый персонаж (все шаги), 'origin' — вид и предыстория для текущего персонажа
+let W = null;
+const WIZ_STEPS = ['Вид', 'Предыстория', 'Класс', 'Характеристики', 'Итог'];
+const skillName = (k) => SKILLS.find((s) => s.k === k).n;
+const abilS = (k) => ABILITIES.find((a) => a.k === k).s;
+const wizSp = () => SPECIES_DATA.find((s) => s.n === W.sp);
+const wizBg = () => BACKGROUND_DATA.find((b) => b.n === W.bg);
+function wizBgAbil() {
+  const bg = W && wizBg();
+  if (!bg) return {};
+  return W.bgMode === '111' ? Object.fromEntries(bg.abil.map((k) => [k, 1])) : { [W.a1]: 2, [W.a2]: 1 };
+}
+// Навыки, уже полученные на других шагах (нельзя выбрать дважды)
+function wizTaken(except) {
+  const s = new Set();
+  if (except !== 'sp') W.spSkills.forEach((k) => s.add(k));
+  if (except !== 'bg' && wizBg()) wizBg().sk.forEach((k) => s.add(k));
+  if (except !== 'cls') W.clsSkills.forEach((k) => s.add(k));
+  return s;
+}
+function openWizard(mode) {
+  W = { mode, step: 0, name: '', sp: '', size: '', lin: '', spSkills: [], bg: '', bgMode: '21', a1: '', a2: '', cls: '', clsSkills: [], gold: true };
+  if (mode === 'origin') {
+    const c = ch();
+    W.sp = speciesOf(c)?.n || ''; W.size = c.info.size; W.lin = c.info.lineage || '';
+    W.bg = backgroundOf(c)?.n || '';
+    if (wizBg()) [W.a1, W.a2] = wizBg().abil;
+  }
+  Object.assign(gen, { mode: 'standard', std: perAbil(null), pb: perAbil(8), rolls: [], roll: perAbil(null), bonus: perAbil(0) });
+  openModal(`<h2>${mode === 'new' ? '✨ Создание персонажа' : '⚙ Вид и предыстория'}</h2><div id="wizSteps" class="seg wiz-steps"></div><div id="wizBody" class="mt"></div><div class="modal-actions" id="wizNav"></div>`);
+  modalRefresh = renderWizard;
+  const mb = $('#modalBody');
+  mb.onchange = (e) => { if (e.target.closest('#genBody')) genChange(e); else wizChange(e); };
+  installGenDrag(mb);
+  renderWizard();
+}
+function wizChange(e) {
+  const el = e.target;
+  if (el.dataset.w) {
+    const f = el.dataset.w;
+    W[f] = el.value;
+    if (f === 'sp') { W.size = ''; W.lin = ''; W.spSkills = []; }
+    if (f === 'bg' && wizBg()) { [W.a1, W.a2] = wizBg().abil; W.clsSkills = W.clsSkills.filter((k) => !wizBg().sk.includes(k)); W.spSkills = W.spSkills.filter((k) => !wizBg().sk.includes(k)); }
+    if (f === 'cls') W.clsSkills = [];
+    if (f === 'name') return;
+  } else if (el.dataset.wsk) {
+    const key = el.dataset.wsk;
+    W[key] = el.checked ? [...new Set([...W[key], el.value])] : W[key].filter((k) => k !== el.value);
+  } else if (el.name === 'wgold') W.gold = el.value === '1';
+  else return;
+  renderWizard();
+}
+// Ошибка шага (пустая строка — шаг заполнен)
+function wizError(step) {
+  const sp = wizSp(), bg = wizBg();
+  if (step === 0) {
+    if (!sp) return 'Выберите вид';
+    if (sp.lin && !W.lin) return 'Выберите происхождение';
+    if (sp.skill && W.spSkills.length !== sp.skill[0]) return `Выберите навык вида (${sp.skill[0]})`;
+  }
+  if (step === 1) {
+    if (!bg) return 'Выберите предысторию';
+    if (W.bgMode === '21' && (W.a1 === W.a2 || !bg.abil.includes(W.a1) || !bg.abil.includes(W.a2))) return 'Выберите две разные характеристики для +2 и +1';
+  }
+  if (step === 2) {
+    if (!CLASSES[W.cls]) return 'Выберите класс';
+    if (W.clsSkills.length !== CLASS_SKILLS[W.cls][0]) return `Выберите навыки класса: ${CLASS_SKILLS[W.cls][0]}`;
+  }
+  if (step === 3 && !ABILITIES.every((a) => genBase(a.k) != null)) return 'Распределите все шесть значений';
+  return '';
+}
+const wizLast = () => (W.mode === 'origin' ? 1 : WIZ_STEPS.length - 1);
+// Чекбоксы выбора навыков: count — сколько выбрать, list — из каких (null — любые)
+function skillPickHtml(field, count, list, except) {
+  const taken = wizTaken(except), cur = W[field];
+  return `<div class="skill-pick">${(list || SKILLS.map((s) => s.k)).map((k) => {
+    const dis = taken.has(k) || (!cur.includes(k) && cur.length >= count);
+    return `<label class="check ${taken.has(k) ? 'muted' : ''}"><input type="checkbox" data-wsk="${field}" value="${k}" ${cur.includes(k) ? 'checked' : ''} ${dis ? 'disabled' : ''}> ${skillName(k)}${taken.has(k) ? ' (уже есть)' : ''}</label>`;
+  }).join('')}</div><p class="muted small">Выбрано ${cur.length} из ${count}</p>`;
+}
+function renderWizard() {
+  const box = $('#wizBody');
+  if (!box) return;
+  const last = wizLast(), sp = wizSp(), bg = wizBg();
+  $('#wizSteps').innerHTML = WIZ_STEPS.slice(0, last + 1).map((n, i) => `<button class="${W.step === i ? 'on' : ''}" ${i > W.step ? 'disabled' : ''} data-act="wizGo" data-i="${i}">${i + 1}. ${n}</button>`).join('');
+  let h = '';
+  if (W.step === 0) {
+    h = `<label>Вид<select data-w="sp"><option value="">— выберите —</option>${SPECIES_DATA.map((s) => `<option ${W.sp === s.n ? 'selected' : ''}>${s.n}</option>`).join('')}</select></label>`;
+    if (sp) {
+      h += `<div class="row gap wrap">${sp.size.length > 1 ? `<label class="inline">Размер <select data-w="size">${sp.size.map((z) => `<option ${(W.size || sp.size[0]) === z ? 'selected' : ''}>${z}</option>`).join('')}</select></label>` : `<span class="badge">Размер: ${sp.size[0]}</span>`}
+        <span class="badge">Скорость: ${/Лесной эльф/.test(W.lin) ? 35 : sp.speed} фт</span>${sp.dv ? `<span class="badge">Тёмное зрение: ${/Дроу/.test(W.lin) ? 120 : sp.dv} фт</span>` : ''}</div>`;
+      if (sp.lin) h += `<label class="mt">Происхождение<select data-w="lin"><option value="">— выберите —</option>${sp.lin.map((l) => `<option ${W.lin === l ? 'selected' : ''}>${l}</option>`).join('')}</select></label>`;
+      h += `<ul class="lvl-list">${sp.t.map(([n, x]) => `<li><b>${n}.</b> ${esc(x)}</li>`).join('')}</ul>`;
+      if (sp.skill) h += `<h3>Навык вида</h3>${skillPickHtml('spSkills', sp.skill[0], sp.skill[1], 'sp')}`;
+    }
+  } else if (W.step === 1) {
+    h = `<label>Предыстория<select data-w="bg"><option value="">— выберите —</option>${BACKGROUND_DATA.map((b) => `<option ${W.bg === b.n ? 'selected' : ''}>${b.n}</option>`).join('')}</select></label>`;
+    if (bg) {
+      const f = FEATS_BY[bg.feat];
+      h += `<ul class="lvl-list"><li><b>Навыки:</b> ${bg.sk.map(skillName).join(', ')}</li><li><b>Инструмент:</b> ${bg.tool}</li>
+        <li><b>Черта происхождения:</b> ${f.n}${bg.featNote ? ` (${bg.featNote})` : ''} — ${esc(f.x)}</li></ul>
+        <h3>Увеличение характеристик (${bg.abil.map(abilS).join(', ')})</h3>
+        <div class="row gap wrap"><select data-w="bgMode"><option value="21" ${W.bgMode === '21' ? 'selected' : ''}>+2 и +1</option><option value="111" ${W.bgMode === '111' ? 'selected' : ''}>+1 к каждой из трёх</option></select>
+        ${W.bgMode === '21' ? `<label class="inline">+2 <select data-w="a1">${bg.abil.map((k) => `<option value="${k}" ${W.a1 === k ? 'selected' : ''}>${abilS(k)}</option>`).join('')}</select></label>
+        <label class="inline">+1 <select data-w="a2">${bg.abil.map((k) => `<option value="${k}" ${W.a2 === k ? 'selected' : ''}>${abilS(k)}</option>`).join('')}</select></label>` : ''}</div>
+        ${W.mode === 'origin' ? '<p class="muted small">Прежние навыки останутся; черта прежней предыстории будет заменена.</p>' : ''}`;
+    }
+  } else if (W.step === 2) {
+    h = `<label>Класс<select data-w="cls"><option value="">— выберите —</option>${Object.keys(CLASSES).map((n) => `<option ${W.cls === n ? 'selected' : ''}>${n}</option>`).join('')}</select></label>`;
+    const d = CLASSES[W.cls], P = CLASS_PROF[W.cls];
+    if (d) {
+      h += `<ul class="lvl-list"><li><b>Кость хитов:</b> к${d.hd}</li><li><b>Спасброски:</b> ${d.saves.map(abilS).join(', ')}</li>
+        <li><b>Доспехи:</b> ${P.armor || 'нет'}</li><li><b>Оружие:</b> ${P.weapons}</li>${P.tools ? `<li><b>Инструменты:</b> ${P.tools}</li>` : ''}
+        <li><b>Умения 1 уровня:</b> ${featuresAt(W.cls, '', 1).join(', ')}${featSlotsAt(W.cls, 1).includes('style') ? ', Боевой стиль' : ''}</li></ul>
+        <h3>Навыки класса</h3>${skillPickHtml('clsSkills', CLASS_SKILLS[W.cls][0], CLASS_SKILLS[W.cls][1], 'cls')}`;
+    }
+  } else if (W.step === 3) {
+    h = '<p class="muted small">Базовые значения характеристик. Прибавки предыстории показаны отдельно и добавятся автоматически.</p><div id="genBody" data-embed="1"></div>';
+  } else {
+    const P = CLASS_PROF[W.cls], bonus = wizBgAbil(), d = CLASSES[W.cls];
+    const fin = (k) => Math.min(20, (genBase(k) || 10) + (bonus[k] || 0));
+    const con = mod(fin('con')), hp = Math.max(1, d.hd + con + (/Дварф/.test(W.sp) ? 1 : 0) + (wizBg()?.feat === 'tough' ? 2 : 0));
+    h = `<label>Имя персонажа<input data-w="name" value="${esc(W.name)}" placeholder="Новый персонаж"></label>
+      <ul class="lvl-list"><li><b>${esc(W.sp)}${W.lin ? ` (${esc(W.lin)})` : ''}</b>, ${esc(W.bg)}, <b>${esc(W.cls)} 1</b></li>
+      <li>${ABILITIES.map((a) => `${a.s} ${fin(a.k)} (${fmt(mod(fin(a.k)))})`).join(' · ')}</li>
+      <li>Хиты: <b>${hp}</b> (к${d.hd} + Тел ${fmt(con)})</li>
+      <li>Навыки: ${[...new Set([...W.spSkills, ...(wizBg()?.sk || []), ...W.clsSkills])].map(skillName).join(', ')}</li>
+      <li>Черта происхождения: ${FEATS_BY[wizBg().feat].n}</li></ul>
+      <h3>Снаряжение</h3>
+      <label class="check"><input type="radio" name="wgold" value="1" ${W.gold ? 'checked' : ''}> Стартовые деньги: ${P.gold} зм (класс) + 50 зм (предыстория) — купить в каталоге</label>
+      <label class="check"><input type="radio" name="wgold" value="0" ${W.gold ? '' : 'checked'}> Набор снаряжения из Книги игрока — добавлю сам</label>`;
+  }
+  box.innerHTML = h;
+  if (W.step === 3) renderGen(); // сам обновит кнопки мастера
+  else renderWizNav();
+}
+// Кнопки мастера (обновляются и при изменениях во встроенном генераторе)
+function renderWizNav() {
+  if (!$('#wizNav')) return;
+  const last = wizLast(), err = wizError(W.step);
+  $('#wizNav').innerHTML = `${W.mode === 'new' && W.step === 0 ? '<button class="ghost" data-act="newBlank" style="margin-right:auto">Пустой лист без мастера</button>' : ''}
+    ${err ? `<span class="muted small">${esc(err)}</span>` : ''}
+    ${W.step > 0 ? '<button data-act="wizPrev">← Назад</button>' : '<button data-act="closeModal">Отмена</button>'}
+    ${W.step < last ? `<button class="primary" data-act="wizNext" ${err ? 'disabled' : ''}>Далее →</button>`
+      : `<button class="primary" data-act="wizFinish" ${err ? 'disabled' : ''}>${W.mode === 'new' ? 'Создать персонажа' : 'Применить'}</button>`}`;
+}
+function wizFinish() {
+  const sp = wizSp(), bg = wizBg();
+  for (let i = 0; i <= wizLast(); i++) if (wizError(i)) { W.step = i; renderWizard(); return; }
+  if (W.mode === 'origin') {
+    const c = ch();
+    applySpecies(c, sp, { size: W.size, lin: W.lin, skills: W.spSkills });
+    applyBackground(c, bg, { mode: W.bgMode, a1: W.a1, a2: W.a2 });
+    closeModal();
+    toast(`Применены вид «${esc(sp.n)}» и предыстория «${esc(bg.n)}»`);
+    return;
+  }
+  const c = blankChar(), P = CLASS_PROF[W.cls];
+  c.info.name = W.name.trim() || 'Новый персонаж';
+  c.info.cls = W.cls;
+  applyClassTemplate(c);
+  applySpecies(c, sp, { size: W.size, lin: W.lin, skills: W.spSkills });
+  ABILITIES.forEach((a) => { c.abil[a.k] = genBase(a.k) ?? 10; });
+  applyBackground(c, bg, { mode: W.bgMode, a1: W.a1, a2: W.a2 });
+  W.clsSkills.forEach((k) => { c.skills[k] = Math.max(1, c.skills[k] || 0); });
+  c.prof.armor = P.armor; c.prof.weapons = P.weapons;
+  c.prof.tools = [...new Set([P.tools, ...c.prof.tools.split(', ')].filter(Boolean))].join(', ');
+  c.prof.languages = 'Общий; ещё два языка на выбор';
+  featuresAt(W.cls, '', 1).forEach((n) => c.features.push({ id: uid(), n, src: `${W.cls} 1`, x: featureDesc(W.cls, n) }));
+  const hp = Math.max(1, +c.combat.hdDie + am(c, 'con') + hpPerLevelBonus(c));
+  c.combat.hpMax = hp; c.combat.hp = hp;
+  if (W.gold) c.coins.gp = P.gold + 50;
+  state.chars[c.id] = c; state.current = c.id;
+  openSet.clear(); multiSig = null;
+  closeModal();
+  switchTab('main');
+  const todo = [];
+  if (featFree(c, 'origin') > 0) todo.push('вторая черта происхождения (человек)');
+  if (featFree(c, 'style') > 0) todo.push('черта боевого стиля');
+  if (c.feats.some((f) => f.key === 'magicInitiate')) todo.push('заклинания «Посвящённого в магию»');
+  if (!W.gold) todo.push('снаряжение');
+  if (PREP_TABLE[W.cls]) todo.push('заклинания класса');
+  toast(`✨ ${esc(c.info.name)} создан!${todo.length ? `<div class="rd">Осталось выбрать: ${esc(todo.join(', '))}</div>` : ''}`, 'crit');
 }
 
 /* ---------- Отмена действий ---------- */
@@ -986,7 +1240,7 @@ const ACT_LABELS = {
   nextRound: 'следующий раунд', passMinute: '+1 минута', roundReset: 'новый бой', effAdj: 'длительность эффекта', delEffect: 'удаление эффекта',
   skillProf: 'владение навыком', togglePrep: 'подготовка заклинания', addSpellFromDb: 'добавление заклинания', catWeapon: 'снаряжение из каталога',
   catArmor: 'доспех из каталога', catShield: 'щит', catGear: 'снаряжение из каталога', addMulti: 'мультикласс', delMulti: 'удаление класса',
-  delAttack: 'удаление атаки', delSpell: 'удаление заклинания', delItem: 'удаление предмета', delRes: 'удаление ресурса', delFeature: 'удаление умения',
+  delAttack: 'удаление атаки', atkRoll: 'боеприпас', recoverAmmo: 'сбор боеприпасов', delSpell: 'удаление заклинания', delItem: 'удаление предмета', delRes: 'удаление ресурса', delFeature: 'удаление умения',
   addAutoRes: 'ресурс класса', calcHp: 'расчёт хитов', applyClass: 'шаблон класса',
 };
 function pushUndo(id, before, label) {
@@ -1255,7 +1509,7 @@ function renderLevelUp() {
     <p>${gain == null ? '<span class="muted">Бросьте кость хитов</span>' : `+<b>${gain}</b> хитов (${S.hpMode === 'avg' ? hd / 2 + 1 : S.roll} ${fmt(con)} Тел${hpPerLevelBonus(c) ? ` +${hpPerLevelBonus(c)} вид/черта` : ''}) · максимум ${c.combat.hpMax} → <b>${+c.combat.hpMax + gain}</b>`}</p>
     <h3>Что изменится</h3><ul class="lvl-list">${changes.map((x) => `<li>${x}</li>`).join('')}</ul>
     ${feats.length ? `<h3>Новые умения</h3><p class="muted small">Отмеченные добавятся во вкладку «Способности». Описания — в Книге игрока.</p>
-      <div class="lvl-feats">${feats.map((f, i) => `<label class="check"><input type="checkbox" data-feat="${i}" ${S.skip.has(i) ? '' : 'checked'}> ${esc(f)}</label>`).join('')}</div>`
+      <div class="lvl-feats">${feats.map((f, i) => { const d = featureDesc(T.cls, f); return `<label class="check lvl-feat"><input type="checkbox" data-feat="${i}" ${S.skip.has(i) ? '' : 'checked'}> <span><b>${esc(f)}</b>${d ? `<span class="muted small"> — ${esc(d)}</span>` : ''}</span></label>`; }).join('')}</div>`
     : S.slots.length ? ''
     : T.cls && !CLASS_FEATURES[T.cls] ? '<p class="muted small">Класс не из списка — умения добавьте вручную.</p>' : !T.cls ? '<p class="muted small">Укажите класс, чтобы увидеть новые умения.</p>' : ''}
     ${S.slots.map((k) => `<h3>${k === 'general' ? 'Увеличение характеристик или черта' : FEAT_SLOTS[k].n}</h3>${featPickerHtml(c, k, S.picks[k])}`).join('')}
@@ -1319,8 +1573,13 @@ function weaponAttack(w) {
     id: uid(), n: w.n, ability: w.props.includes('Фехтовальное') ? 'fin' : ranged ? 'dex' : 'str', prof: true, hit: 0, dmg: w.dmg,
     addMod: true, dmgBonus: 0, type: w.type, mastery: w.m,
     range: ammo ? `${ammo[1]} фт` : thrown ? `${reach} · бросок ${thrown[1]} фт` : reach, x: w.props === '—' ? '' : w.props,
+    ammo: AMMO_FOR[w.n] || '',
   };
 }
+// Боеприпасы атаки — предмет инвентаря, название которого начинается с a.ammo (например, «Стрелы (20)»)
+const ammoItem = (c, a) => (a.ammo ? c.items.find((i) => i.n.toLowerCase().startsWith(a.ammo.toLowerCase().trim()) && +i.qty > 0)
+  || c.items.find((i) => i.n.toLowerCase().startsWith(a.ammo.toLowerCase().trim())) : null);
+const ammoLeft = (c, a) => { const it = ammoItem(c, a); return it ? +it.qty || 0 : 0; };
 
 /* ---------- Действия ---------- */
 let pendingConc = 0;
@@ -1404,6 +1663,7 @@ const ATTACK_FIELDS = () => [
   { k: 'dmgBonus', label: 'Доп. бонус к урону', type: 'number' },
   { k: 'type', label: 'Тип урона', type: 'select', options: DAMAGE_TYPES },
   { k: 'range', label: 'Дистанция', ph: '5 фт / 80/320 фт' },
+  { k: 'ammo', label: 'Боеприпасы (начало названия предмета)', ph: 'Стрелы' },
   { k: 'mastery', label: 'Приём оружия (Mastery)', type: 'select', options: Object.entries(MASTERY).map(([k, m]) => [k, m.n]) },
   { k: 'prof', label: 'Владение (+БМ к попаданию)', type: 'check' },
   { k: 'addMod', label: 'Модификатор к урону', type: 'check' },
@@ -1424,6 +1684,7 @@ const SPELL_FIELDS = () => [
   { k: 'rt', label: 'Ритуал', type: 'check' },
   { k: 'addMod', label: '+ модификатор к броску', type: 'check' },
   { k: 'prep', label: 'Подготовлено', type: 'check' },
+  { k: 'always', label: 'Всегда подготовлено (от подкласса, вида, черты — не входит в лимит)', type: 'check', full: true },
   { k: 'x', label: 'Описание', type: 'textarea', rows: 6 },
 ];
 const ITEM_FIELDS = () => [
@@ -1470,7 +1731,13 @@ function showSpellDb() {
 }
 
 const ACT = {
-  newChar() { const c = blankChar(); state.chars[c.id] = c; state.current = c.id; openSet.clear(); switchTab('main'); toast('Создан новый персонаж'); },
+  newChar() { openWizard('new'); },
+  newBlank() { closeModal(); const c = blankChar(); state.chars[c.id] = c; state.current = c.id; openSet.clear(); switchTab('main'); toast('Создан новый персонаж'); },
+  originWizard() { openWizard('origin'); },
+  wizNext() { if (!wizError(W.step)) { W.step = Math.min(wizLast(), W.step + 1); renderWizard(); } },
+  wizPrev() { W.step = Math.max(0, W.step - 1); renderWizard(); },
+  wizGo(el) { const i = +el.dataset.i; if (i <= W.step) { W.step = i; renderWizard(); } },
+  wizFinish() { wizFinish(); },
   dupChar() { const c = JSON.parse(JSON.stringify(ch())); c.id = uid(); c.info.name += ' (копия)'; state.chars[c.id] = c; state.current = c.id; toast('Создана копия'); },
   deleteChar() {
     const c = ch();
@@ -1593,7 +1860,24 @@ const ACT = {
   delAttack(el) { const c = ch(), a = findById(c.attacks, el.dataset.id); if (confirmBox(`Удалить атаку «${a.n}»?`)) c.attacks = c.attacks.filter((x) => x !== a); },
   atkRoll(el) {
     const c = ch(), a = findById(c.attacks, el.dataset.id);
+    if (a.ammo) {
+      const it = ammoItem(c, a);
+      if (!it || +it.qty <= 0) { toast(`🏹 Нет боеприпасов «${esc(a.ammo)}» в инвентаре — добавьте их из каталога`, 'fumble'); return; }
+      it.qty = +it.qty - 1;
+      c.combat.ammoSpent = { ...(c.combat.ammoSpent || {}), [it.id]: ((c.combat.ammoSpent || {})[it.id] || 0) + 1 };
+    }
     rollD20(`Атака: ${a.n}`, attackBonus(c, a), { attack: true, kind: 'attack' });
+    if (a.ammo) { const left = ammoLeft(c, a); if (left <= 5) toast(`🏹 ${esc(a.ammo)}: осталось ${left}`); }
+  },
+  // После боя можно найти половину потраченных боеприпасов (округление вниз)
+  recoverAmmo() {
+    const c = ch(), spent = c.combat.ammoSpent || {}, got = [];
+    Object.entries(spent).forEach(([id, n]) => {
+      const it = findById(c.items, id), back = Math.floor(n / 2);
+      if (it && back) { it.qty = (+it.qty || 0) + back; got.push(`${it.n}: +${back}`); }
+    });
+    c.combat.ammoSpent = {};
+    toast(got.length ? `🏹 Собрано: ${esc(got.join(', '))}` : 'Нечего собирать');
   },
   dmgRoll(el) { const c = ch(), a = findById(c.attacks, el.dataset.id), crit = !!el.dataset.crit; rollDice(`${crit ? 'КРИТ ' : ''}Урон: ${a.n} (${a.type})`, dmgExpr(c, a, crit)); },
   spellAttack() { rollD20('Атака заклинанием', spellAtk(ch()), { attack: true, kind: 'attack' }); },
@@ -1606,7 +1890,12 @@ const ACT = {
   },
   editSpell(el) { const s = findById(ch().spells, el.dataset.id); formModal('Изменить заклинание', SPELL_FIELDS(), s, (v) => { Object.assign(s, v); s.l = +s.l; }); },
   delSpell(el) { const c = ch(), s = findById(c.spells, el.dataset.id); if (confirmBox(`Удалить заклинание «${s.n}»?`)) c.spells = c.spells.filter((x) => x !== s); },
-  togglePrep(el) { const s = findById(ch().spells, el.dataset.id); s.prep = !s.prep; },
+  togglePrep(el) {
+    const c = ch(), s = findById(c.spells, el.dataset.id);
+    s.prep = !s.prep;
+    const lim = spellLimits(c).prep;
+    if (s.prep && lim != null && spellCounts(c).prep > lim) toast(`⚠ Подготовлено больше, чем позволяют правила (${lim}). Снимите галочку с другого заклинания.`, 'fumble');
+  },
   castSpell(el) {
     const c = ch(), s = findById(c.spells, el.dataset.id);
     if (+s.l === 0) { doCast(s, 0); return; }
@@ -1753,7 +2042,7 @@ const ACT = {
     const src = `${T.cls} ${CN}`;
     feats.forEach((f, i) => {
       if (S.skip.has(i)) return;
-      if (!c.features.some((x) => x.n === f && x.src === src)) c.features.push({ id: uid(), n: f, src, x: '' });
+      if (!c.features.some((x) => x.n === f && x.src === src)) c.features.push({ id: uid(), n: f, src, x: featureDesc(T.cls, f) });
     });
     if (T.cls === 'Бард' && CN >= 2) c.combat.jack = true;
     const cap = CN === 20 && CAPSTONE[T.cls];
@@ -1854,7 +2143,7 @@ const ACT = {
   goTab(el) { switchTab(el.dataset.tabGo); },
 };
 // Действия, которые не меняют персонажа (не нужно сохранять/перерисовывать)
-const NO_RENDER = new Set(['exportChar', 'importChar', 'toggleDice', 'clearLog', 'closeModal', 'skillInfo', 'condInfo', 'masteryInfo', 'addSpellDb', 'addClassRes', 'shortRest','addAttack', 'editAttack', 'addSpellCustom', 'editSpell', 'addItem', 'editItem', 'addResource', 'editRes', 'addFeature', 'editFeature', 'goTab', 'abilGen', 'genMode', 'genPb', 'genRoll', 'genReset', 'levelUp', 'lvlRoll', 'openCatalog', 'catTab', 'addEffect', 'sneak', 'bardDie', 'radiantStrike', 'addFeat', 'undo']);
+const NO_RENDER = new Set(['exportChar', 'importChar', 'toggleDice', 'clearLog', 'closeModal', 'skillInfo', 'condInfo', 'masteryInfo', 'addSpellDb', 'addClassRes', 'shortRest','addAttack', 'editAttack', 'addSpellCustom', 'editSpell', 'addItem', 'editItem', 'addResource', 'editRes', 'addFeature', 'editFeature', 'goTab', 'abilGen', 'genMode', 'genPb', 'genRoll', 'genReset', 'levelUp', 'lvlRoll', 'openCatalog', 'catTab', 'addEffect', 'sneak', 'bardDie', 'radiantStrike', 'addFeat', 'undo', 'newChar', 'originWizard', 'wizNext', 'wizPrev', 'wizGo']);
 
 // Высота закреплённой шапки — под ней закрепляется панель вкладок (на телефоне шапка не закреплена)
 function syncStickyOffset() {

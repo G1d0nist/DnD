@@ -19,7 +19,7 @@
   <div class="brand">⚔ <span>Лист персонажа</span> <small>D&amp;D 5.5 · 2024</small></div>
   <div class="charpick">
     <select id="charSelect" title="Выбрать персонажа"></select>
-    <button data-act="newChar" title="Новый персонаж">＋ Новый</button>
+    <button data-act="newChar" title="Новый персонаж (мастер создания)">＋ Новый</button>
     <button data-act="dupChar" title="Копия персонажа">⧉</button>
     <button data-act="exportChar" title="Экспорт в файл JSON">⭳ Экспорт</button>
     <button data-act="importChar" title="Импорт из файла JSON">⭱ Импорт</button>
@@ -89,6 +89,7 @@
         <div id="multiBox" class="multi"></div>
         <div class="row gap mt wrap">
           <button class="primary" data-act="levelUp">⬆ Новый уровень</button>
+          <button data-act="originWizard" title="Применить вид и предысторию 2024: скорость, размер, черты, навыки, бонусы характеристик, черта происхождения">🧬 Вид и предыстория</button>
           <button data-act="applyClass" title="Шаблон применяется сам при выборе класса; кнопка — применить заново">⚙ Шаблон класса заново</button>
           <button data-act="calcHp">❤ Рассчитать макс. хиты (среднее)</button>
           <span class="muted small" id="xpHint"></span>
@@ -172,7 +173,7 @@
       </div>
 
       <div class="card span-all">
-        <div class="row between wrap gap"><h2>Атаки</h2><div class="row gap"><button data-act="openCatalog" data-t="weapons">📖 Каталог оружия</button><button data-act="addAttack">＋ Атака</button></div></div>
+        <div class="row between wrap gap"><h2>Атаки</h2><div class="row gap wrap"><button id="recoverAmmo" data-act="recoverAmmo" hidden title="После боя можно найти половину выпущенных боеприпасов"></button><button data-act="openCatalog" data-t="weapons">📖 Каталог оружия</button><button data-act="addAttack">＋ Атака</button></div></div>
         <div id="attackList" class="list"></div>
       </div>
 
@@ -226,7 +227,7 @@
       </div>
       <div class="card span-all">
         <div class="row between wrap gap">
-          <h2>Заклинания <span class="muted small" id="prepCount"></span></h2>
+          <div class="row gap wrap"><h2>Заклинания</h2><span class="row gap wrap small" id="prepCount"></span></div>
           <div class="row gap wrap">
             <input id="spellFilter" placeholder="Поиск…" class="w-search">
             <label class="check"><input type="checkbox" id="spellOnlyPrep"> Только подготовленные</label>
