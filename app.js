@@ -892,6 +892,7 @@ function classPanelItems(c) {
 }
 function renderClassPanel() {
   const c = ch(), items = classPanelItems(c), res = c.resources.filter((r) => r.max > 0);
+  $('#classCard').hidden = false; // всегда есть блок полученного вдохновения
   $('#classRes').innerHTML = receivedHtml(c) + res.map((r) => resCardHtml(c, r, true)).join('');
   $('#classPanel').innerHTML = items.map((i) => `<div class="cp-item ${i.on ? 'on' : ''}"><div class="cp-n">${esc(i.n)}</div><div class="cp-v">${esc(String(i.v))}</div>
     ${i.sub ? `<div class="muted small">${esc(i.sub)}</div>` : ''}${i.btn ? `<div class="cp-btns">${i.btn}</div>` : ''}</div>`).join('');
