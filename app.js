@@ -223,13 +223,16 @@ const curSpeed = (c) => (c.combat.conditions.some((k) => SPEED_ZERO.includes(k))
 // Ярость варвара — активна, пока в эффектах есть «Ярость»
 const raging = (c) => c.effects.some((e) => e.n === 'Ярость');
 const rageDmg = (c) => { const B = clsLvl(c, 'Варвар'); return B >= 16 ? 4 : B >= 9 ? 3 : 2; };
-const usesStr = (c, a) => a.ability === 'str' || (a.ability === 'fin' && am(c, 'str') >= am(c, 'dex'));
+// «Сила или Ловкость» (фехтовальное оружие, безоружный удар монаха): берётся вариант с бо́льшим уроном.
+// В ярости урон Силой получает бонус ярости — поэтому Сила может оказаться выгоднее даже при меньшем модификаторе.
+const finUsesStr = (c) => am(c, 'str') + (raging(c) ? rageDmg(c) : 0) >= am(c, 'dex');
+const usesStr = (c, a) => a.ability === 'str' || (a.ability === 'fin' && finUsesStr(c));
 const isLucky = (c) => /полурослик|halfling/i.test(c.info.species);
 const hpPerLevelBonus = (c) => (/дварф|dwarf/i.test(c.info.species) ? 1 : 0) + (hasFeat(c, 'tough') || c.features.some((f) => /крепкий|tough/i.test(f.n)) ? 2 : 0);
 // Дальнобойное оружие — дистанция вида «80/320 фт» (метательное записано как «5 фт · бросок …»)
 const isRangedWeapon = (a) => a.ability !== 'spell' && /^\d+\/\d+/.test(a.range || '');
 // ability: характеристика, 'spell' — заклинательная, 'fin' — лучшая из Силы и Ловкости (фехтовальное оружие)
-const abilFor = (c, a) => (a.ability === 'spell' ? spellMod(c) : a.ability === 'fin' ? Math.max(am(c, 'str'), am(c, 'dex')) : am(c, a.ability));
+const abilFor = (c, a) => (a.ability === 'spell' ? spellMod(c) : a.ability === 'fin' ? am(c, finUsesStr(c) ? 'str' : 'dex') : am(c, a.ability));
 const atkAbilMod = (c, a) => abilFor(c, a) + (a.ability === 'spell' ? (+c.spellcasting.bonus || 0) : 0);
 const attackBonus = (c, a) => atkAbilMod(c, a) + (a.prof ? pb(c) : 0) + (+a.hit || 0) + (hasFeat(c, 'archery') && isRangedWeapon(a) ? 2 : 0);
 const dmgMod = (c, a) => (a.addMod ? abilFor(c, a) : 0) + (+a.dmgBonus || 0) + (raging(c) && a.ability !== 'spell' && usesStr(c, a) ? rageDmg(c) : 0);
@@ -667,6 +670,7 @@ function renderCombat() {
       <span class="li-title" data-act="toggleOpen" data-id="${a.id}">${esc(a.n)}</span>
       <span class="li-sub">${fmt(attackBonus(c, a))} к попаданию · ${esc(dmgExpr(c, a))} ${esc(a.type)}${a.range ? ' · ' + esc(a.range) : ''}</span>
       ${a.ammo ? `<span class="tag ${ammoLeft(c, a) ? 'r' : 'c'}" title="Боеприпасы из инвентаря">🏹 ${esc(a.ammo)}: ${ammoLeft(c, a)}</span>` : ''}
+      ${a.ability === 'fin' ? `<span class="tag" title="Сила или Ловкость выбирается автоматически — по большему урону (в ярости учитывается её бонус к урону Силой)">${finUsesStr(c) ? 'СИЛ' : 'ЛОВ'}${raging(c) && finUsesStr(c) ? ' · ярость' : ''}</span>` : ''}
       ${a.ma ? `<span class="tag e" title="Кость урона растёт с уровнем: к6 → к8 (5) → к10 (11) → к12 (17)">Боевые искусства</span>` : ''}
       ${a.mastery && m ? `<span class="tag g" data-act="masteryInfo" data-k="${a.mastery}" style="cursor:pointer">⚔ ${m.n}</span>` : ''}
       <span class="btns"><button data-act="atkRoll" data-id="${a.id}">🎯 Атака</button><button data-act="dmgRoll" data-id="${a.id}">Урон</button><button data-act="dmgRoll" data-crit="1" data-id="${a.id}">Крит</button>
@@ -806,10 +810,21 @@ function resCardHtml(c, r, compact) {
       ${compact ? '' : `<button class="ghost" data-act="editRes" data-id="${r.id}">✎</button>${managed ? '' : `<button class="ghost" data-act="delRes" data-id="${r.id}">✕</button>`}`}</div>` : ''}
     ${openSet.has(r.id) && r.x ? `<div class="li-desc">${esc(r.x)}</div>` : ''}</div>`;
 }
+// Вдохновение, полученное от других: героическое (от мастера) и кость вдохновения барда (держится 1 час)
+const bardicHeld = (c) => c.effects.find((e) => e.bardic);
+function receivedHtml(c) {
+  const insp = !!c.combat.inspiration, b = bardicHeld(c);
+  return `<div class="res recv"><div class="row between gap"><span class="rn">★ Героическое вдохновение</span><span class="rcount">${insp ? 1 : 0}<span class="muted small"> / 1</span></span></div>
+      <div class="muted small">От мастера за хорошую игру или от «Находчивости» человека. Можно перебросить любой свой кубик — нужно взять новый результат.</div>
+      <div class="rctl"><button data-act="toggleInsp" class="${insp ? '' : 'primary'}">${insp ? 'Потратить' : 'Получить'}</button></div></div>
+    <div class="res recv"><div class="row between gap"><span class="rn">🎵 Вдохновение барда (получено)</span>${b ? `<span class="rcount">к${b.die}</span>` : '<span class="muted small">нет</span>'}</div>
+      <div class="muted small">Кость от барда-союзника: после проваленного к20-теста (атака, проверка, спасбросок) бросьте её и добавьте к результату. Действует 1 час, одновременно — только одна.</div>
+      <div class="rctl">${b ? `<button class="primary" data-act="bardicUse">🎲 Бросить к${b.die}</button><span class="muted small">ещё ${fmtRounds(b.left)}</span><button class="ghost" data-act="bardicDrop" title="Убрать">✕</button>`
+        : `<span class="muted small">Получить:</span>${[6, 8, 10, 12].map((d) => `<button data-act="bardicGet" data-d="${d}">к${d}</button>`).join('')}`}</div></div>`;
+}
 function renderFeatures() {
   const c = ch();
-  $('#resList').innerHTML = c.resources.map((r) => resCardHtml(c, r, false)).join('')
-    || '<div class="muted">Укажите класс во вкладке «Персонаж» — ресурсы (Ци, Ярость, Вдохновение…) появятся сами. Свои ресурсы можно добавить кнопкой выше.</div>';
+  $('#resList').innerHTML = receivedHtml(c) + c.resources.map((r) => resCardHtml(c, r, false)).join('');
 
   const slots = featSlots(c);
   $('#featSlots').innerHTML = Object.entries(FEAT_SLOTS).filter(([k]) => slots[k]).map(([k, s]) => {
@@ -877,8 +892,7 @@ function classPanelItems(c) {
 }
 function renderClassPanel() {
   const c = ch(), items = classPanelItems(c), res = c.resources.filter((r) => r.max > 0);
-  $('#classCard').hidden = !items.length && !res.length;
-  $('#classRes').innerHTML = res.map((r) => resCardHtml(c, r, true)).join('');
+  $('#classRes').innerHTML = receivedHtml(c) + res.map((r) => resCardHtml(c, r, true)).join('');
   $('#classPanel').innerHTML = items.map((i) => `<div class="cp-item ${i.on ? 'on' : ''}"><div class="cp-n">${esc(i.n)}</div><div class="cp-v">${esc(String(i.v))}</div>
     ${i.sub ? `<div class="muted small">${esc(i.sub)}</div>` : ''}${i.btn ? `<div class="cp-btns">${i.btn}</div>` : ''}</div>`).join('');
 }
@@ -1286,6 +1300,7 @@ const ACT_LABELS = {
   catArmor: 'доспех из каталога', catShield: 'щит', catGear: 'снаряжение из каталога', addMulti: 'мультикласс', delMulti: 'удаление класса',
   delAttack: 'удаление атаки', atkRoll: 'боеприпас', recoverAmmo: 'сбор боеприпасов', delSpell: 'удаление заклинания', delItem: 'удаление предмета', delRes: 'удаление ресурса', delFeature: 'удаление умения',
   calcHp: 'расчёт хитов', applyClass: 'шаблон класса', abilEdit: 'характеристики',
+  bardicGet: 'вдохновение барда', bardicUse: 'вдохновение барда', bardicDrop: 'вдохновение барда',
 };
 function pushUndo(id, before, label) {
   const st = undoStacks[id] || (undoStacks[id] = []);
@@ -1814,6 +1829,19 @@ const ACT = {
     rollD20('Инициатива', initBonus(c), { kind: 'init', abil: 'dex' });
   },
   toggleInsp() { const cb = ch().combat; cb.inspiration = !cb.inspiration; toast(cb.inspiration ? '★ Получено героическое вдохновение' : 'Вдохновение потрачено — перебросьте кость'); },
+  bardicGet(el) {
+    const c = ch(), d = +el.dataset.d;
+    addEffect(c, { n: 'Вдохновение барда', left: 600, conc: false, bardic: true, die: d, x: `Кость к${d}: добавьте к проваленному к20-тесту в течение часа.` });
+    toast(`🎵 Получена кость вдохновения барда к${d}`, 'crit');
+  },
+  bardicUse() {
+    const c = ch(), b = bardicHeld(c);
+    if (!b) return;
+    const r = rollDice('Вдохновение барда — добавьте к броску', `1d${b.die}`);
+    c.effects = c.effects.filter((e) => e !== b);
+    if (r) toast(`🎵 +${r.total} к проваленному броску`);
+  },
+  bardicDrop() { const c = ch(); c.effects = c.effects.filter((e) => !e.bardic); },
   shortRest() {
     openModal(`<h2>☕ Короткий отдых</h2><p>Хиты: <b id="srHp"></b></p>
       <p class="muted small">Потратить кость хитов (бросок + мод. Телосложения):</p><div id="srHd" class="row gap wrap"></div>

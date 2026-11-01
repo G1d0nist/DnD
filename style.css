@@ -296,6 +296,8 @@ button.stat:hover { border-color: var(--gold); }
 .feat-pick select { width: auto; max-width: 100%; }
 .feat-pick p { margin: 6px 0 0; }
 #classRes:empty { display: none; }
+.res.recv { border-style: dashed; }
+.res.recv .rctl button { padding: 3px 9px; }
 #classRes .res { padding: 8px; }
 
 /* Умения класса и быстрые заклинания */
