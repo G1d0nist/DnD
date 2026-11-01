@@ -28,6 +28,9 @@ const me = () => (game && user ? (game.members || {})[user.uid] : null);
 const canMove = (t) => isDM() || (user && t.owner === user.uid);
 const die = (n) => { const a = new Uint32Array(1); crypto.getRandomValues(a); return 1 + (a[0] % n); };
 const colorOf = (s) => PALETTE[[...String(s)].reduce((h, ch) => (h * 31 + ch.charCodeAt(0)) >>> 0, 7) % PALETTE.length];
+const condName = (k) => ((typeof CONDITIONS !== 'undefined' && CONDITIONS.find((c) => c.k === k)) || { n: k }).n;
+const INCAP = ['incapacitated', 'paralyzed', 'petrified', 'stunned', 'unconscious'];
+const speedOf = (t) => (t.speed != null && t.speed !== '' ? +t.speed || 0 : 30);
 
 /* ---------- Запуск ---------- */
 function boot() {
@@ -77,7 +80,7 @@ async function joinGame(code, charId) {
 function subscribe(gid, code) {
   unsubs.forEach((u) => u());
   unsubs = [];
-  game = { id: gid, code, meta: null, members: {}, tokens: {}, map: {}, init: null };
+  game = { id: gid, code, meta: null, members: {}, tokens: {}, map: {}, init: null, econ: {} };
   ls.set(GAME_KEY, JSON.stringify({ id: gid, code, uid: user.uid }));
   const lost = (e) => { if (String(e && e.code).includes('PERMISSION')) { app.toast('Нет доступа к игре — возможно, вас исключили'); leaveLocal(); renderAll(); } };
   const on = (p, fn) => unsubs.push(R.onValue(ref(gpath(p)), (s) => { if (game && game.id === gid) { fn(s.val()); renderAll(); } }, lost));
@@ -86,6 +89,7 @@ function subscribe(gid, code) {
   on('tokens', (v) => { game.tokens = v || {}; });
   on('map', (v) => { game.map = v || {}; drawTerrain(); });
   on('init', (v) => { game.init = v; checkMyTurn(); });
+  on('econ', (v) => { game.econ = v || {}; });
   // Присутствие: онлайн, пока открыта вкладка
   unsubs.push(R.onValue(ref('.info/connected'), (s) => {
     if (!s.val() || !game) return;
@@ -191,8 +195,20 @@ function drawTerrain() {
   for (let y = 0; y <= H(); y++) { g.moveTo(0, y * CELL + 0.5); g.lineTo(cv.width, y * CELL + 0.5); }
   g.stroke();
 }
-// Стоимость пути до клеток (футы): 5 за клетку (по диагонали тоже, правила 2024), ×2 в труднопроходимой; стены непроходимы
-function reachMap(sx, sy, limit) {
+// Клетки, занятые другими существами: сквозь союзника, недееспособного или существо на 2+ размера больше/меньше пройти можно
+// (это труднопроходимая местность), сквозь врага — нельзя. Закончить перемещение в занятой клетке нельзя.
+function occupancy(moverId) {
+  const mv = game.tokens[moverId], occ = new Map();
+  Object.entries(game.tokens || {}).forEach(([id, t]) => {
+    if (id === moverId || (t.hidden && !isDM())) return;
+    const s = t.size || 1, incap = (t.hpMax && (t.hp || 0) <= 0) || (t.cond || []).some((k) => INCAP.includes(k));
+    const pass = t.kind === mv.kind || incap || Math.abs(s - (mv.size || 1)) >= 2;
+    for (let dx = 0; dx < s; dx++) for (let dy = 0; dy < s; dy++) occ.set(`${t.x + dx}_${t.y + dy}`, pass ? 'pass' : 'block');
+  });
+  return occ;
+}
+// Стоимость пути до клеток (футы): 5 за клетку (по диагонали тоже, правила 2024), +5 в труднопроходимой, +5 ползком; стены непроходимы
+function reachMap(sx, sy, limit, occ, crawl) {
   const dist = new Map(), q = [[sx, sy, 0]];
   dist.set(`${sx}_${sy}`, 0);
   while (q.length) {
@@ -202,9 +218,9 @@ function reachMap(sx, sy, limit) {
       if (!dx && !dy) continue;
       const nx = x + dx, ny = y + dy, k = `${nx}_${ny}`;
       if (nx < 0 || ny < 0 || nx >= W() || ny >= H()) continue;
-      const T = TERRAIN[(game.map || {})[k]];
-      if (T && T.block) continue;
-      const nd = d + 5 * (T && T.cost ? T.cost : 1);
+      const T = TERRAIN[(game.map || {})[k]], o = occ && occ.get(k);
+      if ((T && T.block) || o === 'block') continue;
+      const nd = d + 5 + ((T && T.cost) || o === 'pass' ? 5 : 0) + (crawl ? 5 : 0);
       if (nd > limit || (dist.has(k) && dist.get(k) <= nd)) continue;
       dist.set(k, nd);
       q.push([nx, ny, nd]);
@@ -212,11 +228,12 @@ function reachMap(sx, sy, limit) {
   }
   return dist;
 }
-function drawRange(dist, speed) {
+function drawRange(dist, speed, occ) {
   const cv = $('#tblRange'), g = cv.getContext('2d');
   g.clearRect(0, 0, cv.width, cv.height);
   if (!dist) return;
   dist.forEach((d, k) => {
+    if (occ && occ.has(k)) return; // остановиться там нельзя
     const [x, y] = k.split('_').map(Number);
     g.fillStyle = d <= speed ? 'rgba(90,158,90,.28)' : 'rgba(212,166,74,.16)';
     g.fillRect(x * CELL + 1, y * CELL + 1, CELL - 2, CELL - 2);
@@ -236,7 +253,8 @@ function renderTokens() {
     el.style.width = el.style.height = s * CELL + 'px';
     el.style.setProperty('--tc', t.color || (t.kind === 'npc' ? '#c94a3d' : '#d4a64a'));
     el.className = `tok ${t.kind} ${canMove(t) ? 'mine' : ''} ${selId === id ? 'sel' : ''} ${cur && cur.tokenId === id ? 'turn' : ''} ${t.hidden ? 'hid' : ''} ${(t.hp || 0) <= 0 && t.hpMax ? 'down' : ''}`;
-    el.title = `${t.name}${showNums ? ` · ${t.hp}/${t.hpMax} хитов${t.ac ? ` · КД ${t.ac}` : ''}` : ''}${(t.cond || []).length ? ` · ${t.cond.join(', ')}` : ''}`;
+    const ec = inFight() ? econ(id) : {};
+    el.title = `${t.name}${showNums ? ` · ${t.hp}/${t.hpMax} хитов${t.ac ? ` · КД ${t.ac}` : ''}` : ''}${(t.cond || []).length ? ` · ${t.cond.map(condName).join(', ')}` : ''}${ec.dodge ? ' · уклоняется' : ''}${ec.dis ? ' · отходит' : ''}`;
     const html = `<div class="tok-face">${esc((t.name || '?').trim().slice(0, 2))}</div>
       ${t.hpMax ? `<div class="tok-hp"><div style="width:${pct * 100}%;background:${pct > .5 ? '#5a9e5a' : pct > .25 ? '#d4a64a' : '#c94a3d'}"></div></div>` : ''}
       <div class="tok-name">${esc(t.name || '')}${(t.cond || []).length ? ` <span class="tok-cond">●${t.cond.length}</span>` : ''}</div>`;
@@ -265,7 +283,11 @@ function onDown(e) {
   if (tool === 'place') {
     tool = 'move'; renderTools(); $('#tblBoard').dataset.tool = tool;
     const own = tokEl && game.tokens[tokEl.dataset.tok] && canMove(game.tokens[tokEl.dataset.tok]);
-    if (!own) { placeMyToken(p.x, p.y); return; }
+    if (!own) {
+      if (inFight() && game.tokens[`pc_${user.uid}`]) { app.toast('В бою персонаж не переставляется — перетаскивайте его в свой ход'); return; }
+      placeMyToken(p.x, p.y);
+      return;
+    }
   }
   if (tool === 'enemy') { newEnemyDialog(p.x, p.y); return; }
   if (TERRAIN[tool] || tool === 'erase') {
@@ -275,9 +297,22 @@ function onDown(e) {
     const id = tokEl.dataset.tok, t = game.tokens[id];
     selId = id; renderSide(); renderTokens();
     if (!t || !canMove(t)) return;
-    const speed = +t.speed || 30;
-    drag = { kind: 'token', id, sx: t.x, sy: t.y, offX: p.px - t.x * CELL, offY: p.py - t.y * CELL, speed, dist: reachMap(t.x, t.y, speed * 2), moved: false };
-    drawRange(drag.dist, speed);
+    const speed = speedOf(t), dm = isDM();
+    const dg = { kind: 'token', id, sx: t.x, sy: t.y, offX: p.px - t.x * CELL, offY: p.py - t.y * CELL, speed, moved: false };
+    if (inFight()) {
+      // В бою: игрок ходит только в свой ход и не дальше оставшейся скорости; мастер — без ограничений
+      const turn = isTurnOf(id);
+      if (!dm && !turn) { app.toast('Сейчас не ваш ход — дождитесь своей очереди в инициативе'); return; }
+      const mv = moveInfo(id), occ = occupancy(id);
+      if (!dm && !mv.left) { app.toast(mv.speed ? `Скорость на этот ход потрачена${mv.canDash ? ' — можно сделать Рывок' : ''}` : 'Скорость 0 — персонаж не может перемещаться'); return; }
+      Object.assign(dg, { fight: true, counted: turn, occ, left: turn ? mv.left : Infinity,
+        dist: reachMap(t.x, t.y, dm ? 9999 : mv.left + (mv.canDash ? mv.speed : 0), occ, mv.prone) });
+      drawRange(dg.dist, turn ? mv.left : speed * 2, occ);
+    } else {
+      dg.dist = reachMap(t.x, t.y, speed * 2);
+      drawRange(dg.dist, speed);
+    }
+    drag = dg;
     tokEl.classList.add('dragging');
   } else {
     const w = $('#tblWrap');
@@ -300,7 +335,14 @@ function onMove(e) {
     if (el) { el.style.left = p.px - drag.offX + 'px'; el.style.top = p.py - drag.offY + 'px'; }
     const tx = Math.round((p.px - drag.offX) / CELL), ty = Math.round((p.py - drag.offY) / CELL);
     const d = drag.dist.get(`${tx}_${ty}`);
-    hint(tx === drag.sx && ty === drag.sy ? '' : d == null ? 'недоступно (дальше двойной скорости)' : `${d} фт${d > drag.speed ? ' — нужен Рывок' : ''}`, e);
+    let txt;
+    if (tx === drag.sx && ty === drag.sy) txt = '';
+    else if (!drag.fight) txt = d == null ? 'дальше двойной скорости' : `${d} фт${d > drag.speed ? ' — с Рывком' : ''}`;
+    else if (drag.occ.has(`${tx}_${ty}`)) txt = 'клетка занята';
+    else if (d == null) txt = isDM() ? 'путь закрыт' : 'не хватает скорости';
+    else if (!drag.counted) txt = `${d} фт`;
+    else txt = d <= drag.left ? `${d} фт · останется ${drag.left - d}` : `${d} фт — не хватает ${d - drag.left} фт${isDM() ? '' : ', нужен Рывок'}`;
+    hint(txt, e);
   }
 }
 function onUp(e) {
@@ -319,9 +361,23 @@ function onUp(e) {
     const x = Math.max(0, Math.min(W() - s, Math.round((p.px - d.offX) / CELL))), y = Math.max(0, Math.min(H() - s, Math.round((p.py - d.offY) / CELL)));
     const T = TERRAIN[(game.map || {})[`${x}_${y}`]];
     if (T && T.block) { app.toast('Там стена'); renderTokens(); return; }
+    if (x === d.sx && y === d.sy) { renderTokens(); return; }
+    const upd = { [`tokens/${d.id}/x`]: x, [`tokens/${d.id}/y`]: y };
+    if (d.fight) {
+      const cost = d.dist.get(`${x}_${y}`);
+      let busy = false;
+      for (let dx = 0; dx < s; dx++) for (let dy = 0; dy < s; dy++) if (d.occ.has(`${x + dx}_${y + dy}`)) busy = true;
+      if (busy) { app.toast('Клетка занята другим существом'); renderTokens(); return; }
+      if (!isDM() && (cost == null || cost > d.left)) {
+        app.toast(cost == null ? 'Туда не дойти' : `Не хватает скорости: нужно ${cost} фт, осталось ${d.left} фт`);
+        renderTokens();
+        return;
+      }
+      if (d.counted) upd[`econ/${d.id}/move`] = (econ(d.id).move || 0) + (cost != null ? cost : 5 * Math.max(Math.abs(x - d.sx), Math.abs(y - d.sy)));
+    }
     t.x = x; t.y = y;
     renderTokens();
-    R.update(ref(gpath(`tokens/${d.id}`)), { x, y }).catch((err) => { app.toast(`Не удалось переместить: ${esc(err.code || err.message)}`); });
+    R.update(ref(gpath()), upd).catch((err) => { app.toast(`Не удалось переместить: ${esc(err.code || err.message)}`); });
   }
 }
 function paintAt(p) {
@@ -366,12 +422,50 @@ function currentEntry() {
   const l = initList();
   return l.length ? l[(game.init.turn || 0) % l.length] : null;
 }
+// Новый ход существа: его перемещение, действия и реакция восстанавливаются
 function nextTurn() {
   const l = initList();
   if (!l.length) return;
   let turn = (game.init.turn || 0) + 1, round = game.init.round || 1;
   if (turn >= l.length) { turn = 0; round += 1; }
-  R.update(ref(gpath('init')), { turn, round });
+  R.update(ref(gpath()), { 'init/turn': turn, 'init/round': round, [`econ/${l[turn].tokenId || l[turn].id}`]: null });
+}
+
+/* ---------- Действия и перемещение в бою ---------- */
+// games/{id}/econ/{tokenId}: move — потрачено футов; dash — сколько раз Рывок; a, b, r — потрачены действие, бонусное действие, реакция;
+// dis, dodge — совершены Отход, Уклонение. Запись сбрасывается в начале хода этого существа.
+const inFight = () => !!(game && game.init && game.init.active);
+const econ = (id) => (game.econ || {})[id] || {};
+const isTurnOf = (id) => { const c = currentEntry(); return !!(c && c.tokenId === id); };
+// Сводка листа владельца токена — нужна, чтобы знать бонусные действия класса
+function charOf(t) {
+  if (t.kind !== 'pc') return null;
+  const m = me();
+  if (user && t.owner === user.uid && m && m.charId) return app.summary(m.charId);
+  return (game.members[t.owner] || {}).char || null;
+}
+function moveInfo(id) {
+  const t = game.tokens[id], e = econ(id), speed = speedOf(t), cond = t.cond || [];
+  const incap = cond.some((k) => INCAP.includes(k)), bonus = (charOf(t) || {}).bonus || [];
+  const total = speed * (1 + (e.dash || 0));
+  return { speed, total, used: e.move || 0, left: Math.max(0, total - (e.move || 0)), prone: cond.includes('prone'), incap, bonus,
+    canDash: !incap && speed > 0 && (!e.a || (bonus.includes('dash') && !e.b)) };
+}
+async function econAct(a, id, k) {
+  const t = game.tokens[id], e = econ(id);
+  if (!t || !canMove(t)) return;
+  let upd;
+  if (a === 'eco') upd = { [k]: e[k] ? null : 1 };
+  else if (a === 'dash' || a === 'dashB') upd = { [a === 'dash' ? 'a' : 'b']: 1, dash: (e.dash || 0) + 1 };
+  else if (a === 'dis' || a === 'disB') upd = { [a === 'dis' ? 'a' : 'b']: 1, dis: 1 };
+  else if (a === 'dodge') upd = { a: 1, dodge: 1 };
+  else if (a === 'stand') {
+    // Встать: половина скорости, состояние снимается в листе и уходит на поле
+    upd = { move: (e.move || 0) + Math.ceil(speedOf(t) / 2) };
+    const m = me();
+    if (m && m.charId) app.setCond(m.charId, 'prone', false);
+  }
+  await R.update(ref(gpath(`econ/${id}`)), upd);
 }
 // Начало моего хода: уведомление и отсчёт эффектов в листе (раз за ход)
 function checkMyTurn() {
@@ -400,6 +494,7 @@ function renderAll() {
   layoutBoard();
   if (!$('#tblTerrain').dataset.drawn || $('#tblTerrain').dataset.drawn !== game.id) { $('#tblTerrain').dataset.drawn = game.id; drawTerrain(); }
   renderTokens();
+  renderTurn();
   renderInit();
   renderSide();
   renderMembers();
@@ -431,18 +526,49 @@ function renderTools() {
   $('#tblBoard').dataset.tool = tool; // курсор поля соответствует инструменту
   $('#tblTools').innerHTML = `<div class="seg">${t('move', '✋ Двигать', 'Перетаскивайте токены, по пустому месту — прокрутка')}
     ${isDM() ? t('wall', '▮ Стена') + t('difficult', '▦ Трудная') + t('water', '≈ Вода') + t('erase', '⌫ Ластик') + t('enemy', '＋ Враг', 'Нажмите на клетку, чтобы поставить существо') : ''}
-    ${!isDM() ? t('place', hasMine ? '📍 Переставить меня' : '📍 Поставить персонажа', 'Нажмите на клетку') : ''}</div>`;
+    ${!isDM() && !(hasMine && inFight()) ? t('place', hasMine ? '📍 Переставить меня' : '📍 Поставить персонажа', 'Нажмите на клетку') : ''}</div>`;
+}
+// Карточка хода: игроку — свой персонаж, мастеру — существо, чей сейчас ход
+function renderTurn() {
+  const box = $('#tblTurn'), dm = isDM();
+  let id = null;
+  if (inFight()) {
+    const c = currentEntry();
+    if (dm) id = c && game.tokens[c.tokenId] ? c.tokenId : null;
+    else if (user && game.tokens[`pc_${user.uid}`]) id = `pc_${user.uid}`;
+  }
+  if (!id) { box.hidden = true; return; }
+  box.hidden = false;
+  const t = game.tokens[id], e = econ(id), mv = moveInfo(id), turn = isTurnOf(id), canAct = (turn || dm) && !mv.incap;
+  const pip = (k, n, hintOk) => `<button class="pip ${e[k] ? 'used' : ''}" data-tbl="eco" data-id="${id}" data-k="${k}"
+    ${!dm && (k === 'r' ? mv.incap : !canAct || !turn) ? 'disabled' : ''} title="${e[k] ? 'Потрачено — нажмите, чтобы вернуть' : hintOk}">${e[k] ? '✕' : '●'} ${n}</button>`;
+  const btn = (a, label, title, ok) => (ok ? `<button data-tbl="${a}" data-id="${id}" title="${title}">${label}</button>` : '');
+  const half = Math.ceil(mv.speed / 2);
+  box.innerHTML = `<div class="row between"><h3>${dm ? `Ход: ${esc(t.name)}` : turn ? 'Ваш ход' : 'Ваши ресурсы хода'}</h3>${turn && !dm ? '<span class="badge">сейчас</span>' : ''}</div>
+    ${turn || dm ? `<div class="small">Перемещение: <b>${mv.left}</b> из ${mv.total} фт${e.dash ? ` · Рывок ×${e.dash}` : ''}${mv.prone ? ' · ползком (×2)' : ''}</div>
+    <div class="mvbar"><div style="width:${mv.total ? Math.min(100, (mv.left / mv.total) * 100) : 0}%"></div></div>`
+    : `<div class="small muted" style="margin-bottom:8px">Скорость ${mv.speed} фт — перемещение и действия в ваш ход, реакция доступна всегда</div>`}
+    <div class="pips">${pip('a', 'Действие', 'Атака, заклинание, Рывок и т. п. — нажмите, когда потратите')}${pip('b', 'Бонусное', 'Нажмите, когда потратите бонусное действие')}${pip('r', 'Реакция', 'Атака по возможности, «Щит» и т. п.; восстанавливается в начале вашего хода')}</div>
+    ${mv.incap ? '<p class="small warn-text">Недееспособен — не может совершать действия, бонусные действия и реакции.</p>' : ''}
+    ${canAct && turn ? `<div class="row gap wrap mt">
+      ${btn('dash', '🏃 Рывок', 'Действие: ещё одна скорость перемещения на этот ход', !e.a && mv.speed > 0)}
+      ${btn('dis', '↩ Отход', 'Действие: до конца хода ваше перемещение не провоцирует атаки по возможности', !e.a && !e.dis)}
+      ${btn('dodge', '🛡 Уклонение', 'Действие: до начала вашего следующего хода атаки по вам с помехой, спасброски Ловкости с преимуществом', !e.a && !e.dodge)}
+      ${btn('dashB', '🏃 Рывок бонусным', 'Хитрое действие / Шаг ветра: Рывок бонусным действием', mv.bonus.includes('dash') && !e.b && mv.speed > 0)}
+      ${btn('disB', '↩ Отход бонусным', 'Хитрое действие / Терпеливая оборона: Отход бонусным действием', mv.bonus.includes('dis') && !e.b && !e.dis)}
+      ${btn('stand', `⬆ Встать (${half} фт)`, 'Тратит половину скорости и снимает «Лежит ничком»', mv.prone && !dm && mv.speed > 0 && mv.left >= half)}
+    </div>` : ''}
+    ${e.dis || e.dodge ? `<div class="chips mt">${e.dis ? '<span class="chip on"><span>Отход</span></span>' : ''}${e.dodge ? '<span class="chip on"><span>Уклонение</span></span>' : ''}</div>` : ''}
+    ${turn && !dm ? '<div class="mt"><button class="primary" data-tbl="endTurn">✓ Закончить ход</button></div>' : ''}`;
 }
 function renderInit() {
   const l = initList(), cur = currentEntry(), inList = user && game.init && game.init.list && game.init.list[user.uid];
   const active = game.init && game.init.active;
   $('#tblRound').textContent = active ? `Раунд ${game.init.round || 1}` : 'вне боя';
-  const myTurn = cur && cur.owner === user.uid && cur.kind === 'pc';
   $('#tblInit').innerHTML = (l.length ? `<div class="list">${l.map((e) => `<div class="init-row ${cur && cur.id === e.id ? 'cur' : ''} ${e.kind}">
       <b>${e.roll}</b><span>${esc(e.name)}</span>${isDM() ? `<button class="ghost" data-tbl="initDel" data-id="${e.id}" title="Убрать">✕</button>` : ''}</div>`).join('')}</div>` : '<p class="muted small">Пока никто не бросил инициативу.</p>')
     + `<div class="row gap wrap mt">
       ${!isDM() && me() && !inList ? '<button class="primary" data-tbl="rollInit">🎲 Бросить инициативу</button>' : ''}
-      ${myTurn ? '<button class="primary" data-tbl="endTurn">✓ Закончить ход</button>' : ''}
       ${isDM() ? `<button data-tbl="rollNpc" title="Бросить за всех существ на поле">🎲 Враги</button>
         ${active ? '<button class="primary" data-tbl="next">▶ Следующий ход</button><button class="ghost" data-tbl="endFight">Закончить бой</button>'
           : `<button class="primary" data-tbl="startFight" ${l.length ? '' : 'disabled'}>⚔ Начать бой</button>`}` : ''}</div>`;
@@ -504,9 +630,10 @@ async function onClick(e) {
     } else if (a === 'npcInit') {
       const t = game.tokens[selId];
       await R.set(ref(gpath(`init/list/${selId}`)), { name: t.name, roll: die(20) + (+t.init || 0), owner: user.uid, kind: 'npc', tokenId: selId });
-    } else if (a === 'startFight') await R.update(ref(gpath('init')), { active: true, round: 1, turn: 0 });
+    } else if (a === 'startFight') await R.update(ref(gpath()), { 'init/active': true, 'init/round': 1, 'init/turn': 0, econ: null });
     else if (a === 'next' || a === 'endTurn') nextTurn();
-    else if (a === 'endFight') { if (app.confirm('Закончить бой и очистить инициативу?')) await R.remove(ref(gpath('init'))); }
+    else if (a === 'endFight') { if (app.confirm('Закончить бой и очистить инициативу?')) await R.update(ref(gpath()), { init: null, econ: null }); }
+    else if (['eco', 'dash', 'dashB', 'dis', 'disB', 'dodge', 'stand'].includes(a)) await econAct(a, b.dataset.id, b.dataset.k);
     else if (a === 'initDel') await R.remove(ref(gpath(`init/list/${b.dataset.id}`)));
     else if (a === 'unsel') { selId = null; renderSide(); renderTokens(); }
     else if (a === 'tokDel') { if (app.confirm('Убрать токен с поля?')) { await R.remove(ref(gpath(`tokens/${selId}`))); selId = null; } }

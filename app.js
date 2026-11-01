@@ -211,7 +211,15 @@ window.dndApp = {
     if (!c) return null;
     const cb = c.combat;
     return { name: c.info.name || 'Без имени', cls: classLabel(c), hp: +cb.hp || 0, hpMax: +cb.hpMax || 1, temp: +cb.temp || 0, ac: +cb.ac || 10,
-      cond: [...cb.conditions, ...(cb.exhaustion ? [`истощение ${cb.exhaustion}`] : [])], conc: cb.conc || '', speed: curSpeed(c), init: initBonus(c), size: c.info.size || 'Средний' };
+      cond: [...cb.conditions, ...(cb.exhaustion ? [`истощение ${cb.exhaustion}`] : [])], conc: cb.conc || '', speed: curSpeed(c), init: initBonus(c), size: c.info.size || 'Средний',
+      // Рывок и Отход бонусным действием: Хитрое действие плута, Шаг ветра / Терпеливая оборона монаха
+      bonus: clsLvl(c, 'Плут') >= 2 || clsLvl(c, 'Монах') >= 2 ? ['dash', 'dis'] : [] };
+  },
+  setCond(id, k, on) {
+    const c = state.chars[id];
+    if (!c || c.combat.conditions.includes(k) === !!on) return;
+    c.combat.conditions = on ? [...c.combat.conditions, k] : c.combat.conditions.filter((x) => x !== k);
+    if (c === ch()) { save(); render(); } else { c.updatedAt = Date.now(); lsSet(STORE, JSON.stringify(state)); }
   },
   rollInit(id) {
     if (state.current !== id && state.chars[id]) { state.current = id; render(); }

@@ -316,6 +316,13 @@ button.stat:hover { border-color: var(--gold); }
 .tbl-side { display: grid; gap: 10px; }
 .tbl-side .card { padding: 10px 12px; }
 .tbl-side h3 { margin: 0 0 6px; }
+.tbl-turn { border-color: var(--gold); }
+.mvbar { height: 8px; margin: 4px 0 8px; border-radius: 4px; background: var(--bg2); border: 1px solid var(--line); overflow: hidden; }
+.mvbar > div { height: 100%; background: var(--green); transition: width .2s; }
+.pips { display: flex; gap: 6px; flex-wrap: wrap; }
+.pip { flex: 1; min-width: 78px; padding: 4px 6px; border-radius: 7px; border: 1px solid var(--gold); background: #3b2e17; color: var(--gold2); font-size: 12px; }
+.pip.used { border-color: var(--line); background: var(--bg2); color: var(--muted); text-decoration: line-through; }
+.warn-text { color: #f3b1a8; }
 .init-row { display: grid; grid-template-columns: 34px 1fr auto; align-items: center; gap: 6px; padding: 4px 8px; border-radius: 7px; background: var(--bg2); border: 1px solid var(--line); }
 .init-row b { color: var(--gold2); text-align: center; }
 .init-row.npc span { color: #f3b1a8; }
