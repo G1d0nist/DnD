@@ -143,6 +143,16 @@ const abilFor = (c, a) => (a.ability === 'spell' ? spellMod(c) : a.ability === '
 const atkAbilMod = (c, a) => abilFor(c, a) + (a.ability === 'spell' ? (+c.spellcasting.bonus || 0) : 0);
 const attackBonus = (c, a) => atkAbilMod(c, a) + (a.prof ? pb(c) : 0) + (+a.hit || 0);
 const dmgMod = (c, a) => (a.addMod ? abilFor(c, a) : 0) + (+a.dmgBonus || 0);
+// Боевые искусства монаха (2024): кость урона безоружного удара по уровню
+const martialDie = (L) => (L >= 17 ? '1d12' : L >= 11 ? '1d10' : L >= 5 ? '1d8' : '1d6');
+function autoMartialArts(c) {
+  const monk = c.info.cls.trim() === 'Монах';
+  c.attacks.forEach((a) => {
+    // Нетронутый безоружный удар по умолчанию у монаха переводим на Боевые искусства
+    if (monk && !a.ma && a.n === 'Безоружный удар' && String(a.dmg) === '1' && a.ability === 'str') { a.ma = true; a.ability = 'fin'; }
+    if (a.ma) a.dmg = martialDie(lvl(c));
+  });
+}
 const scaleDice = (e, k) => String(e).replace(/(\d*)[dк](\d+)/gi, (_, n, s) => `${(parseInt(n || '1')) * k}d${s}`);
 const withMod = (e, m) => (m ? `${e}${m > 0 ? '+' : '-'}${Math.abs(m)}` : e);
 const dmgExpr = (c, a, crit) => withMod(crit ? scaleDice(a.dmg || '0', 2) : (a.dmg || '0'), dmgMod(c, a));
@@ -284,6 +294,7 @@ function render() {
   autoSlots(c);
   autoResources(c);
   if (c.armor.mode === 'auto') c.combat.ac = computeAC(c).ac;
+  autoMartialArts(c);
   fillBound();
   renderHeader(); renderAbil(); renderSkills(); renderCombat(); renderSpells(); renderInventory(); renderFeatures();
 }
@@ -390,6 +401,7 @@ function renderCombat() {
     return `<div class="li"><div class="li-head">
       <span class="li-title" data-act="toggleOpen" data-id="${a.id}">${esc(a.n)}</span>
       <span class="li-sub">${fmt(attackBonus(c, a))} к попаданию · ${esc(dmgExpr(c, a))} ${esc(a.type)}${a.range ? ' · ' + esc(a.range) : ''}</span>
+      ${a.ma ? `<span class="tag e" title="Кость урона растёт с уровнем: к6 → к8 (5) → к10 (11) → к12 (17)">Боевые искусства</span>` : ''}
       ${a.mastery && m ? `<span class="tag g" data-act="masteryInfo" data-k="${a.mastery}" style="cursor:pointer">⚔ ${m.n}</span>` : ''}
       <span class="btns"><button data-act="atkRoll" data-id="${a.id}">🎯 Атака</button><button data-act="dmgRoll" data-id="${a.id}">Урон</button><button data-act="dmgRoll" data-crit="1" data-id="${a.id}">Крит</button>
       <button class="ghost" data-act="editAttack" data-id="${a.id}" title="Изменить">✎</button><button class="ghost" data-act="delAttack" data-id="${a.id}" title="Удалить">✕</button></span>
@@ -897,6 +909,7 @@ const ATTACK_FIELDS = () => [
   { k: 'mastery', label: 'Приём оружия (Mastery)', type: 'select', options: Object.entries(MASTERY).map(([k, m]) => [k, m.n]) },
   { k: 'prof', label: 'Владение (+БМ к попаданию)', type: 'check' },
   { k: 'addMod', label: 'Модификатор к урону', type: 'check' },
+  { k: 'ma', label: 'Боевые искусства монаха (кость урона по уровню)', type: 'check', full: true },
   { k: 'x', label: 'Свойства и заметки', type: 'textarea', rows: 3 },
 ];
 const SPELL_FIELDS = () => [
