@@ -78,7 +78,7 @@
         <div class="form-grid">
           <label class="w2">Имя<input data-bind="info.name"></label>
           <label>Класс<input data-bind="info.cls" list="dlClasses"></label>
-          <label>Подкласс<input data-bind="info.subclass" list="dlSubclass" placeholder="выбирается на 3 уровне"></label>
+          <label>Подкласс<select data-bind="info.subclass" id="subSel"></select><input data-bind="info.subclass" id="subTxt" hidden placeholder="подкласс"></label>
           <label>Уровень класса<input type="number" min="1" max="20" data-bind="info.level" data-num></label>
           <label>Раса<input data-bind="info.species" list="dlSpecies"></label>
           <label>Предыстория<input data-bind="info.background" list="dlBackgrounds"></label>
@@ -112,11 +112,10 @@
 
       <div class="card">
         <h2>Владения и языки</h2>
-        <label>Доспехи<textarea rows="2" data-bind="prof.armor"></textarea></label>
-        <label>Оружие<textarea rows="2" data-bind="prof.weapons"></textarea></label>
-        <label>Инструменты<textarea rows="2" data-bind="prof.tools"></textarea></label>
-        <label>Языки<textarea rows="2" data-bind="prof.languages"></textarea></label>
-        <label>Чувства (тёмное зрение и т.п.)<input data-bind="prof.senses"></label>
+        <div id="profPicks"></div>
+        <div id="profBox"></div>
+        <label class="mt">Чувства (тёмное зрение и т.п.)<input data-bind="prof.senses"></label>
+        <label>Прочие владения и заметки<textarea rows="2" data-bind="prof.other" placeholder="То, чего нет в списках"></textarea></label>
       </div>
     </div>
   </section>
@@ -360,7 +359,7 @@
 </div>
 <input type="file" id="importFile" accept=".json,application/json" hidden>
 
-<datalist id="dlClasses"></datalist><datalist id="dlSubclass"></datalist><datalist id="dlSpecies"></datalist><datalist id="dlBackgrounds"></datalist><datalist id="dlAlign"></datalist>
+<datalist id="dlClasses"></datalist><datalist id="dlSpecies"></datalist><datalist id="dlBackgrounds"></datalist><datalist id="dlAlign"></datalist>
 
 <script src="data.js"></script>
 <script src="data2.js"></script>

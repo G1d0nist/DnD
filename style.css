@@ -286,6 +286,14 @@ button.stat:hover { border-color: var(--gold); }
 .multi h3 { margin-top: 10px; }
 @media (max-width: 760px) { .multi-row { grid-template-columns: 1fr 1fr; } }
 
+/* Владения */
+.prof-sec h3 { margin: 10px 0 4px; font-size: 15px; }
+.prof-sec .chips { align-items: center; }
+.prof-sec .chip { padding: 2px 4px 2px 10px; font-size: 13px; }
+.prof-add { width: auto; max-width: 160px; padding: 3px 6px; font-size: 13px; }
+.prof-pick { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; padding: 6px 10px; margin-bottom: 6px; border: 1px dashed var(--gold); border-radius: 8px; background: #2a2316; font-size: 13px; }
+.prof-pick select { width: auto; max-width: 220px; padding: 3px 6px; }
+
 /* Приёмы оружия и подклассы */
 .mastery-box { margin: 0 0 10px; }
 .mastery-box .chip { padding-left: 10px; }

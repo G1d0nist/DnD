@@ -41,7 +41,9 @@ function blankChar() {
     pact: { max: 0, level: 1, used: 0 },
     spells: [], resources: [], features: [], items: [],
     coins: { cp: 0, sp: 0, ep: 0, gp: 0, pp: 0 },
-    prof: { armor: '', weapons: '', tools: '', languages: 'Общий', senses: '' },
+    prof: { senses: '', other: '' },
+    profs: { armor: [], weapons: [], tools: [], langs: ['Общий'] }, // владения из списков
+    profPicks: [], // невыбранные владения: { id, kind: 'tool'|'lang', cats, n, src, inv }
     notes: { traits: '', ideals: '', bonds: '', flaws: '', appearance: '', backstory: '', allies: '', journal: '' },
   };
 }
@@ -51,8 +53,93 @@ function deepFill(t, s) {
     else if (s[k] && typeof s[k] === 'object' && !Array.isArray(s[k]) && typeof t[k] === 'object') deepFill(t[k], s[k]);
   }
 }
+function parseOldProfs(p) {
+  const profs = { armor: [], weapons: [], tools: [], langs: [] }, picks = [], rest = [];
+  const add = (k, v) => { if (!profs[k].includes(v)) profs[k].push(v); };
+  const a = String(p.armor || '');
+  if (/все доспехи/i.test(a)) ['Лёгкие доспехи', 'Средние доспехи', 'Тяжёлые доспехи'].forEach((v) => add('armor', v));
+  else { if (/л[её]гк/i.test(a)) add('armor', 'Лёгкие доспехи'); if (/средн/i.test(a)) add('armor', 'Средние доспехи'); if (/тяж[её]л/i.test(a)) add('armor', 'Тяжёлые доспехи'); }
+  if (/щит/i.test(a)) add('armor', 'Щиты');
+  const w = String(p.weapons || '');
+  if (/прост/i.test(w)) add('weapons', 'Простое оружие');
+  if (/воинск/i.test(w)) add('weapons', /фехтов/i.test(w) ? 'Воинское оружие со свойством «Фехтовальное» или «Лёгкое»' : /л[её]гк/i.test(w) ? 'Воинское оружие со свойством «Лёгкое»' : 'Воинское оружие');
+  WEAPONS.forEach((x) => { if (w.toLowerCase().includes(x.n.toLowerCase())) add('weapons', x.n); });
+  String(p.tools || '').split(/[,;\n]/).map((s) => s.trim()).filter(Boolean).forEach((s) => {
+    const t = TOOLS.find((x) => x.n.toLowerCase() === s.toLowerCase());
+    if (t) add('tools', t.n);
+    else if (BG_TOOL_PICK[s]) picks.push({ id: uid(), kind: 'tool', cats: BG_TOOL_PICK[s], n: 1, src: 'прежний лист', inv: false });
+    else if (/музыкальн/i.test(s)) picks.push({ id: uid(), kind: 'tool', cats: /ремесл/i.test(s) ? ['artisan', 'music'] : ['music'], n: /три/i.test(s) ? 3 : 1, src: 'прежний лист', inv: false });
+    else rest.push(`Инструменты: ${s}`);
+  });
+  String(p.languages || '').split(/[,;\n]/).map((s) => s.trim()).filter(Boolean).forEach((s) => {
+    const l = [...LANGS.standard, ...LANGS.rare].find((x) => x.toLowerCase() === s.toLowerCase());
+    if (l) add('langs', l);
+    else if (/два языка/i.test(s)) picks.push({ id: uid(), kind: 'lang', cats: ['standard'], n: 2, src: 'создание персонажа', inv: false });
+    else rest.push(`Языки: ${s}`);
+  });
+  const other = [p.other, ...rest].filter(Boolean).join('\n');
+  if (!profs.langs.length) profs.langs.push('Общий');
+  return { profs, profPicks: picks, prof: { senses: p.senses || '', other } };
+}
+/* ---------- Владения ---------- */
+const PROF_KINDS = { armor: 'Доспехи', weapons: 'Оружие', tools: 'Инструменты', langs: 'Языки' };
+// Инструмент в инвентарь (если его там ещё нет)
+function addToolItem(c, name) {
+  const t = TOOLS.find((x) => x.n === name);
+  if (c.items.some((i) => i.n === name)) return false;
+  addInvItem(c, { n: name, cat: 'Снаряжение', w: t ? t.w : 0, cost: t ? t.cost : '', x: 'Инструмент: владение позволяет добавлять бонус мастерства к проверкам с ним.' });
+  return true;
+}
+function addProf(c, kind, v, inv) {
+  if (!c.profs[kind].includes(v)) c.profs[kind].push(v);
+  if (kind === 'tools' && inv) addToolItem(c, v);
+}
+// Варианты для невыбранного владения: инструменты нужных категорий или языки, которых ещё нет
+function pickOptions(c, p) {
+  if (p.kind === 'tool') return TOOLS.filter((t) => p.cats.includes(t.cat) && !c.profs.tools.includes(t.n)).map((t) => t.n);
+  return p.cats.flatMap((k) => LANGS[k] || []).filter((l) => !c.profs.langs.includes(l));
+}
+function resolvePick(c, id, v) {
+  const p = c.profPicks.find((x) => x.id === id);
+  if (!p) return;
+  addProf(c, p.kind === 'tool' ? 'tools' : 'langs', v, p.inv);
+  p.n -= 1;
+  c.profPicks = c.profPicks.filter((x) => x.n > 0);
+  toast(`Добавлено: ${esc(v)}${p.kind === 'tool' && p.inv ? ' — и в инвентарь' : ''}`);
+}
+const addPick = (c, kind, cats, n, src, inv) => c.profPicks.push({ id: uid(), kind, cats, n, src, inv: !!inv });
+// Владения класса на 1 уровне (новый персонаж)
+function applyClassProfs(c, cls) {
+  const P = CLASS_PROFS[cls] || {};
+  (P.armor || []).forEach((v) => addProf(c, 'armor', v));
+  (P.weapons || []).forEach((v) => addProf(c, 'weapons', v));
+  (P.tools || []).forEach((v) => addProf(c, 'tools', v, true));
+  (P.langs || []).forEach((v) => addProf(c, 'langs', v));
+  if (P.toolPick) addPick(c, 'tool', P.toolPick.cats, P.toolPick.n, cls, cls === 'Монах');
+  if (P.langPick) addPick(c, 'lang', P.langPick.cats, P.langPick.n, cls);
+}
+function renderProfs() {
+  const c = ch(), kindN = { tool: 'инструмент', lang: 'язык' };
+  $('#profPicks').innerHTML = c.profPicks.map((p) => `<div class="prof-pick"><span>Выберите ${kindN[p.kind]}${p.n > 1 ? ` (ещё ${p.n})` : ''}${p.cats.length && p.kind === 'tool' ? ` — ${p.cats.map((k) => TOOL_CATS[k].toLowerCase()).join(' или ')}` : ''} <span class="muted small">· ${esc(p.src)}${p.inv ? ', попадёт в инвентарь' : ''}</span></span>
+      <select data-pick="${p.id}"><option value="">— выбрать —</option>${pickOptions(c, p).map((v) => `<option>${esc(v)}</option>`).join('')}</select>
+      <button class="ghost" data-act="pickDrop" data-id="${p.id}" title="Не выбирать">✕</button></div>`).join('');
+  const optsFor = (kind) => {
+    const have = new Set(c.profs[kind]);
+    const opt = (v) => (have.has(v) ? '' : `<option>${esc(v)}</option>`);
+    if (kind === 'armor') return ARMOR_PROFS.map(opt).join('');
+    if (kind === 'weapons') return `<optgroup label="Группы">${WEAPON_PROF_GROUPS.map(opt).join('')}</optgroup>`
+      + Object.entries(WEAPON_CATS).map(([k, t]) => `<optgroup label="${t}">${WEAPONS.filter((w) => w.cat === k).map((w) => opt(w.n)).join('')}</optgroup>`).join('');
+    if (kind === 'tools') return Object.entries(TOOL_CATS).map(([k, t]) => `<optgroup label="${t}">${TOOLS.filter((x) => x.cat === k).map((x) => opt(x.n)).join('')}</optgroup>`).join('');
+    return `<optgroup label="Стандартные">${LANGS.standard.map(opt).join('')}</optgroup><optgroup label="Редкие">${LANGS.rare.map(opt).join('')}</optgroup>`;
+  };
+  $('#profBox').innerHTML = Object.entries(PROF_KINDS).map(([kind, title]) => `<div class="prof-sec"><h3>${title}</h3><div class="chips">
+      ${c.profs[kind].map((v) => `<span class="chip"><span>${esc(v)}</span>${kind === 'tools' && !c.items.some((i) => i.n === v) ? `<button data-act="profInv" data-v="${esc(v)}" title="Добавить в инвентарь">🎒</button>` : ''}<button data-act="profDel" data-k="${kind}" data-v="${esc(v)}" title="Убрать">✕</button></span>`).join('')}
+      <select class="prof-add" data-k="${kind}"><option value="">＋ добавить</option>${optsFor(kind)}</select></div></div>`).join('');
+}
 function migrate(c) {
-  const old = { armorV: c.armor && c.armor.v, clsApplied: c.info && c.info.clsApplied, abilSet: c.abilSet };
+  const old = { armorV: c.armor && c.armor.v, clsApplied: c.info && c.info.clsApplied, abilSet: c.abilSet, profs: c.profs };
+  // Старые текстовые поля владений → списки (нераспознанное — в «Прочие владения»)
+  if (!old.profs && c.prof) Object.assign(c, parseOldProfs(c.prof));
   // У старых персонажей характеристики считаются заданными, если хоть одна отличается от 10
   if (old.abilSet === undefined && c.abil) c.abilSet = Object.values(c.abil).some((v) => +v !== 10);
   deepFill(c, blankChar());
@@ -124,9 +211,40 @@ window.dndApp = {
 // Поле «Уровень» — уровень основного класса; дополнительные классы мультикласса в c.multi.
 // lvl(c) — общий уровень персонажа (бонус мастерства, заговоры, кости хитов), clsLvl — уровень в классе.
 const pLvl = (c) => clamp(parseInt(c.info.level) || 1, 1, 20);
+// Повторяющийся класс в мультиклассе не учитывается; подкласс действует, только если он относится к этому классу
+// и уровень именно этого класса дошёл до уровня подкласса (для классов не из списка — как вписано)
 function classList(c) {
+  const seen = new Set();
   return [{ cls: c.info.cls.trim(), sub: c.info.subclass || '', lvl: pLvl(c), primary: true },
-    ...(c.multi || []).map((m) => ({ cls: String(m.cls || '').trim(), sub: m.sub || '', lvl: clamp(parseInt(m.lvl) || 1, 1, 20), id: m.id }))];
+    ...(c.multi || []).map((m) => ({ cls: String(m.cls || '').trim(), sub: m.sub || '', lvl: clamp(parseInt(m.lvl) || 1, 1, 20), id: m.id }))]
+    .filter((e) => { if (!e.cls) return !!e.primary; if (seen.has(e.cls)) return false; seen.add(e.cls); return true; })
+    .map((e) => ({ ...e, sub: subAllowed(e) ? e.sub : '' }));
+}
+const subAllowed = (e) => !SUBCLASSES[e.cls] || (e.lvl >= subclassLevel(e.cls) && !!subclassOf(e.cls, e.sub));
+// Выпадающий список подклассов только своего класса; до уровня подкласса — недоступен
+function fillSubSelect(sel, txt, cls, L, val) {
+  const list = SUBCLASSES[cls];
+  if (!list) { sel.hidden = true; if (txt) txt.hidden = false; return; }
+  sel.hidden = false;
+  if (txt) txt.hidden = true;
+  const need = subclassLevel(cls), locked = L < need, valid = list.some((s) => s.n === val);
+  const sig = [cls, locked, val, valid].join('|');
+  if (sel.dataset.sig === sig) return;
+  sel.dataset.sig = sig;
+  sel.disabled = locked;
+  sel.title = locked ? `Подкласс выбирается на ${need} уровне класса «${cls}»` : '';
+  sel.innerHTML = locked ? `<option value="${esc(val)}">с ${need} уровня класса</option>`
+    : `<option value="">— выберите —</option>${list.map((s) => `<option ${s.n === val ? 'selected' : ''}>${s.n}</option>`).join('')}${val && !valid ? `<option value="${esc(val)}" selected>⚠ ${esc(val)} — не подкласс класса «${cls}»</option>` : ''}`;
+}
+// Список классов для строки мультикласса: без уже выбранных в других строках
+function fillClassSelect(sel, c, m) {
+  const used = new Set([c.info.cls.trim(), ...c.multi.filter((x) => x !== m).map((x) => String(x.cls || '').trim())]);
+  const opts = Object.keys(CLASSES).filter((n) => !used.has(n) || n === m.cls);
+  const dup = m.cls && used.has(m.cls);
+  const sig = opts.join('|') + (dup ? '!' : '');
+  if (sel.dataset.sig === sig) return;
+  sel.dataset.sig = sig;
+  sel.innerHTML = `<option value="">— класс —</option>${opts.map((n) => `<option>${n}</option>`).join('')}${dup ? `<option value="${esc(m.cls)}">⚠ ${esc(m.cls)} — уже есть, не учитывается</option>` : ''}`;
 }
 const lvl = (c) => clamp(classList(c).reduce((s, e) => s + e.lvl, 0), 1, 20);
 const clsLvl = (c, n) => classList(c).filter((e) => e.cls === n).reduce((s, e) => s + e.lvl, 0);
@@ -338,7 +456,9 @@ function applySpecies(c, sp, o = {}) {
 function applyBackground(c, bg, o) {
   c.info.background = bg.n;
   bg.sk.forEach((k) => { c.skills[k] = Math.max(1, c.skills[k] || 0); });
-  if (!c.prof.tools.includes(bg.tool)) c.prof.tools = [c.prof.tools, bg.tool].filter(Boolean).join(', ');
+  // Инструмент предыстории входит в её снаряжение — сразу в инвентарь (если он на выбор — задание «выберите»)
+  if (BG_TOOL_PICK[bg.tool]) addPick(c, 'tool', BG_TOOL_PICK[bg.tool], 1, `предыстория «${bg.n}»`, true);
+  else addProf(c, 'tools', bg.tool, true);
   c.bgAbil = o.mode === '111' ? Object.fromEntries(bg.abil.map((k) => [k, 1])) : { [o.a1]: 2, [o.a2]: 1 };
   const old = c.feats.find((f) => f.bg);
   if (old) { featHp(c, old.key, -1); c.feats = c.feats.filter((f) => f !== old); }
@@ -536,13 +656,16 @@ function render() {
   autoMartialArts(c);
   autoSubclassFeatures(c);
   autoSpells(c);
-  // Подсказки для поля «Подкласс» — подклассы классов персонажа
-  const subs = [...new Set(classList(c).flatMap((e) => (SUBCLASSES[e.cls] || []).map((s) => s.n)))].join('|');
-  if ($('#dlSubclass').dataset.sig !== subs) { $('#dlSubclass').dataset.sig = subs; $('#dlSubclass').innerHTML = subs.split('|').filter(Boolean).map((s) => `<option value="${esc(s)}">`).join(''); }
   renderMulti();
+  // Подкласс — только из списка своего класса и только с уровня подкласса
+  fillSubSelect($('#subSel'), $('#subTxt'), c.info.cls.trim(), pLvl(c), c.info.subclass || '');
+  c.multi.forEach((m, i) => {
+    fillClassSelect($(`[data-bind="multi.${i}.cls"]`), c, m);
+    fillSubSelect($(`[data-bind="multi.${i}.sub"]`), null, String(m.cls || '').trim(), clamp(parseInt(m.lvl) || 1, 1, 20), m.sub || '');
+  });
   fillBound();
   renderUndo();
-  renderHeader(); renderAbil(); renderSkills(); renderCombat(); renderClassPanel(); renderQuickSpells(); renderSpells(); renderInventory(); renderFeatures();
+  renderHeader(); renderAbil(); renderSkills(); renderProfs(); renderCombat(); renderClassPanel(); renderQuickSpells(); renderSpells(); renderInventory(); renderFeatures();
 }
 
 // Список дополнительных классов; перестраивается только при добавлении/удалении, чтобы не сбивать ввод
@@ -552,8 +675,8 @@ function renderMulti() {
   if (sig !== multiSig) {
     multiSig = sig;
     $('#multiBox').innerHTML = (c.multi.length ? `<h3>Мультикласс</h3>` + c.multi.map((m, i) => `<div class="multi-row">
-        <label>Класс<input data-bind="multi.${i}.cls" list="dlClasses"></label>
-        <label>Подкласс<input data-bind="multi.${i}.sub" list="dlSubclass"></label>
+        <label>Класс<select data-bind="multi.${i}.cls"></select></label>
+        <label>Подкласс<select data-bind="multi.${i}.sub"></select></label>
         <label>Уровень<input type="number" min="1" max="19" data-bind="multi.${i}.lvl" data-num></label>
         <button class="ghost" data-act="delMulti" data-id="${m.id}" title="Убрать класс">✕</button></div>`).join('') : '')
       + `<div class="row gap wrap mt"><span class="badge" id="totalLvl"></span><button class="ghost" data-act="addMulti" title="Добавить второй класс (новый уровень лучше брать через «Новый уровень»)">＋ мультикласс</button></div>`;
@@ -1286,9 +1409,8 @@ function wizFinish() {
   c.abilSet = true;
   applyBackground(c, bg, { mode: W.bgMode, a1: W.a1, a2: W.a2 });
   W.clsSkills.forEach((k) => { c.skills[k] = Math.max(1, c.skills[k] || 0); });
-  c.prof.armor = P.armor; c.prof.weapons = P.weapons;
-  c.prof.tools = [...new Set([P.tools, ...c.prof.tools.split(', ')].filter(Boolean))].join(', ');
-  c.prof.languages = 'Общий; ещё два языка на выбор';
+  applyClassProfs(c, W.cls);
+  addPick(c, 'lang', ['standard'], 2, 'создание персонажа');
   featuresAt(W.cls, '', 1).forEach((n) => c.features.push({ id: uid(), n, src: `${W.cls} 1`, x: featureDesc(W.cls, n) }));
   const hp = Math.max(1, +c.combat.hdDie + am(c, 'con') + hpPerLevelBonus(c));
   c.combat.hpMax = hp; c.combat.hp = hp;
@@ -1302,6 +1424,7 @@ function wizFinish() {
   if (featFree(c, 'style') > 0) todo.push('черта боевого стиля');
   if (c.feats.some((f) => f.key === 'magicInitiate')) todo.push('заклинания «Посвящённого в магию»');
   if (!W.gold) todo.push('снаряжение');
+  if (c.profPicks.length) todo.push('языки и инструменты (вкладка «Персонаж» → «Владения и языки»)');
   if (PREP_TABLE[W.cls]) todo.push('заклинания класса');
   toast(`✨ ${esc(c.info.name)} создан!${todo.length ? `<div class="rd">Осталось выбрать: ${esc(todo.join(', '))}</div>` : ''}`, 'crit');
 }
@@ -1322,7 +1445,7 @@ const ACT_LABELS = {
   skillProf: 'владение навыком', togglePrep: 'подготовка заклинания', addSpellFromDb: 'добавление заклинания', catWeapon: 'снаряжение из каталога',
   catArmor: 'доспех из каталога', catShield: 'щит', catGear: 'снаряжение из каталога', addMulti: 'мультикласс', delMulti: 'удаление класса',
   delAttack: 'удаление атаки', atkRoll: 'боеприпас', recoverAmmo: 'сбор боеприпасов', delSpell: 'удаление заклинания', delItem: 'удаление предмета', delRes: 'удаление ресурса', delFeature: 'удаление умения',
-  calcHp: 'расчёт хитов', applyClass: 'шаблон класса', abilEdit: 'характеристики', featSpellsSave: 'заклинания черты', masteryAdd: 'приём оружия', masteryDel: 'приём оружия',
+  calcHp: 'расчёт хитов', applyClass: 'шаблон класса', abilEdit: 'характеристики', profDel: 'владение', profInv: 'инструмент в инвентарь', pickDrop: 'выбор владения', featSpellsSave: 'заклинания черты', masteryAdd: 'приём оружия', masteryDel: 'приём оружия',
   bardicGet: 'вдохновение барда', bardicUse: 'вдохновение барда', bardicDrop: 'вдохновение барда',
 };
 function pushUndo(id, before, label) {
@@ -2219,6 +2342,9 @@ const ACT = {
   },
   bardDie(el) { rollDice('Кость вдохновения барда', `1d${el.dataset.d}`); },
   radiantStrike() { rollDice('Сияющие удары (излучение)', '1d8'); },
+  profDel(el) { const c = ch(), k = el.dataset.k; c.profs[k] = c.profs[k].filter((v) => v !== el.dataset.v); },
+  profInv(el) { if (addToolItem(ch(), el.dataset.v)) toast(`🎒 ${esc(el.dataset.v)} в инвентаре`); },
+  pickDrop(el) { const c = ch(); c.profPicks = c.profPicks.filter((p) => p.id !== el.dataset.id); },
   addFeat() { openFeatAdd(); },
   featSpells(el) { openFeatSpells(findById(ch().feats, el.dataset.id)); },
   featSpellsSave() {
@@ -2295,6 +2421,8 @@ const ACT = {
       if (!c.features.some((x) => x.n === f && x.src === src)) c.features.push({ id: uid(), n: f, src, x: featureDesc(T.cls, f) });
     });
     if (T.cls === 'Бард' && CN >= 2) c.combat.jack = true;
+    // Следопыт 2 ур. «Искусный исследователь»: два языка на выбор
+    if (T.cls === 'Следопыт' && CN === 2) addPick(c, 'lang', ['standard', 'rare'], 2, 'Искусный исследователь');
     const cap = CN === 20 && CAPSTONE[T.cls];
     if (cap) notes.push(`${cap[0]}: +4`);
     closeModal();
@@ -2468,6 +2596,15 @@ function bindEvents() {
       pushUndo(c.id, before, `поле «${name}»`);
     }
     bindUndo = { path: p, id: c.id, t: Date.now() };
+  });
+  // Выбор владения из списка или по заданию «выберите»
+  document.addEventListener('change', (e) => {
+    const el = e.target;
+    if (!el.value || el.closest('#modal')) return;
+    if (el.classList.contains('prof-add')) tracked('владение', () => addProf(ch(), el.dataset.k, el.value, false));
+    else if (el.dataset.pick) tracked('выбор владения', () => resolvePick(ch(), el.dataset.pick, el.value));
+    else return;
+    save(); render();
   });
   document.addEventListener('click', (e) => {
     const tab = e.target.closest('[data-tab]');
