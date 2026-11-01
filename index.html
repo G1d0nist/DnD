@@ -51,6 +51,7 @@
       <button data-adv="-1">Помеха</button><button data-adv="0" class="on">Обычно</button><button data-adv="1">Преим.</button>
     </div>
     <div class="rests">
+      <button id="undoBtn" data-act="undo" disabled title="Нечего отменять">↶ Отменить</button>
       <button data-act="shortRest">☕ Короткий отдых</button>
       <button data-act="longRest">🌙 Долгий отдых</button>
     </div>
@@ -78,14 +79,15 @@
           <label class="w2">Имя<input data-bind="info.name"></label>
           <label>Класс<input data-bind="info.cls" list="dlClasses"></label>
           <label>Подкласс<input data-bind="info.subclass"></label>
-          <label>Уровень<input type="number" min="1" max="20" data-bind="info.level" data-num></label>
+          <label>Уровень класса<input type="number" min="1" max="20" data-bind="info.level" data-num></label>
           <label>Вид (раса)<input data-bind="info.species" list="dlSpecies"></label>
           <label>Предыстория<input data-bind="info.background" list="dlBackgrounds"></label>
           <label>Мировоззрение<input data-bind="info.alignment" list="dlAlign"></label>
           <label>Опыт<input type="number" min="0" data-bind="info.xp" data-num></label>
           <label>Размер<select data-bind="info.size"><option>Крошечный</option><option>Маленький</option><option>Средний</option><option>Большой</option></select></label>
         </div>
-        <div class="row gap mt">
+        <div id="multiBox" class="multi"></div>
+        <div class="row gap mt wrap">
           <button class="primary" data-act="levelUp">⬆ Новый уровень</button>
           <button data-act="applyClass" title="Шаблон применяется сам при выборе класса; кнопка — применить заново">⚙ Шаблон класса заново</button>
           <button data-act="calcHp">❤ Рассчитать макс. хиты (среднее)</button>
@@ -129,9 +131,8 @@
         </div>
         <h3>Кости хитов</h3>
         <div class="row gap wrap">
-          <label class="inline">Кость <select data-bind="combat.hdDie" data-num><option value="6">к6</option><option value="8">к8</option><option value="10">к10</option><option value="12">к12</option></select></label>
-          <span id="hdInfo" class="badge"></span>
-          <button data-act="spendHd">🎲 Потратить кость</button>
+          <label class="inline" id="hdDieWrap">Кость <select data-bind="combat.hdDie" data-num><option value="6">к6</option><option value="8">к8</option><option value="10">к10</option><option value="12">к12</option></select></label>
+          <span id="hdInfo" class="row gap wrap"></span>
         </div>
         <div id="deathBox" class="death mt"></div>
       </div>

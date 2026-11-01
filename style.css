@@ -263,6 +263,12 @@ button.stat:hover { border-color: var(--gold); }
 .slot-choice button { text-align: left; }
 .slot-choice button:disabled { opacity: .4; cursor: not-allowed; }
 
+/* Мультикласс */
+.multi-row { display: grid; grid-template-columns: 1.3fr 1.3fr 90px auto; gap: 0 10px; align-items: end; }
+.multi-row button { margin-bottom: 8px; }
+.multi h3 { margin-top: 10px; }
+@media (max-width: 760px) { .multi-row { grid-template-columns: 1fr 1fr; } }
+
 /* Черты */
 .afinal { font-size: 11px; color: var(--green); min-height: 14px; margin-top: 2px; }
 .badge.free { border-color: var(--gold); }
