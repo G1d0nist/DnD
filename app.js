@@ -61,6 +61,7 @@ function migrate(c) {
   }
   // У старых персонажей шаблон класса уже применён (или настроен вручную) — не переприменяем
   if (old.clsApplied === undefined) c.info.clsApplied = c.info.cls.trim();
+  c.features.forEach((f) => { if (f.src === 'Вид') f.src = 'Раса'; }); // «Вид» переименован в «Раса»
   return c;
 }
 
@@ -311,7 +312,7 @@ function resLevels(c) {
 }
 const speciesOf = (c) => SPECIES_DATA.find((s) => s.n === String(c.info.species || '').trim());
 const backgroundOf = (c) => BACKGROUND_DATA.find((b) => b.n === String(c.info.background || '').trim());
-// Применить вид: скорость, размер, тёмное зрение, черты вида (заменяют прежние), навыки на выбор
+// Применить расу: скорость, размер, тёмное зрение, черты расы (заменяют прежние), навыки на выбор
 function applySpecies(c, sp, o = {}) {
   const lin = o.lin || '';
   c.info.species = sp.n;
@@ -320,9 +321,9 @@ function applySpecies(c, sp, o = {}) {
   c.combat.speed = /Лесной эльф/.test(lin) ? 35 : sp.speed;
   const dv = /Дроу/.test(lin) ? 120 : sp.dv;
   c.prof.senses = dv ? `Тёмное зрение ${dv} фт` : '';
-  c.features = c.features.filter((f) => f.src !== 'Вид');
-  sp.t.forEach(([n, x]) => c.features.push({ id: uid(), n, src: 'Вид', x }));
-  if (lin) c.features.push({ id: uid(), n: `Происхождение: ${lin}`, src: 'Вид', x: 'Подробности выбранного происхождения — в Книге игрока.' });
+  c.features = c.features.filter((f) => f.src !== 'Раса' && f.src !== 'Вид');
+  sp.t.forEach(([n, x]) => c.features.push({ id: uid(), n, src: 'Раса', x }));
+  if (lin) c.features.push({ id: uid(), n: `Происхождение: ${lin}`, src: 'Раса', x: 'Подробности выбранного происхождения — в Книге игрока.' });
   (o.skills || []).forEach((k) => { c.skills[k] = Math.max(1, c.skills[k] || 0); });
 }
 // Применить предысторию: навыки, инструмент, бонусы характеристик, черта происхождения
@@ -473,7 +474,7 @@ function toast(html, cls = '') {
 /* ---------- Модальные окна ---------- */
 let modalRefresh = null;
 function openModal(html) { $('#modalBody').innerHTML = html; $('#modal').hidden = false; }
-function closeModal() { $('#modal').hidden = true; $('#modalBody').innerHTML = ''; modalRefresh = null; }
+function closeModal() { $('#modal').hidden = true; $('#modalBody').innerHTML = ''; $('#modalBody').onmouseover = null; modalRefresh = null; }
 function fieldHtml(f, v) {
   const span = f.full ? ' style="grid-column:1/-1"' : '';
   if (f.type === 'check') return `<label class="check"${span}><input type="checkbox" name="${f.k}" ${v ? 'checked' : ''}> ${esc(f.label)}</label>`;
@@ -817,10 +818,10 @@ function renderFeatures() {
       <span class="li-title" data-act="toggleOpen" data-id="${f.id}">${esc(f.n)}${desc ? ' <span class="muted small">▾</span>' : ''}</span>${f.src ? `<span class="tag">${esc(f.src)}</span>` : ''}
       <span class="btns"><button class="ghost" data-act="editFeature" data-id="${f.id}">✎</button><button class="ghost" data-act="delFeature" data-id="${f.id}">✕</button></span>
     </div>${openSet.has(f.id) && desc ? `<div class="li-desc">${esc(desc)}</div>` : ''}</div>`;
-  }).join('') || '<div class="muted">Добавьте умения класса, черты (feats), особенности вида и предыстории.</div>';
+  }).join('') || '<div class="muted">Добавьте умения класса, черты (feats), особенности расы и предыстории.</div>';
 }
 
-// Боевые умения класса/вида: значения по уровню и кнопки бросков
+// Боевые умения класса/расы: значения по уровню и кнопки бросков
 function classPanelItems(c) {
   const items = [], CL = (n) => clsLvl(c, n);
   const left = (k) => { const r = c.resources.find((x) => x.auto === k); return r ? `осталось ${r.max - r.used} из ${r.max}` : ''; };
@@ -1040,9 +1041,9 @@ function installGenDrag(mb) {
 }
 
 /* ---------- Мастер создания персонажа ---------- */
-// mode: 'new' — новый персонаж (все шаги), 'origin' — вид и предыстория для текущего персонажа
+// mode: 'new' — новый персонаж (все шаги), 'origin' — раса и предыстория для текущего персонажа
 let W = null;
-const WIZ_STEPS = ['Вид', 'Предыстория', 'Класс', 'Характеристики', 'Итог'];
+const WIZ_STEPS = ['Раса', 'Предыстория', 'Класс', 'Характеристики', 'Итог'];
 const skillName = (k) => SKILLS.find((s) => s.k === k).n;
 const abilS = (k) => ABILITIES.find((a) => a.k === k).s;
 const wizSp = () => SPECIES_DATA.find((s) => s.n === W.sp);
@@ -1069,10 +1070,11 @@ function openWizard(mode) {
     if (wizBg()) [W.a1, W.a2] = wizBg().abil;
   }
   Object.assign(gen, { mode: 'standard', std: perAbil(null), pb: perAbil(8), rolls: [], roll: perAbil(null), bonus: perAbil(0) });
-  openModal(`<h2>${mode === 'new' ? '✨ Создание персонажа' : '⚙ Вид и предыстория'}</h2><div id="wizSteps" class="seg wiz-steps"></div><div id="wizBody" class="mt"></div><div class="modal-actions" id="wizNav"></div>`);
+  openModal(`<h2>${mode === 'new' ? '✨ Создание персонажа' : '🧬 Раса и предыстория'}</h2><div id="wizSteps" class="seg wiz-steps"></div><div id="wizBody" class="mt"></div><div class="modal-actions" id="wizNav"></div>`);
   modalRefresh = renderWizard;
   const mb = $('#modalBody');
   mb.onchange = (e) => { if (e.target.closest('#genBody')) genChange(e); else wizChange(e); };
+  mb.onmouseover = wizSkillHover;
   installGenDrag(mb);
   renderWizard();
 }
@@ -1096,9 +1098,9 @@ function wizChange(e) {
 function wizError(step) {
   const sp = wizSp(), bg = wizBg();
   if (step === 0) {
-    if (!sp) return 'Выберите вид';
+    if (!sp) return 'Выберите расу';
     if (sp.lin && !W.lin) return 'Выберите происхождение';
-    if (sp.skill && W.spSkills.length !== sp.skill[0]) return `Выберите навык вида (${sp.skill[0]})`;
+    if (sp.skill && W.spSkills.length !== sp.skill[0]) return `Выберите навык расы (${sp.skill[0]})`;
   }
   if (step === 1) {
     if (!bg) return 'Выберите предысторию';
@@ -1115,10 +1117,32 @@ const wizLast = () => (W.mode === 'origin' ? 1 : WIZ_STEPS.length - 1);
 // Чекбоксы выбора навыков: count — сколько выбрать, list — из каких (null — любые)
 function skillPickHtml(field, count, list, except) {
   const taken = wizTaken(except), cur = W[field];
-  return `<div class="skill-pick">${(list || SKILLS.map((s) => s.k)).map((k) => {
+  return `<div class="skill-pick" data-field="${field}">${(list || SKILLS.map((s) => s.k)).map((k) => {
     const dis = taken.has(k) || (!cur.includes(k) && cur.length >= count);
-    return `<label class="check ${taken.has(k) ? 'muted' : ''}"><input type="checkbox" data-wsk="${field}" value="${k}" ${cur.includes(k) ? 'checked' : ''} ${dis ? 'disabled' : ''}> ${skillName(k)}${taken.has(k) ? ' (уже есть)' : ''}</label>`;
-  }).join('')}</div><p class="muted small">Выбрано ${cur.length} из ${count}</p>`;
+    return `<label class="check ${taken.has(k) ? 'muted' : ''}" data-skill="${k}"><input type="checkbox" data-wsk="${field}" value="${k}" ${cur.includes(k) ? 'checked' : ''} ${dis ? 'disabled' : ''}> ${skillName(k)}${taken.has(k) ? ' (уже есть)' : ''}</label>`;
+  }).join('')}</div><p class="muted small">Выбрано ${cur.length} из ${count}</p>
+  <div class="skill-desc" id="skillDesc-${field}">${skillDescHtml(cur)}</div>`;
+}
+// Описание навыков: что проверяется и от какой характеристики — подсказка для новичков
+function skillDescHtml(keys, hover) {
+  if (!keys.length) return '<span class="muted">Наведите на навык или выберите его, чтобы увидеть, для чего он нужен.</span>';
+  return keys.map((k) => {
+    const s = SKILLS.find((x) => x.k === k), a = ABILITIES.find((x) => x.k === s.a);
+    return `<div><b>${s.n}</b> <span class="muted small">(${a.n})${hover ? '' : ' · выбран'}</span><br>${esc(s.d)}</div>`;
+  }).join('');
+}
+// Наведение на навык в мастере — показать его описание; уход с навыка — снова описания выбранных
+function wizSkillHover(e) {
+  const pick = e.target.closest && e.target.closest('.skill-pick');
+  $$('.skill-pick').forEach((p) => {
+    const box = $(`#skillDesc-${p.dataset.field}`);
+    if (!box) return;
+    const lab = p === pick && e.target.closest('[data-skill]');
+    const key = lab ? `h:${lab.dataset.skill}` : 'sel';
+    if (box.dataset.shown === key) return;
+    box.dataset.shown = key;
+    box.innerHTML = lab ? skillDescHtml([lab.dataset.skill], true) : skillDescHtml(W[p.dataset.field]);
+  });
 }
 function renderWizard() {
   const box = $('#wizBody');
@@ -1127,13 +1151,13 @@ function renderWizard() {
   $('#wizSteps').innerHTML = WIZ_STEPS.slice(0, last + 1).map((n, i) => `<button class="${W.step === i ? 'on' : ''}" ${i > W.step ? 'disabled' : ''} data-act="wizGo" data-i="${i}">${i + 1}. ${n}</button>`).join('');
   let h = '';
   if (W.step === 0) {
-    h = `<label>Вид<select data-w="sp"><option value="">— выберите —</option>${SPECIES_DATA.map((s) => `<option ${W.sp === s.n ? 'selected' : ''}>${s.n}</option>`).join('')}</select></label>`;
+    h = `<label>Раса<select data-w="sp"><option value="">— выберите —</option>${SPECIES_DATA.map((s) => `<option ${W.sp === s.n ? 'selected' : ''}>${s.n}</option>`).join('')}</select></label>`;
     if (sp) {
       h += `<div class="row gap wrap">${sp.size.length > 1 ? `<label class="inline">Размер <select data-w="size">${sp.size.map((z) => `<option ${(W.size || sp.size[0]) === z ? 'selected' : ''}>${z}</option>`).join('')}</select></label>` : `<span class="badge">Размер: ${sp.size[0]}</span>`}
         <span class="badge">Скорость: ${/Лесной эльф/.test(W.lin) ? 35 : sp.speed} фт</span>${sp.dv ? `<span class="badge">Тёмное зрение: ${/Дроу/.test(W.lin) ? 120 : sp.dv} фт</span>` : ''}</div>`;
       if (sp.lin) h += `<label class="mt">Происхождение<select data-w="lin"><option value="">— выберите —</option>${sp.lin.map((l) => `<option ${W.lin === l ? 'selected' : ''}>${l}</option>`).join('')}</select></label>`;
       h += `<ul class="lvl-list">${sp.t.map(([n, x]) => `<li><b>${n}.</b> ${esc(x)}</li>`).join('')}</ul>`;
-      if (sp.skill) h += `<h3>Навык вида</h3>${skillPickHtml('spSkills', sp.skill[0], sp.skill[1], 'sp')}`;
+      if (sp.skill) h += `<h3>Навык расы</h3>${skillPickHtml('spSkills', sp.skill[0], sp.skill[1], 'sp')}`;
     }
   } else if (W.step === 1) {
     h = `<label>Предыстория<select data-w="bg"><option value="">— выберите —</option>${BACKGROUND_DATA.map((b) => `<option ${W.bg === b.n ? 'selected' : ''}>${b.n}</option>`).join('')}</select></label>`;
@@ -1194,7 +1218,7 @@ function wizFinish() {
     applySpecies(c, sp, { size: W.size, lin: W.lin, skills: W.spSkills });
     applyBackground(c, bg, { mode: W.bgMode, a1: W.a1, a2: W.a2 });
     closeModal();
-    toast(`Применены вид «${esc(sp.n)}» и предыстория «${esc(bg.n)}»`);
+    toast(`Применены раса «${esc(sp.n)}» и предыстория «${esc(bg.n)}»`);
     return;
   }
   const c = blankChar(), P = CLASS_PROF[W.cls];
@@ -1506,7 +1530,7 @@ function renderLevelUp() {
       <label class="check"><input type="radio" name="hpMode" value="roll" ${S.hpMode === 'roll' ? 'checked' : ''}> Бросок к${hd}</label>
       ${S.hpMode === 'roll' ? `<button data-act="lvlRoll">🎲 ${S.roll == null ? 'Бросить' : `Выпало ${S.roll} — перебросить`}</button>` : ''}
     </div>
-    <p>${gain == null ? '<span class="muted">Бросьте кость хитов</span>' : `+<b>${gain}</b> хитов (${S.hpMode === 'avg' ? hd / 2 + 1 : S.roll} ${fmt(con)} Тел${hpPerLevelBonus(c) ? ` +${hpPerLevelBonus(c)} вид/черта` : ''}) · максимум ${c.combat.hpMax} → <b>${+c.combat.hpMax + gain}</b>`}</p>
+    <p>${gain == null ? '<span class="muted">Бросьте кость хитов</span>' : `+<b>${gain}</b> хитов (${S.hpMode === 'avg' ? hd / 2 + 1 : S.roll} ${fmt(con)} Тел${hpPerLevelBonus(c) ? ` +${hpPerLevelBonus(c)} раса/черта` : ''}) · максимум ${c.combat.hpMax} → <b>${+c.combat.hpMax + gain}</b>`}</p>
     <h3>Что изменится</h3><ul class="lvl-list">${changes.map((x) => `<li>${x}</li>`).join('')}</ul>
     ${feats.length ? `<h3>Новые умения</h3><p class="muted small">Отмеченные добавятся во вкладку «Способности». Описания — в Книге игрока.</p>
       <div class="lvl-feats">${feats.map((f, i) => { const d = featureDesc(T.cls, f); return `<label class="check lvl-feat"><input type="checkbox" data-feat="${i}" ${S.skip.has(i) ? '' : 'checked'}> <span><b>${esc(f)}</b>${d ? `<span class="muted small"> — ${esc(d)}</span>` : ''}</span></label>`; }).join('')}</div>`
@@ -1684,7 +1708,7 @@ const SPELL_FIELDS = () => [
   { k: 'rt', label: 'Ритуал', type: 'check' },
   { k: 'addMod', label: '+ модификатор к броску', type: 'check' },
   { k: 'prep', label: 'Подготовлено', type: 'check' },
-  { k: 'always', label: 'Всегда подготовлено (от подкласса, вида, черты — не входит в лимит)', type: 'check', full: true },
+  { k: 'always', label: 'Всегда подготовлено (от подкласса, расы, черты — не входит в лимит)', type: 'check', full: true },
   { k: 'x', label: 'Описание', type: 'textarea', rows: 6 },
 ];
 const ITEM_FIELDS = () => [
@@ -1707,7 +1731,7 @@ const RES_FIELDS = () => [
 ];
 const FEAT_FIELDS = () => [
   { k: 'n', label: 'Название', full: true },
-  { k: 'src', label: 'Источник', ph: 'Класс / Черта / Вид / Предыстория', list: 'dlFeatSrc', full: true },
+  { k: 'src', label: 'Источник', ph: 'Класс / Черта / Раса / Предыстория', list: 'dlFeatSrc', full: true },
   { k: 'x', label: 'Описание', type: 'textarea', rows: 8 },
 ];
 
@@ -1808,7 +1832,7 @@ const ACT = {
     const avg = (d) => Math.max(1, d / 2 + 1 + con);
     const max = Math.max(1, classList(c).reduce((s, e) => s + (e.primary ? hd + con + (e.lvl - 1) * avg(hd) : e.lvl * avg(hdOf(c, e))), 0) + extra * L);
     const how = classList(c).map((e) => `${e.cls || 'класс'} к${hdOf(c, e)}×${e.lvl}`).join(', ');
-    if (!confirmBox(`Установить максимум хитов = ${max}? (${how}: максимум кости на 1 уровне, дальше среднее; мод. Тел ${fmt(con)}${extra ? `, +${extra} за уровень от вида/черты` : ''})`)) return;
+    if (!confirmBox(`Установить максимум хитов = ${max}? (${how}: максимум кости на 1 уровне, дальше среднее; мод. Тел ${fmt(con)}${extra ? `, +${extra} за уровень от расы/черты` : ''})`)) return;
     if (c.combat.hp >= c.combat.hpMax) c.combat.hp = max;
     c.combat.hpMax = max;
     c.combat.hp = Math.min(c.combat.hp, max);
@@ -1936,13 +1960,13 @@ const ACT = {
     i.attuned = !i.attuned;
   },
   addClassRes() {
-    // Только ресурсы классов, сгруппированные по классу (ресурсы вида и черт добавляются сами)
+    // Только ресурсы классов, сгруппированные по классу (ресурсы расы и черт добавляются сами)
     const c = ch();
     const groups = '<div class="res-groups">' + Object.entries(CLASSES).filter(([, d]) => d.res.length).map(([cls, d]) => `<div><h3>${cls}</h3><div class="slot-choice">${d.res.map((k) => {
       const has = c.resources.some((x) => x.auto === k);
       return `<button data-act="addAutoRes" data-k="${k}" ${has ? 'disabled' : ''}>${has ? '✓ ' : ''}${CLASS_RESOURCES[k].n}</button>`;
     }).join('')}</div></div>`).join('') + '</div>';
-    openModal(`<h2>Ресурсы других классов</h2><p class="muted small">Ресурсы ваших классов (в том числе мультикласса), вида и черт добавляются автоматически. Здесь можно вручную добавить ресурс любого класса — максимум считается по общему уровню персонажа, его можно поправить в настройках ресурса (✎).</p>
+    openModal(`<h2>Ресурсы других классов</h2><p class="muted small">Ресурсы ваших классов (в том числе мультикласса), расы и черт добавляются автоматически. Здесь можно вручную добавить ресурс любого класса — максимум считается по общему уровню персонажа, его можно поправить в настройках ресурса (✎).</p>
       ${groups}<div class="modal-actions"><button data-act="closeModal">Готово</button></div>`);
   },
   addAutoRes(el) {
@@ -2187,7 +2211,7 @@ function buildStatic() {
   const dl = (id, arr) => { $(id).innerHTML = arr.map((x) => `<option value="${esc(x)}">`).join(''); };
   dl('#dlClasses', Object.keys(CLASSES)); dl('#dlSpecies', SPECIES); dl('#dlBackgrounds', BACKGROUNDS); dl('#dlAlign', ALIGNMENTS);
   const fs = document.createElement('datalist'); fs.id = 'dlFeatSrc';
-  fs.innerHTML = ['Класс', 'Подкласс', 'Черта', 'Вид', 'Предыстория', 'Предмет', 'Прочее'].map((x) => `<option value="${x}">`).join('');
+  fs.innerHTML = ['Класс', 'Подкласс', 'Черта', 'Раса', 'Предыстория', 'Предмет', 'Прочее'].map((x) => `<option value="${x}">`).join('');
   document.body.appendChild(fs);
 }
 

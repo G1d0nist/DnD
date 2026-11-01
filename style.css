@@ -272,6 +272,8 @@ button.stat:hover { border-color: var(--gold); }
 .wiz-steps button:disabled { opacity: .45; }
 .skill-pick { display: grid; grid-template-columns: repeat(auto-fill, minmax(170px, 1fr)); gap: 4px 10px; }
 .skill-pick label.check.muted { color: var(--muted); }
+.skill-pick label.check:hover { color: var(--gold2); }
+.skill-desc { display: grid; gap: 6px; margin-top: 6px; padding: 8px 10px; min-height: 42px; background: var(--bg2); border: 1px solid var(--line); border-left: 3px solid var(--gold); border-radius: 8px; font-size: 13px; color: #d6ccbc; }
 #wizNav .muted { margin-right: auto; }
 #wizBody > label.check { display: flex; margin: 6px 0; }
 
