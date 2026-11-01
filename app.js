@@ -22,6 +22,7 @@ function blankChar() {
   const abil = { str: 10, dex: 10, con: 10, int: 10, wis: 10, cha: 10 };
   return {
     id: uid(),
+    updatedAt: Date.now(),
     info: { name: 'Новый персонаж', cls: '', subclass: '', level: 1, species: '', background: '', alignment: '', xp: 0, size: 'Средний' },
     abil,
     saves: Object.fromEntries(Object.keys(abil).map((k) => [k, false])),
@@ -56,11 +57,44 @@ function loadState() {
   if (!state.chars[state.current]) state.current = Object.keys(state.chars)[0];
 }
 let saveTimer;
-function save() {
+const dirty = new Set(); // id персонажей, изменённых с последней отправки в облако
+// touch=false — сохранить локально, не помечая персонажа изменённым (например, данные пришли из облака)
+function save(touch = true) {
+  if (touch && ch()) { ch().updatedAt = Date.now(); dirty.add(ch().id); }
   clearTimeout(saveTimer);
-  saveTimer = setTimeout(() => { if (!lsSet(STORE, JSON.stringify(state))) toast('⚠ Не удалось сохранить в браузере — сделайте экспорт'); }, 250);
+  saveTimer = setTimeout(() => {
+    if (!lsSet(STORE, JSON.stringify(state))) toast('⚠ Не удалось сохранить в браузере — сделайте экспорт');
+    dirty.forEach((id) => { if (state.chars[id] && window.dndSync) window.dndSync.push(state.chars[id]); });
+    dirty.clear();
+  }, 250);
 }
 const ch = () => state.chars[state.current];
+
+// Мост для sync.js (облачная синхронизация)
+window.dndApp = {
+  chars: () => state.chars,
+  // docs: [{ id, deleted, updatedAt, data }] — побеждает более позднее изменение
+  applyRemote(docs) {
+    let changed = false;
+    docs.forEach((d) => {
+      const local = state.chars[d.id];
+      const localAt = local ? local.updatedAt || 0 : 0;
+      if (d.deleted) {
+        if (local && localAt <= d.updatedAt) { delete state.chars[d.id]; changed = true; }
+      } else if (!local || localAt < d.updatedAt) {
+        state.chars[d.id] = migrate(d.data); changed = true;
+      }
+    });
+    if (!changed) return;
+    if (!Object.keys(state.chars).length) { const n = blankChar(); state.chars[n.id] = n; }
+    if (!state.chars[state.current]) state.current = Object.keys(state.chars)[0];
+    save(false); render();
+    if (curTab === 'ref') renderRef();
+  },
+  toast: (html, cls) => toast(html, cls),
+  openModal: (html) => openModal(html),
+  closeModal: () => closeModal(),
+};
 
 /* ---------- Производные значения ---------- */
 const lvl = (c) => clamp(parseInt(c.info.level) || 1, 1, 20);
@@ -710,6 +744,7 @@ const ACT = {
     const c = ch();
     if (!confirmBox(`Удалить персонажа «${c.info.name}»? Это действие нельзя отменить. Рекомендуем сначала сделать экспорт.`)) return;
     delete state.chars[c.id];
+    if (window.dndSync) window.dndSync.remove(c.id);
     if (!Object.keys(state.chars).length) { const n = blankChar(); state.chars[n.id] = n; }
     state.current = Object.keys(state.chars)[0];
   },
@@ -1019,7 +1054,7 @@ function bindEvents() {
     if (e.key === 'Escape') { if (!$('#modal').hidden) closeModal(); else $('#dicePanel').classList.remove('open'); }
   });
   $('#hpAmount').addEventListener('keydown', (e) => { if (e.key === 'Enter') { e.preventDefault(); ACT.damage(); save(); render(); } });
-  $('#charSelect').addEventListener('change', (e) => { state.current = e.target.value; openSet.clear(); pendingConc = 0; save(); render(); });
+  $('#charSelect').addEventListener('change', (e) => { state.current = e.target.value; openSet.clear(); pendingConc = 0; save(false); render(); });
   $('#importFile').addEventListener('change', async (e) => {
     const f = e.target.files[0];
     e.target.value = '';

@@ -24,6 +24,7 @@
     <button data-act="exportChar" title="Экспорт в файл JSON">⭳ Экспорт</button>
     <button data-act="importChar" title="Импорт из файла JSON">⭱ Импорт</button>
     <button data-act="deleteChar" class="danger" title="Удалить персонажа">🗑</button>
+    <button id="syncBtn" hidden>☁</button>
   </div>
 </header>
 
@@ -309,6 +310,7 @@
 
 <script src="data.js"></script>
 <script src="app.js"></script>
+<script type="module" src="sync.js"></script>
 <script>
   if ('serviceWorker' in navigator && location.protocol !== 'file:') {
     window.addEventListener('load', () => navigator.serviceWorker.register('sw.js').catch(() => {}));

@@ -63,6 +63,10 @@ label.inline select { width: auto; margin: 0; }
 .brand small { color: var(--muted); font-size: 12px; margin-left: 4px; }
 .charpick { display: flex; gap: 6px; flex-wrap: wrap; }
 .charpick select { width: auto; max-width: 220px; }
+#syncBtn.sync-ok { border-color: #2f5a2f; color: #9fd69f; }
+#syncBtn.sync-busy { border-color: var(--gold); color: var(--gold2); }
+#syncBtn.sync-off { color: var(--muted); }
+#syncBtn.sync-err { border-color: var(--red); color: #f3b1a8; }
 
 .quickbar { position: sticky; top: 0; z-index: 20; display: grid; grid-template-columns: minmax(150px, 1fr) minmax(280px, 2fr) auto auto; gap: 10px 16px; align-items: center; padding: 10px 16px; background: rgba(29,25,21,.97); border-bottom: 1px solid var(--line); box-shadow: var(--shadow); backdrop-filter: blur(6px); }
 .qb-name { font-size: 22px; color: var(--gold2); line-height: 1.1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
