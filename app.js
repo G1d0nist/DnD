@@ -1936,9 +1936,14 @@ const ACT = {
     i.attuned = !i.attuned;
   },
   addClassRes() {
+    // Только ресурсы классов, сгруппированные по классу (ресурсы вида и черт добавляются сами)
     const c = ch();
-    const opts = Object.entries(CLASS_RESOURCES).map(([k, r]) => `<button data-act="addAutoRes" data-k="${k}" ${c.resources.some((x) => x.auto === k) ? 'disabled' : ''}>${r.n}</button>`).join('');
-    openModal(`<h2>Ресурсы классов</h2><p class="muted small">Максимум считается автоматически по уровню персонажа (для мультикласса отключите авторасчёт в настройках ресурса).</p><div class="slot-choice">${opts}</div><div class="modal-actions"><button data-act="closeModal">Готово</button></div>`);
+    const groups = '<div class="res-groups">' + Object.entries(CLASSES).filter(([, d]) => d.res.length).map(([cls, d]) => `<div><h3>${cls}</h3><div class="slot-choice">${d.res.map((k) => {
+      const has = c.resources.some((x) => x.auto === k);
+      return `<button data-act="addAutoRes" data-k="${k}" ${has ? 'disabled' : ''}>${has ? '✓ ' : ''}${CLASS_RESOURCES[k].n}</button>`;
+    }).join('')}</div></div>`).join('') + '</div>';
+    openModal(`<h2>Ресурсы других классов</h2><p class="muted small">Ресурсы ваших классов (в том числе мультикласса), вида и черт добавляются автоматически. Здесь можно вручную добавить ресурс любого класса — максимум считается по общему уровню персонажа, его можно поправить в настройках ресурса (✎).</p>
+      ${groups}<div class="modal-actions"><button data-act="closeModal">Готово</button></div>`);
   },
   addAutoRes(el) {
     const k = el.dataset.k, R = CLASS_RESOURCES[k];

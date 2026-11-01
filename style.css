@@ -261,7 +261,10 @@ button.stat:hover { border-color: var(--gold); }
 .db-row { display: flex; align-items: center; gap: 8px; padding: 6px 8px; background: var(--bg2); border: 1px solid var(--line); border-radius: 8px; }
 .db-row .li-title { min-width: 0; }
 .slot-choice { display: grid; grid-template-columns: repeat(auto-fill, minmax(130px, 1fr)); gap: 6px; margin-top: 8px; }
-.slot-choice button { text-align: left; }
+.slot-choice button { text-align: left; white-space: normal; overflow-wrap: anywhere; line-height: 1.3; }
+.res-groups { display: grid; grid-template-columns: repeat(auto-fill, minmax(170px, 1fr)); gap: 4px 12px; }
+.res-groups h3 { margin: 8px 0 4px; }
+.res-groups .slot-choice { grid-template-columns: 1fr; margin-top: 0; gap: 4px; }
 .slot-choice button:disabled { opacity: .4; cursor: not-allowed; }
 
 /* Мастер создания */
