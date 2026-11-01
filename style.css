@@ -43,7 +43,7 @@ input, select, textarea, button {
 input, select, textarea { padding: 6px 8px; width: 100%; min-width: 0; }
 textarea { resize: vertical; }
 input:focus, select:focus, textarea:focus { outline: none; border-color: var(--gold); box-shadow: 0 0 0 2px rgba(212,166,74,.2); }
-input[type=checkbox] { width: auto; accent-color: var(--gold); }
+input[type=checkbox], input[type=radio] { width: auto; flex: none; margin: 0; accent-color: var(--gold); }
 input[type=number] { -moz-appearance: textfield; }
 button { cursor: pointer; padding: 6px 11px; background: var(--card2); transition: background .15s, border-color .15s; white-space: nowrap; }
 button:hover { border-color: var(--gold); background: #362e25; }
@@ -270,6 +270,7 @@ button.stat:hover { border-color: var(--gold); }
 .skill-pick { display: grid; grid-template-columns: repeat(auto-fill, minmax(170px, 1fr)); gap: 4px 10px; }
 .skill-pick label.check.muted { color: var(--muted); }
 #wizNav .muted { margin-right: auto; }
+#wizBody > label.check { display: flex; margin: 6px 0; }
 
 /* Мультикласс */
 .multi-row { display: grid; grid-template-columns: 1.3fr 1.3fr 90px auto; gap: 0 10px; align-items: end; }
