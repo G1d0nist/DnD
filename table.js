@@ -237,9 +237,11 @@ function renderTokens() {
     el.style.setProperty('--tc', t.color || (t.kind === 'npc' ? '#c94a3d' : '#d4a64a'));
     el.className = `tok ${t.kind} ${canMove(t) ? 'mine' : ''} ${selId === id ? 'sel' : ''} ${cur && cur.tokenId === id ? 'turn' : ''} ${t.hidden ? 'hid' : ''} ${(t.hp || 0) <= 0 && t.hpMax ? 'down' : ''}`;
     el.title = `${t.name}${showNums ? ` · ${t.hp}/${t.hpMax} хитов${t.ac ? ` · КД ${t.ac}` : ''}` : ''}${(t.cond || []).length ? ` · ${t.cond.join(', ')}` : ''}`;
-    el.innerHTML = `<div class="tok-face">${esc((t.name || '?').trim().slice(0, 2))}</div>
+    const html = `<div class="tok-face">${esc((t.name || '?').trim().slice(0, 2))}</div>
       ${t.hpMax ? `<div class="tok-hp"><div style="width:${pct * 100}%;background:${pct > .5 ? '#5a9e5a' : pct > .25 ? '#d4a64a' : '#c94a3d'}"></div></div>` : ''}
       <div class="tok-name">${esc(t.name || '')}${(t.cond || []).length ? ` <span class="tok-cond">●${t.cond.length}</span>` : ''}</div>`;
+    // Пересоздавать содержимое только при изменении — иначе касание пальцем «теряет» токен посреди перетаскивания
+    if (el._html !== html) { el.innerHTML = html; el._html = html; }
   });
   $$('[data-tok]', box).forEach((el) => { if (!seen.has(el.dataset.tok)) el.remove(); });
 }
@@ -259,7 +261,12 @@ function hint(text, e) {
 function onDown(e) {
   if (!game || e.button > 0) return;
   const tokEl = e.target.closest('[data-tok]'), p = cellAt(e);
-  if (tool === 'place') { placeMyToken(p.x, p.y); tool = 'move'; renderTools(); return; }
+  // «Переставить меня»: нажатие на клетку ставит персонажа; нажатие на свой токен — сразу обычное перетаскивание
+  if (tool === 'place') {
+    tool = 'move'; renderTools(); $('#tblBoard').dataset.tool = tool;
+    const own = tokEl && game.tokens[tokEl.dataset.tok] && canMove(game.tokens[tokEl.dataset.tok]);
+    if (!own) { placeMyToken(p.x, p.y); return; }
+  }
   if (tool === 'enemy') { newEnemyDialog(p.x, p.y); return; }
   if (TERRAIN[tool] || tool === 'erase') {
     drag = { kind: 'paint', pending: {} };
@@ -421,6 +428,7 @@ function renderLobby() {
 function renderTools() {
   const t = (k, label, title) => `<button class="${tool === k ? 'on' : ''}" data-tool="${k}" title="${title || ''}">${label}</button>`;
   const hasMine = user && game.tokens[`pc_${user.uid}`];
+  $('#tblBoard').dataset.tool = tool; // курсор поля соответствует инструменту
   $('#tblTools').innerHTML = `<div class="seg">${t('move', '✋ Двигать', 'Перетаскивайте токены, по пустому месту — прокрутка')}
     ${isDM() ? t('wall', '▮ Стена') + t('difficult', '▦ Трудная') + t('water', '≈ Вода') + t('erase', '⌫ Ластик') + t('enemy', '＋ Враг', 'Нажмите на клетку, чтобы поставить существо') : ''}
     ${!isDM() ? t('place', hasMine ? '📍 Переставить меня' : '📍 Поставить персонажа', 'Нажмите на клетку') : ''}</div>`;
@@ -524,9 +532,10 @@ document.addEventListener('change', (e) => {
 });
 const board = $('#tblBoard');
 board.addEventListener('pointerdown', onDown);
-board.addEventListener('pointermove', onMove);
-board.addEventListener('pointerup', onUp);
-board.addEventListener('pointercancel', onUp);
+// Движение и отпускание слушаем на всём окне: палец может «уйти» с поля или с токена во время перетаскивания
+window.addEventListener('pointermove', onMove);
+window.addEventListener('pointerup', onUp);
+window.addEventListener('pointercancel', onUp);
 $('#tblWrap').addEventListener('wheel', (e) => {
   if (!e.ctrlKey && !e.metaKey) return; // масштаб — Ctrl + колесо, обычное колесо прокручивает
   e.preventDefault();

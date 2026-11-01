@@ -296,7 +296,8 @@ button.stat:hover { border-color: var(--gold); }
 .tbl-board canvas { position: absolute; left: 0; top: 0; pointer-events: none; }
 .tbl-board[data-tool="wall"], .tbl-board[data-tool="difficult"], .tbl-board[data-tool="water"], .tbl-board[data-tool="erase"], .tbl-board[data-tool="enemy"], .tbl-board[data-tool="place"] { cursor: crosshair; }
 #tblTokens { position: absolute; inset: 0; }
-.tok { position: absolute; transition: left .35s ease, top .35s ease; cursor: default; }
+.tok { position: absolute; transition: left .35s ease, top .35s ease; cursor: default; touch-action: none; }
+.tok * { touch-action: none; }
 .tok.mine { cursor: grab; }
 .tok.dragging { transition: none; z-index: 5; cursor: grabbing; opacity: .85; }
 .tok-face { position: absolute; inset: 3px; border-radius: 50%; display: flex; align-items: center; justify-content: center; font-weight: 700; color: #fff; text-shadow: 0 1px 2px #000;
