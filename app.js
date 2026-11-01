@@ -1264,6 +1264,8 @@ function wizChange(e) {
     W[f] = el.value;
     if (f === 'sp') { W.size = ''; W.lin = ''; W.spSkills = []; }
     if (f === 'bg' && wizBg()) { [W.a1, W.a2] = wizBg().abil; W.clsSkills = W.clsSkills.filter((k) => !wizBg().sk.includes(k)); W.spSkills = W.spSkills.filter((k) => !wizBg().sk.includes(k)); }
+    // +2 и +1 — к разным характеристикам: если совпали, +1 переходит на другую
+    if (f === 'a1' && W.a2 === W.a1 && wizBg()) W.a2 = wizBg().abil.find((k) => k !== W.a1);
     if (f === 'cls') W.clsSkills = [];
     if (f === 'name') return;
   } else if (el.dataset.wsk) {
@@ -1339,15 +1341,16 @@ function renderWizard() {
       if (sp.skill) h += `<h3>Навык расы</h3>${skillPickHtml('spSkills', sp.skill[0], sp.skill[1], 'sp')}`;
     }
   } else if (W.step === 1) {
+    if (bg && W.a1 === W.a2) W.a2 = bg.abil.find((k) => k !== W.a1);
     h = `<label>Предыстория<select data-w="bg"><option value="">— выберите —</option>${BACKGROUND_DATA.map((b) => `<option ${W.bg === b.n ? 'selected' : ''}>${b.n}</option>`).join('')}</select></label>`;
     if (bg) {
       const f = FEATS_BY[bg.feat];
       h += `<ul class="lvl-list"><li><b>Навыки:</b> ${bg.sk.map(skillName).join(', ')}</li><li><b>Инструмент:</b> ${bg.tool}</li>
-        <li><b>Черта происхождения:</b> ${f.n}${bg.featNote ? ` (${bg.featNote})` : ''} — ${esc(f.x)}</li></ul>
+        <li><b>Черта происхождения:</b> ${f.n}${bg.featNote ? ` (${bg.featNote})` : ''} — ${esc(bg.feat === 'magicInitiate' && bg.featNote ? `Два заговора и одно заклинание 1 уровня из списка ${{ жрец: 'жреца', друид: 'друида', волшебник: 'волшебника' }[bg.featNote] || bg.featNote}; заклинание 1 ур. раз в долгий отдых без ячейки.` : f.x)}</li></ul>
         <h3>Увеличение характеристик (${bg.abil.map(abilS).join(', ')})</h3>
         <div class="row gap wrap"><select data-w="bgMode"><option value="21" ${W.bgMode === '21' ? 'selected' : ''}>+2 и +1</option><option value="111" ${W.bgMode === '111' ? 'selected' : ''}>+1 к каждой из трёх</option></select>
         ${W.bgMode === '21' ? `<label class="inline">+2 <select data-w="a1">${bg.abil.map((k) => `<option value="${k}" ${W.a1 === k ? 'selected' : ''}>${abilS(k)}</option>`).join('')}</select></label>
-        <label class="inline">+1 <select data-w="a2">${bg.abil.map((k) => `<option value="${k}" ${W.a2 === k ? 'selected' : ''}>${abilS(k)}</option>`).join('')}</select></label>` : ''}</div>
+        <label class="inline">+1 <select data-w="a2">${bg.abil.filter((k) => k !== W.a1).map((k) => `<option value="${k}" ${W.a2 === k ? 'selected' : ''}>${abilS(k)}</option>`).join('')}</select></label>` : ''}</div>
         ${W.mode === 'origin' ? '<p class="muted small">Прежние навыки останутся; черта прежней предыстории будет заменена.</p>' : ''}`;
     }
   } else if (W.step === 2) {
@@ -1662,10 +1665,12 @@ function autoSpells(c) {
 // Сколько заклинаний черта даёт на выбор (0 — выбирать нечего)
 const featPickNeed = (f) => ((FEAT_SPELLS[f.key] || {}).pick || []).reduce((s, g) => s + g.n, 0);
 const isAttackCantrip = (s) => s.l === 0 && /атака заклинанием|атака оружием/i.test(s.x);
-let featSp = null; // окно выбора заклинаний черты: { featId, list, chosen: Set }
+let featSp = null; // окно выбора заклинаний черты: { featId, fixed, list, chosen: Set }
+const noteList = (note) => ({ жрец: 'Жрец', друид: 'Друид', волшебник: 'Волшебник' }[note] || '');
 function openFeatSpells(f) {
   const d = FEAT_SPELLS[f.key];
-  featSp = { featId: f.id, list: f.list || (d.lists ? d.lists[0] : ''), chosen: new Set(f.spells || []) };
+  // У черты от предыстории список заклинаний задан (Аколит — жрец, Проводник — друид, Мудрец — волшебник)
+  featSp = { featId: f.id, fixed: noteList(f.note), list: noteList(f.note) || f.list || (d.lists ? d.lists[0] : ''), chosen: new Set(f.spells || []) };
   openModal(`<h2>✨ Заклинания: ${esc(FEATS_BY[f.key].n)}</h2><div id="featSpBody"></div>`);
   modalRefresh = renderFeatSpells;
   $('#modalBody').onchange = (e) => {
@@ -1699,7 +1704,8 @@ function renderFeatSpells() {
         return `<label class="check" title="${esc(s.x)}"><input type="checkbox" data-fsp="1" value="${esc(s.e)}" ${on ? 'checked' : ''} ${!on && got >= g.n ? 'disabled' : ''}> ${esc(s.n)}</label>`;
       }).join('')}</div>`;
   }).join('');
-  box.innerHTML = `${d.lists ? `<label class="inline">Список заклинаний <select id="fspList">${d.lists.map((k) => `<option ${featSp.list === k ? 'selected' : ''}>${k}</option>`).join('')}</select></label>` : ''}
+  box.innerHTML = `${d.lists ? (featSp.fixed ? `<p>Список заклинаний: <b>${featSp.fixed}</b> <span class="muted small">(задан предысторией)</span></p>`
+    : `<label class="inline">Список заклинаний <select id="fspList">${d.lists.map((k) => `<option ${featSp.list === k ? 'selected' : ''}>${k}</option>`).join('')}</select></label>`) : ''}
     ${d.fixed ? `<p class="muted small">Всегда даёт: ${d.fixed.map((e) => spellByE(e)?.n || e).join(', ')}.</p>` : ''}
     ${groups}<p class="muted small">Выбранные заклинания всегда подготовлены и не входят в лимит. Наведите на название, чтобы увидеть описание.</p>
     <div class="modal-actions"><button data-act="closeModal">Отмена</button><button class="primary" data-act="featSpellsSave" ${ok ? '' : 'disabled'}>Сохранить</button></div>`;
