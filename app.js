@@ -33,6 +33,7 @@ function blankChar() {
     effects: [],
     feats: [], // { id, key, slot, a, a1, a2, mode, lvl, bg }
     bgAbil: {}, // прибавки к характеристикам от предыстории: { str: 2, dex: 1 }
+    abilSet: false, // характеристики уже заданы (генерацией, мастером или вручную) — кнопка «Генерация» скрывается
     attacks: [{ id: uid(), n: 'Безоружный удар', ability: 'str', prof: true, hit: 0, dmg: '1', addMod: true, dmgBonus: 0, type: 'дробящий', mastery: '', range: '5 фт', x: '' }],
     spellcasting: { ability: 'int', casterType: 'none', bonus: 0 },
     slots: Array.from({ length: 9 }, () => ({ max: 0, used: 0 })),
@@ -50,7 +51,9 @@ function deepFill(t, s) {
   }
 }
 function migrate(c) {
-  const old = { armorV: c.armor && c.armor.v, clsApplied: c.info && c.info.clsApplied };
+  const old = { armorV: c.armor && c.armor.v, clsApplied: c.info && c.info.clsApplied, abilSet: c.abilSet };
+  // У старых персонажей характеристики считаются заданными, если хоть одна отличается от 10
+  if (old.abilSet === undefined && c.abil) c.abilSet = Object.values(c.abil).some((v) => +v !== 10);
   deepFill(c, blankChar());
   // Авто-КД стал режимом по умолчанию: старых персонажей переводим, только если ручной КД
   // не задан (10) или совпадает с расчётом — иначе там учтено что-то, чего сайт не знает
@@ -592,14 +595,27 @@ function renderHeader() {
   $('#xpHint').textContent = L < 20 ? `До ${L + 1} уровня: ${Math.max(0, XP_TABLE[L] - (+c.info.xp || 0))} опыта` : 'Максимальный уровень';
 }
 
+// Режим правки базовых значений (кнопка «Изменить»); в обычном режиме поля скрыты
+let abilEdit = false;
 function renderAbil() {
   const c = ch();
+  $('#abilGrid').classList.toggle('editing', abilEdit);
+  $('#abilEditBtn').textContent = abilEdit ? '✓ Готово' : '✎ Изменить';
+  $('#abilEditBtn').classList.toggle('primary', abilEdit);
+  $('#abilGenBtn').hidden = !!c.abilSet && !abilEdit;
+  $('#abilHint').textContent = abilEdit
+    ? 'Правка базовых значений — без бонусов предыстории и черт (они добавятся сами). Используйте, например, при потере конечности или по решению мастера.'
+    : 'Нажмите на модификатор — проверка, на «Спас» — спасбросок. Галочка — владение спасброском. Наведите на значение, чтобы увидеть, из чего оно складывается.';
   ABILITIES.forEach((a) => {
     $(`#am-${a.k}`).textContent = fmt(am(c, a.k));
     $(`#as-${a.k}`).textContent = `Спас ${fmt(saveBonus(c, a.k))}`;
-    const s = score(c, a.k), base = +c.abil[a.k] || 0;
-    $(`#af-${a.k}`).textContent = s !== base ? `итог ${s} (${fmt(s - base)})` : '';
-    $(`#af-${a.k}`).title = s !== base ? 'Базовое значение + черты / умения класса' : '';
+    // Крупно — итоговое значение; раскладка (база + предыстория + черты) — в подсказке и в режиме правки
+    const s = score(c, a.k), base = +c.abil[a.k] || 0, bg = +(c.bgAbil || {})[a.k] || 0;
+    const parts = [`база ${base}`, bg ? `предыстория +${bg}` : '', s - base - bg ? `черты/умения ${fmt(s - base - bg)}` : ''].filter(Boolean);
+    $(`#sc-${a.k}`).textContent = s;
+    $(`#sc-${a.k}`).title = s !== base ? `${a.n} ${s}: ${parts.join(', ')}` : `${a.n} ${s}`;
+    $(`#sc-${a.k}`).classList.toggle('boosted', s !== base);
+    $(`#af-${a.k}`).textContent = abilEdit && s !== base ? `итог ${s}` : '';
     $(`#as-${a.k}`).title = !c.saves[a.k] && saveProf(c, a.k) ? 'Владение от черты «Устойчивый»' : '';
   });
 }
@@ -934,7 +950,9 @@ function renderGen() {
   const box = $('#genBody');
   if (!box) return;
   const embed = box.dataset.embed === '1';
-  const bonusOf = (k) => (embed ? (wizBgAbil()[k] || 0) : +gen.bonus[k] || 0);
+  // Бонусы предыстории уже учтены в листе отдельно — показываем их только для справки, чтобы не задвоить
+  const fixed = embed ? wizBgAbil() : (Object.keys(ch().bgAbil || {}).length ? ch().bgAbil : null);
+  const bonusOf = (k) => (fixed ? (+fixed[k] || 0) : +gen.bonus[k] || 0);
   const mode = gen.mode, pool = genPool(), asg = genAssign();
   const left = PB_POOL - pbSpent();
   const tabs = [['standard', 'Стандартный набор'], ['pointbuy', 'Покупка очков'], ['roll', 'Бросок 4d6']]
@@ -959,7 +977,7 @@ function renderGen() {
   }
 
   const bonusSum = ABILITIES.reduce((s, a) => s + bonusOf(a.k), 0);
-  html += `<div class="gen-grid mt"><div class="gen-row head"><span>Характеристика</span><span>Значение</span><span>${embed ? 'Предыст.' : 'Бонус'}</span><span>Итог</span></div>`;
+  html += `<div class="gen-grid mt"><div class="gen-row head"><span>Характеристика</span><span>Значение</span><span>${fixed ? 'Предыст.' : 'Бонус'}</span><span>Итог</span></div>`;
   html += ABILITIES.map((a) => {
     const base = genBase(a.k), b = bonusOf(a.k);
     const total = base == null ? null : Math.min(20, base + b);
@@ -980,12 +998,13 @@ function renderGen() {
         <select data-gsel="${a.k}" aria-label="${a.n}"><option value="">—</option>${opts}</select>`;
     }
     return `<div class="gen-row"><span class="gname">${a.n}</span><div class="gctl">${ctl}</div>
-      ${embed ? `<span class="muted">${b ? '+' + b : '—'}</span>` : `<select data-gbonus="${a.k}" title="Бонус предыстории/расы">${[0, 1, 2].map((n) => `<option value="${n}" ${b === n ? 'selected' : ''}>+${n}</option>`).join('')}</select>`}
+      ${fixed ? `<span class="muted">${b ? '+' + b : '—'}</span>` : `<select data-gbonus="${a.k}" title="Бонус предыстории/расы">${[0, 1, 2].map((n) => `<option value="${n}" ${b === n ? 'selected' : ''}>+${n}</option>`).join('')}</select>`}
       <span class="gtotal">${total ?? '—'}<small>${total == null ? '' : fmt(mod(total))}</small></span></div>`;
   }).join('') + '</div>';
   if (embed) { box.innerHTML = html; renderWizNav(); return; }
 
-  html += `<p class="muted small">Бонус: в D&D 2024 предыстория даёт +2 и +1 или +1 к трём характеристикам; в 5e 2014 — бонусы расы. Итог не выше 20.</p>`;
+  html += fixed ? '<p class="muted small">Бонусы предыстории уже учтены в листе — применятся только базовые значения.</p>'
+    : '<p class="muted small">Бонус: в D&D 2024 предыстория даёт +2 и +1 или +1 к трём характеристикам; в 5e 2014 — бонусы расы. Итог не выше 20.</p>';
   if (bonusSum > 3) html += `<p class="small gen-warn">Сумма бонусов ${bonusSum} — обычно не больше 3.</p>`;
 
   const complete = ABILITIES.every((a) => genBase(a.k) != null);
@@ -1227,6 +1246,7 @@ function wizFinish() {
   applyClassTemplate(c);
   applySpecies(c, sp, { size: W.size, lin: W.lin, skills: W.spSkills });
   ABILITIES.forEach((a) => { c.abil[a.k] = genBase(a.k) ?? 10; });
+  c.abilSet = true;
   applyBackground(c, bg, { mode: W.bgMode, a1: W.a1, a2: W.a2 });
   W.clsSkills.forEach((k) => { c.skills[k] = Math.max(1, c.skills[k] || 0); });
   c.prof.armor = P.armor; c.prof.weapons = P.weapons;
@@ -1265,7 +1285,7 @@ const ACT_LABELS = {
   skillProf: 'владение навыком', togglePrep: 'подготовка заклинания', addSpellFromDb: 'добавление заклинания', catWeapon: 'снаряжение из каталога',
   catArmor: 'доспех из каталога', catShield: 'щит', catGear: 'снаряжение из каталога', addMulti: 'мультикласс', delMulti: 'удаление класса',
   delAttack: 'удаление атаки', atkRoll: 'боеприпас', recoverAmmo: 'сбор боеприпасов', delSpell: 'удаление заклинания', delItem: 'удаление предмета', delRes: 'удаление ресурса', delFeature: 'удаление умения',
-  addAutoRes: 'ресурс класса', calcHp: 'расчёт хитов', applyClass: 'шаблон класса',
+  addAutoRes: 'ресурс класса', calcHp: 'расчёт хитов', applyClass: 'шаблон класса', abilEdit: 'характеристики',
 };
 function pushUndo(id, before, label) {
   const st = undoStacks[id] || (undoStacks[id] = []);
@@ -2133,6 +2153,13 @@ const ACT = {
     c.effects = c.effects.filter((x) => x !== e);
   },
   abilGen() { openAbilGen(); },
+  abilEdit() {
+    const c = ch();
+    abilEdit = !abilEdit;
+    // Закончили правку — характеристики считаются заданными, «Генерация» больше не нужна
+    if (!abilEdit && Object.values(c.abil).some((v) => +v !== 10)) c.abilSet = true;
+    if (abilEdit) setTimeout(() => $('#abilGrid .abase input')?.focus(), 30);
+  },
   genMode(el) { gen.mode = el.dataset.mode; renderGen(); },
   genPb(el) {
     const k = el.dataset.k, v = gen.pb[k] + +el.dataset.d;
@@ -2160,9 +2187,11 @@ const ACT = {
   genApply() {
     const c = ch();
     if (ABILITIES.some((a) => genBase(a.k) == null)) return;
-    const vals = Object.fromEntries(ABILITIES.map((a) => [a.k, Math.min(20, genBase(a.k) + (+gen.bonus[a.k] || 0))]));
+    const hasBg = Object.keys(c.bgAbil || {}).length > 0;
+    const vals = Object.fromEntries(ABILITIES.map((a) => [a.k, Math.min(20, genBase(a.k) + (hasBg ? 0 : +gen.bonus[a.k] || 0))]));
     if (!confirmBox(`Заменить характеристики персонажа?\n${ABILITIES.map((a) => `${a.s} ${vals[a.k]}`).join(' · ')}`)) return;
     Object.assign(c.abil, vals);
+    c.abilSet = true;
     closeModal(); toast('Характеристики применены');
   },
   toggleOpen(el) { const id = el.dataset.id; openSet.has(id) ? openSet.delete(id) : openSet.add(id); if (id.startsWith('db') && modalRefresh) modalRefresh(); },
@@ -2194,7 +2223,8 @@ function switchTab(t) {
 function buildStatic() {
   $('#abilGrid').innerHTML = ABILITIES.map((a) => `<div class="abil"><div class="an">${a.n}</div>
     <button class="amod" data-act="rollCheck" data-k="${a.k}" id="am-${a.k}" title="Проверка ${a.n}"></button>
-    <input type="number" min="1" max="30" data-bind="abil.${a.k}" data-num aria-label="${a.n}" title="Базовое значение (без черт)">
+    <div class="ascore" id="sc-${a.k}"></div>
+    <label class="abase">база<input type="number" min="1" max="30" data-bind="abil.${a.k}" data-num aria-label="${a.n} — базовое значение"></label>
     <div class="afinal" id="af-${a.k}"></div>
     <div class="asave"><input type="checkbox" data-bind="saves.${a.k}" title="Владение спасброском"><button data-act="rollSave" data-k="${a.k}" id="as-${a.k}"></button></div></div>`).join('');
   $('#slotList').innerHTML = Array.from({ length: 9 }, (_, i) => `<div class="slot-row" id="slotRow${i}"><span class="lv">${i + 1} ур.</span>
@@ -2259,7 +2289,7 @@ function bindEvents() {
     if ((e.ctrlKey || e.metaKey) && e.code === 'KeyZ' && !e.shiftKey && !typing && $('#modal').hidden) { e.preventDefault(); undo(); }
   });
   $('#hpAmount').addEventListener('keydown', (e) => { if (e.key === 'Enter') { e.preventDefault(); tracked('урон', () => ACT.damage()); save(); render(); } });
-  $('#charSelect').addEventListener('change', (e) => { state.current = e.target.value; openSet.clear(); pendingConc = 0; save(false); render(); });
+  $('#charSelect').addEventListener('change', (e) => { state.current = e.target.value; openSet.clear(); pendingConc = 0; abilEdit = false; save(false); render(); });
   $('#importFile').addEventListener('change', async (e) => {
     const f = e.target.files[0];
     e.target.value = '';

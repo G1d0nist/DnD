@@ -97,9 +97,10 @@
       </div>
 
       <div class="card">
-        <div class="row between wrap gap"><h2>Характеристики</h2><button data-act="abilGen" title="Стандартный набор, покупка очков или бросок 4d6">🎲 Генерация</button></div>
+        <div class="row between wrap gap"><h2>Характеристики</h2>
+          <div class="row gap"><button id="abilGenBtn" data-act="abilGen" title="Стандартный набор, покупка очков или бросок 4d6">🎲 Генерация</button><button id="abilEditBtn" data-act="abilEdit" title="Изменить базовые значения характеристик">✎ Изменить</button></div></div>
         <div class="abil-grid" id="abilGrid"></div>
-        <p class="muted small">Нажмите на модификатор — проверка, на «Спас» — спасбросок. Галочка — владение спасброском.</p>
+        <p class="muted small" id="abilHint"></p>
       </div>
 
       <div class="card">
