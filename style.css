@@ -97,7 +97,7 @@ label.inline select { width: auto; margin: 0; }
 .alert.info { background: #1d2a3a; border-color: #34507a; color: #a9c8ef; }
 .alert.gold { background: #3b2e17; border-color: var(--gold); color: var(--gold2); }
 
-.tabs { display: flex; gap: 2px; padding: 10px 16px 0; overflow-x: auto; border-bottom: 1px solid var(--line); scrollbar-width: none; }
+.tabs { display: flex; gap: 2px; padding: 10px 16px 0; overflow-x: auto; border-bottom: 1px solid var(--line); scrollbar-width: none; position: sticky; top: var(--qbh, 0px); z-index: 15; background: var(--bg); }
 .tabs button { border: 1px solid transparent; border-bottom: none; border-radius: 8px 8px 0 0; background: none; color: var(--muted); padding: 8px 14px; font-weight: 600; }
 .tabs button.on { background: var(--card); color: var(--gold2); border-color: var(--line); }
 main { padding: 16px; max-width: 1400px; margin: 0 auto; }
@@ -262,6 +262,25 @@ button.stat:hover { border-color: var(--gold); }
 .slot-choice { display: grid; grid-template-columns: repeat(auto-fill, minmax(130px, 1fr)); gap: 6px; margin-top: 8px; }
 .slot-choice button { text-align: left; }
 .slot-choice button:disabled { opacity: .4; cursor: not-allowed; }
+
+/* Умения класса и быстрые заклинания */
+.class-panel { display: grid; grid-template-columns: repeat(auto-fill, minmax(190px, 1fr)); gap: 8px; }
+.cp-item { background: var(--bg2); border: 1px solid var(--line); border-radius: 9px; padding: 8px 10px; }
+.cp-item.on { border-color: var(--red); background: #2a1512; }
+.cp-n { font-size: 12px; color: var(--muted); }
+.cp-v { font-size: 18px; font-weight: 700; color: var(--gold2); }
+.cp-btns { display: flex; gap: 4px; margin-top: 6px; flex-wrap: wrap; }
+.cp-btns button { padding: 3px 9px; font-size: 13px; }
+.qs-slots { display: flex; flex-wrap: wrap; gap: 6px 14px; margin: 4px 0 10px; }
+.qs-slots:empty { display: none; }
+.qs-slot { display: inline-flex; align-items: center; gap: 6px; }
+.qs-slot b { color: var(--gold); font-size: 13px; }
+.qs-slot.pact b { color: var(--purple); }
+.qs-slot.pact .pip { border-color: var(--purple); background: var(--purple); }
+.qs-slot.pact .pip.used { background: transparent; border-color: var(--line); }
+.qs-slot .pip { width: 16px; height: 16px; }
+.lvl-badge { display: inline-flex; align-items: center; justify-content: center; min-width: 22px; height: 22px; border-radius: 6px; background: var(--card2); border: 1px solid var(--line); color: var(--gold); font-size: 12px; font-weight: 700; }
+.li.qs { padding: 6px 10px; }
 
 /* КД, эффекты, повышение уровня */
 .ac-mode { margin: 4px 0 8px; }

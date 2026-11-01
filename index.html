@@ -143,6 +143,7 @@
           <label>Бонус инициативы (доп.)<input type="number" data-bind="combat.initBonus" data-num></label>
           <label>Скорость, фт<input type="number" step="5" data-bind="combat.speed" data-num></label>
         </div>
+        <div id="speedInfo" class="muted small"></div>
         <div class="row gap wrap ac-mode">
           <label class="inline">Расчёт КД <select data-bind="armor.mode"><option value="manual">Вручную</option><option value="auto">Автоматически</option></select></label>
           <button data-act="openCatalog" data-t="armor">📖 Доспехи</button>
@@ -163,9 +164,22 @@
         <div class="row gap"><input data-bind="combat.conc" placeholder="Нет — заклинание с концентрацией"><button data-act="dropConc">Прервать</button><button data-act="concSave">Спасбросок</button></div>
       </div>
 
+      <div class="card span-all" id="classCard" hidden>
+        <h2>Умения класса</h2>
+        <div id="classPanel" class="class-panel"></div>
+      </div>
+
       <div class="card span-all">
-        <h2>Состояния</h2>
-        <div id="condList" class="chips"></div>
+        <div class="row between wrap gap"><h2>Атаки</h2><div class="row gap"><button data-act="openCatalog" data-t="weapons">📖 Каталог оружия</button><button data-act="addAttack">＋ Атака</button></div></div>
+        <div id="attackList" class="list"></div>
+      </div>
+
+      <div class="card span-all" id="qsCard" hidden>
+        <div class="row between wrap gap"><h2>Заклинания</h2>
+          <div class="row gap wrap"><span id="qsStats" class="row gap"></span><button class="ghost" data-act="goTab" data-tab-go="spells">все заклинания →</button></div>
+        </div>
+        <div id="qsSlots" class="qs-slots"></div>
+        <div id="qsList" class="list"></div>
       </div>
 
       <div class="card span-all">
@@ -182,8 +196,8 @@
       </div>
 
       <div class="card span-all">
-        <div class="row between wrap gap"><h2>Атаки</h2><div class="row gap"><button data-act="openCatalog" data-t="weapons">📖 Каталог оружия</button><button data-act="addAttack">＋ Атака</button></div></div>
-        <div id="attackList" class="list"></div>
+        <h2>Состояния</h2>
+        <div id="condList" class="chips"></div>
       </div>
     </div>
   </section>

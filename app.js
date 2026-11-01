@@ -107,7 +107,10 @@ const skillBonus = (c, s) => {
   const p = c.skills[s.k] || 0;
   return am(c, s.a) + (p === 2 ? 2 * pb(c) : p === 1 ? pb(c) : c.combat.jack ? Math.floor(pb(c) / 2) : 0);
 };
-const saveBonus = (c, k) => am(c, k) + (c.saves[k] ? pb(c) : 0);
+const clsIs = (c, n) => c.info.cls.trim() === n;
+// Аура защиты паладина (6+ ур.): +Хар (мин. +1) ко всем спасброскам, пока паладин в сознании
+const auraBonus = (c) => (clsIs(c, 'Паладин') && lvl(c) >= 6 && (+c.combat.hp || 0) > 0 ? Math.max(1, am(c, 'cha')) : 0);
+const saveBonus = (c, k) => am(c, k) + (c.saves[k] ? pb(c) : 0) + auraBonus(c);
 const initBonus = (c) => am(c, 'dex') + (+c.combat.initBonus || 0);
 const spellMod = (c) => am(c, c.spellcasting.ability);
 const spellDC = (c) => 8 + pb(c) + spellMod(c) + (+c.spellcasting.bonus || 0);
@@ -137,19 +140,38 @@ function computeAC(c) {
 }
 const armorStealthDis = (c) => c.armor.mode === 'auto' && !!ARMOR.find((x) => x.id === c.armor.id && x.stealth);
 const armorSlow = (c) => { const a = c.armor.mode === 'auto' && ARMOR.find((x) => x.id === c.armor.id); return a && a.str && (+c.abil.str || 0) < a.str ? 10 : 0; };
-const curSpeed = (c) => (c.combat.conditions.some((k) => SPEED_ZERO.includes(k)) ? 0 : Math.max(0, (+c.combat.speed || 0) - 5 * (c.combat.exhaustion || 0) - armorSlow(c)));
+// Доспех известен только в режиме авто-КД; в ручном режиме считаем, что доспеха нет
+const wearingArmor = (c) => c.armor.mode === 'auto' && !!c.armor.id;
+const heavyArmor = (c) => c.armor.mode === 'auto' && ARMOR.find((x) => x.id === c.armor.id)?.type === 'heavy';
+function speedBonuses(c) {
+  const L = lvl(c), out = [];
+  if (clsIs(c, 'Монах') && L >= 2 && !wearingArmor(c) && !c.armor.shield) out.push(['Движение без доспехов', L >= 18 ? 30 : L >= 14 ? 25 : L >= 10 ? 20 : L >= 6 ? 15 : 10]);
+  if (clsIs(c, 'Варвар') && L >= 5 && !heavyArmor(c)) out.push(['Быстрое передвижение', 10]);
+  if (clsIs(c, 'Следопыт') && L >= 6 && !heavyArmor(c)) out.push(['Бродяга', 10]);
+  return out;
+}
+const curSpeed = (c) => (c.combat.conditions.some((k) => SPEED_ZERO.includes(k)) ? 0
+  : Math.max(0, (+c.combat.speed || 0) + speedBonuses(c).reduce((s, [, v]) => s + v, 0) - 5 * (c.combat.exhaustion || 0) - armorSlow(c)));
+// Ярость варвара — активна, пока в эффектах есть «Ярость»
+const raging = (c) => c.effects.some((e) => e.n === 'Ярость');
+const rageDmg = (c) => (lvl(c) >= 16 ? 4 : lvl(c) >= 9 ? 3 : 2);
+const usesStr = (c, a) => a.ability === 'str' || (a.ability === 'fin' && am(c, 'str') >= am(c, 'dex'));
+const isLucky = (c) => /полурослик|halfling/i.test(c.info.species);
+const hpPerLevelBonus = (c) => (/дварф|dwarf/i.test(c.info.species) ? 1 : 0) + (c.features.some((f) => /крепкий|tough/i.test(f.n)) ? 2 : 0);
 // ability: характеристика, 'spell' — заклинательная, 'fin' — лучшая из Силы и Ловкости (фехтовальное оружие)
 const abilFor = (c, a) => (a.ability === 'spell' ? spellMod(c) : a.ability === 'fin' ? Math.max(am(c, 'str'), am(c, 'dex')) : am(c, a.ability));
 const atkAbilMod = (c, a) => abilFor(c, a) + (a.ability === 'spell' ? (+c.spellcasting.bonus || 0) : 0);
 const attackBonus = (c, a) => atkAbilMod(c, a) + (a.prof ? pb(c) : 0) + (+a.hit || 0);
-const dmgMod = (c, a) => (a.addMod ? abilFor(c, a) : 0) + (+a.dmgBonus || 0);
+const dmgMod = (c, a) => (a.addMod ? abilFor(c, a) : 0) + (+a.dmgBonus || 0) + (raging(c) && a.ability !== 'spell' && usesStr(c, a) ? rageDmg(c) : 0);
 // Боевые искусства монаха (2024): кость урона безоружного удара по уровню
 const martialDie = (L) => (L >= 17 ? '1d12' : L >= 11 ? '1d10' : L >= 5 ? '1d8' : '1d6');
 function autoMartialArts(c) {
   const monk = c.info.cls.trim() === 'Монах';
   c.attacks.forEach((a) => {
     // Нетронутый безоружный удар по умолчанию у монаха переводим на Боевые искусства
-    if (monk && !a.ma && a.n === 'Безоружный удар' && String(a.dmg) === '1' && a.ability === 'str') { a.ma = true; a.ability = 'fin'; }
+    if (monk && !a.ma && a.n === 'Безоружный удар' && String(a.dmg) === '1' && a.ability === 'str') { a.ma = true; a.maAuto = true; a.ability = 'fin'; }
+    // Класс сменился с монаха — вернуть автоматически переведённый удар к обычному
+    if (!monk && a.ma && a.maAuto) { a.ma = false; a.maAuto = false; a.dmg = '1'; a.ability = 'str'; }
     if (a.ma) a.dmg = martialDie(lvl(c));
   });
 }
@@ -212,12 +234,18 @@ function setAdv(v) { advMode = v; $$('.advmode button').forEach((b) => b.classLi
 function rollD20(label, bonus, opts = {}) {
   const c = ch();
   const pen = exhPen(c);
-  const r1 = die(20), r2 = die(20);
+  const notes = [];
+  // Удача полурослика: выпавшая 1 на к20 перебрасывается, новый результат обязателен
+  const roll = () => { const r = die(20); if (r === 1 && isLucky(c)) { const n = die(20); notes.push(`Удача: 1→${n}`); return n; } return r; };
+  const r1 = roll(), r2 = advMode ? roll() : null;
   let nat = r1, detail = `к20 [${r1}]`;
   if (advMode === 1) { nat = Math.max(r1, r2); detail = `преимущество [${r1}, ${r2}]`; }
   if (advMode === -1) { nat = Math.min(r1, r2); detail = `помеха [${r1}, ${r2}]`; }
-  const total = nat + bonus - pen;
-  detail += ` ${fmt(bonus)}` + (pen ? ` −${pen} (истощение)` : '');
+  // Надёжный талант: при проверке с владением результат кубика ниже 10 считается 10
+  let used = nat;
+  if (opts.floor10 && nat < 10) { used = 10; notes.push(`Надёжный талант: ${nat}→10`); }
+  const total = used + bonus - pen;
+  detail += ` ${fmt(bonus)}` + (pen ? ` −${pen} (истощение)` : '') + (notes.length ? ` · ${notes.join(', ')}` : '');
   let cls = nat === 20 ? 'crit' : nat === 1 ? 'fumble' : '';
   let extra = '';
   if (opts.dc != null) { extra = total >= opts.dc ? ' ✔ успех' : ' ✘ провал'; }
@@ -296,7 +324,7 @@ function render() {
   if (c.armor.mode === 'auto') c.combat.ac = computeAC(c).ac;
   autoMartialArts(c);
   fillBound();
-  renderHeader(); renderAbil(); renderSkills(); renderCombat(); renderSpells(); renderInventory(); renderFeatures();
+  renderHeader(); renderAbil(); renderSkills(); renderCombat(); renderClassPanel(); renderQuickSpells(); renderSpells(); renderInventory(); renderFeatures();
 }
 
 function fillBound() {
@@ -413,6 +441,11 @@ function renderCombat() {
     $('#acInfo').innerHTML = `КД <b>${r.ac}</b> = ${esc(r.src)}${r.notes.map((n) => `<div class="gen-warn">⚠ ${esc(n)}</div>`).join('')}`;
   }
 
+  const sb = speedBonuses(c), slow = armorSlow(c);
+  $('#speedInfo').textContent = sb.length || slow || cb.exhaustion
+    ? `Итоговая скорость ${curSpeed(c)} фт: ${[`база ${+cb.speed || 0}`, ...sb.map(([n, v]) => `+${v} ${n}`), slow ? `−${slow} доспех` : '', cb.exhaustion ? `−${cb.exhaustion * 5} истощение` : ''].filter(Boolean).join(', ')}`
+    : '';
+
   $('#roundNum').textContent = cb.round;
   $('#effList').innerHTML = c.effects.map((e) => `<div class="li eff"><div class="li-head">
       <span class="li-title" data-act="toggleOpen" data-id="${e.id}">${esc(e.n)}</span>${e.conc ? '<span class="tag c">К</span>' : ''}
@@ -519,6 +552,66 @@ function renderFeatures() {
       <span class="li-title" data-act="toggleOpen" data-id="${f.id}">${esc(f.n)}</span>${f.src ? `<span class="tag">${esc(f.src)}</span>` : ''}
       <span class="btns"><button class="ghost" data-act="editFeature" data-id="${f.id}">✎</button><button class="ghost" data-act="delFeature" data-id="${f.id}">✕</button></span>
     </div>${openSet.has(f.id) && f.x ? `<div class="li-desc">${esc(f.x)}</div>` : ''}</div>`).join('') || '<div class="muted">Добавьте умения класса, черты (feats), особенности вида и предыстории.</div>';
+}
+
+// Боевые умения класса/вида: значения по уровню и кнопки бросков
+function classPanelItems(c) {
+  const L = lvl(c), cls = c.info.cls.trim(), items = [];
+  const left = (k) => { const r = c.resources.find((x) => x.auto === k); return r ? `осталось ${r.max - r.used} из ${r.max}` : ''; };
+  const atk = cls === 'Воин' ? (L >= 20 ? 4 : L >= 11 ? 3 : L >= 5 ? 2 : 1) : ['Варвар', 'Монах', 'Паладин', 'Следопыт'].includes(cls) && L >= 5 ? 2 : 1;
+  if (atk > 1) items.push({ n: 'Атак за действие «Атака»', v: atk });
+  if (cls === 'Варвар') {
+    const on = raging(c);
+    items.push({ n: 'Ярость', v: `+${rageDmg(c)} к урону Силой`, sub: on ? 'активна: сопротивление дроб./кол./руб., преимущество Силы' : left('rage'),
+      btn: `<button data-act="rageToggle" class="${on ? 'danger' : 'primary'}">${on ? 'Закончить ярость' : '🔥 Впасть в ярость'}</button>`, on });
+  }
+  if (cls === 'Монах') {
+    items.push({ n: 'Кость Боевых искусств', v: martialDie(L).replace('1d', 'к') });
+    items.push({ n: 'СЛ умений монаха', v: 8 + am(c, 'wis') + pb(c), sub: 'Ошеломляющий удар и др.' });
+  }
+  if (cls === 'Плут') {
+    const n = Math.ceil(L / 2);
+    items.push({ n: 'Скрытая атака', v: `${n}к6`, sub: 'раз в ход, фехтовальное или дальнобойное оружие',
+      btn: `<button data-act="sneak">🎲 Урон</button><button data-act="sneak" data-crit="1">Крит</button>` });
+    if (L >= 7) items.push({ n: 'Надёжный талант', v: 'к20 < 10 → 10', sub: 'навыки с владением — учитывается при броске' });
+  }
+  if (cls === 'Воин') items.push({ n: 'Второе дыхание', v: `к10 + ${L}`, sub: left('secondWind'), btn: '<button data-act="secondWind">❤ Использовать</button>' });
+  if (cls === 'Бард') {
+    const d = L >= 15 ? 12 : L >= 10 ? 10 : L >= 5 ? 8 : 6;
+    items.push({ n: 'Кость вдохновения', v: `к${d}`, sub: left('bardic'), btn: `<button data-act="bardDie" data-d="${d}">🎲 Бросить</button>` });
+  }
+  if (cls === 'Паладин') {
+    if (L >= 6) items.push({ n: 'Аура защиты', v: `+${Math.max(1, am(c, 'cha'))} к спасброскам`, sub: `радиус ${L >= 18 ? 30 : 10} фт · уже учтена в ваших спасбросках` });
+    if (L >= 11) items.push({ n: 'Сияющие удары', v: '+1к8 излучением', sub: 'попадание рукопашным оружием или безоружным ударом', btn: '<button data-act="radiantStrike">🎲</button>' });
+  }
+  speedBonuses(c).forEach(([n, v]) => items.push({ n, v: `+${v} фт`, sub: 'уже учтено в скорости' }));
+  if (isLucky(c)) items.push({ n: 'Удача полурослика', v: '1 на к20 → переброс', sub: 'учитывается при бросках' });
+  if (hpPerLevelBonus(c)) items.push({ n: 'Доп. хиты за уровень', v: `+${hpPerLevelBonus(c)}`, sub: 'дварф / черта «Крепкий» — в расчёте хитов' });
+  return items;
+}
+function renderClassPanel() {
+  const c = ch(), items = classPanelItems(c);
+  $('#classCard').hidden = !items.length;
+  $('#classPanel').innerHTML = items.map((i) => `<div class="cp-item ${i.on ? 'on' : ''}"><div class="cp-n">${esc(i.n)}</div><div class="cp-v">${esc(String(i.v))}</div>
+    ${i.sub ? `<div class="muted small">${esc(i.sub)}</div>` : ''}${i.btn ? `<div class="cp-btns">${i.btn}</div>` : ''}</div>`).join('');
+}
+// Быстрый доступ к заклинаниям во вкладке «Бой»
+function renderQuickSpells() {
+  const c = ch(), show = c.spells.length > 0 || c.spellcasting.casterType !== 'none';
+  $('#qsCard').hidden = !show;
+  if (!show) return;
+  $('#qsStats').innerHTML = `<span class="badge">СЛ <b>${spellDC(c)}</b></span><button data-act="spellAttack">🎯 Атака ${fmt(spellAtk(c))}</button>`;
+  $('#qsSlots').innerHTML = c.slots.map((s, i) => (s.max ? `<span class="qs-slot"><b>${i + 1}</b>${pipsHtml(s.max, s.used, 'slotPip', `data-l="${i}"`)}</span>` : '')).join('')
+    + (c.pact.max ? `<span class="qs-slot pact"><b>Д${c.pact.level}</b>${pipsHtml(c.pact.max, c.pact.used, 'pactPip', '')}</span>` : '');
+  const list = c.spells.filter((s) => +s.l === 0 || s.prep).sort((a, b) => a.l - b.l || a.n.localeCompare(b.n, 'ru'));
+  $('#qsList').innerHTML = list.map((s) => `<div class="li qs"><div class="li-head">
+      <span class="lvl-badge" title="${s.l ? s.l + ' уровень' : 'Заговор'}">${s.l || 'З'}</span>
+      <span class="li-title" data-act="toggleOpen" data-id="${s.id}">${esc(s.n)}</span>
+      ${s.cn ? '<span class="tag c" title="Концентрация">К</span>' : ''}${s.rt ? '<span class="tag r" title="Ритуал">Р</span>' : ''}
+      <span class="li-sub">${esc(s.t || '')}${s.r ? ' · ' + esc(s.r) : ''}${s.f ? ' · ' + esc(s.f) : ''}</span>
+      <span class="btns"><button data-act="castSpell" data-id="${s.id}">✨ Сотворить</button></span>
+    </div>${openSet.has(s.id) ? `<div class="li-desc">${spellMetaHtml(s)}<p>${esc(s.x || '')}</p></div>` : ''}</div>`).join('')
+    || '<div class="muted small">Нет подготовленных заклинаний — отметьте их галочкой во вкладке «Заклинания».</div>';
 }
 
 function renderRef() {
@@ -719,8 +812,10 @@ function openLevelUp() {
 function lvlGain(c) {
   const S = lvlState, hd = +c.combat.hdDie;
   const base = S.hpMode === 'avg' ? hd / 2 + 1 : S.roll;
-  return base == null ? null : Math.max(1, base + am(c, 'con'));
+  return base == null ? null : Math.max(1, base + am(c, 'con')) + hpPerLevelBonus(c);
 }
+// Умения 20 уровня, повышающие характеристики (максимум 25)
+const CAPSTONE = { 'Варвар': ['Первобытный чемпион', ['str', 'con']], 'Монах': ['Тело и разум', ['dex', 'wis']] };
 function renderLevelUp() {
   const box = $('#lvlBody');
   if (!box) return;
@@ -742,6 +837,8 @@ function renderLevelUp() {
     }
     changes.push('Подготовьте новые заклинания, если положено по таблице класса');
   }
+  const cap = N === 20 && CAPSTONE[c.info.cls.trim()];
+  if (cap) changes.push(`${cap[0]}: ${cap[1].map((k) => `${ABILITIES.find((a) => a.k === k).s} ${c.abil[k]} → <b>${Math.min(25, +c.abil[k] + 4)}</b>`).join(', ')}`);
   c.resources.filter((r) => CLASS_RESOURCES[r.auto]).forEach((r) => {
     const m = CLASS_RESOURCES[r.auto].f(N, c).max;
     if (m !== r.max) changes.push(`${esc(r.n)}: ${r.max} → <b>${m}</b>`);
@@ -755,7 +852,7 @@ function renderLevelUp() {
       <label class="check"><input type="radio" name="hpMode" value="roll" ${S.hpMode === 'roll' ? 'checked' : ''}> Бросок к${hd}</label>
       ${S.hpMode === 'roll' ? `<button data-act="lvlRoll">🎲 ${S.roll == null ? 'Бросить' : `Выпало ${S.roll} — перебросить`}</button>` : ''}
     </div>
-    <p>${gain == null ? '<span class="muted">Бросьте кость хитов</span>' : `+<b>${gain}</b> хитов (${S.hpMode === 'avg' ? hd / 2 + 1 : S.roll} ${fmt(con)} Тел${gain === 1 && (S.hpMode === 'avg' ? hd / 2 + 1 : S.roll) + con < 1 ? ', минимум 1' : ''}) · максимум ${c.combat.hpMax} → <b>${+c.combat.hpMax + gain}</b>`}</p>
+    <p>${gain == null ? '<span class="muted">Бросьте кость хитов</span>' : `+<b>${gain}</b> хитов (${S.hpMode === 'avg' ? hd / 2 + 1 : S.roll} ${fmt(con)} Тел${hpPerLevelBonus(c) ? ` +${hpPerLevelBonus(c)} вид/черта` : ''}) · максимум ${c.combat.hpMax} → <b>${+c.combat.hpMax + gain}</b>`}</p>
     <h3>Что изменится</h3><ul class="lvl-list">${changes.map((x) => `<li>${x}</li>`).join('')}</ul>
     ${feats.some((f) => f !== ASI_NAME) ? `<h3>Новые умения</h3><p class="muted small">Отмеченные добавятся во вкладку «Способности». Описания — в Книге игрока.</p>
       <div class="lvl-feats">${feats.map((f, i) => (f === ASI_NAME ? '' : `<label class="check"><input type="checkbox" data-feat="${i}" ${S.skip.has(i) ? '' : 'checked'}> ${esc(f)}</label>`)).join('')}</div>`
@@ -1046,22 +1143,35 @@ const ACT = {
       c.resources.push({ id: uid(), n: R.n, max: 0, used: 0, recharge: 'long', auto: k, x: R.d });
     });
     if (name === 'Бард') c.combat.jack = lvl(c) >= 2;
+    // Защита без доспехов у монаха и варвара
+    if ((name === 'Монах' || name === 'Варвар') && !c.armor.id) {
+      Object.assign(c.armor, { mode: 'auto', unarmored: name === 'Монах' ? 'monk' : 'barbarian' });
+    }
     toast(`Шаблон «${name}» применён`);
   },
   calcHp() {
-    const c = ch(), hd = +c.combat.hdDie, con = am(c, 'con'), L = lvl(c);
-    const max = Math.max(1, hd + con + (L - 1) * Math.max(1, hd / 2 + 1 + con));
-    if (!confirmBox(`Установить максимум хитов = ${max}? (к${hd}: максимум на 1 уровне + среднее ${hd / 2 + 1} за уровень, мод. Тел ${fmt(con)})`)) return;
+    const c = ch(), hd = +c.combat.hdDie, con = am(c, 'con'), L = lvl(c), extra = hpPerLevelBonus(c);
+    const max = Math.max(1, hd + con + (L - 1) * Math.max(1, hd / 2 + 1 + con) + extra * L);
+    if (!confirmBox(`Установить максимум хитов = ${max}? (к${hd}: максимум на 1 уровне + среднее ${hd / 2 + 1} за уровень, мод. Тел ${fmt(con)}${extra ? `, +${extra} за уровень от вида/черты` : ''})`)) return;
     if (c.combat.hp >= c.combat.hpMax) c.combat.hp = max;
     c.combat.hpMax = max;
     c.combat.hp = Math.min(c.combat.hp, max);
   },
-  rollCheck(el) { const a = ABILITIES.find((x) => x.k === el.dataset.k); rollD20(`Проверка: ${a.n}`, am(ch(), a.k)); },
-  rollSave(el) { const a = ABILITIES.find((x) => x.k === el.dataset.k); rollD20(`Спасбросок: ${a.n}`, saveBonus(ch(), a.k)); },
+  rollCheck(el) {
+    const a = ABILITIES.find((x) => x.k === el.dataset.k);
+    if (a.k === 'str' && raging(ch()) && advMode === 0) setAdv(1);
+    rollD20(`Проверка: ${a.n}`, am(ch(), a.k));
+  },
+  rollSave(el) {
+    const a = ABILITIES.find((x) => x.k === el.dataset.k);
+    if (a.k === 'str' && raging(ch()) && advMode === 0) setAdv(1);
+    rollD20(`Спасбросок: ${a.n}`, saveBonus(ch(), a.k));
+  },
   rollSkill(el) {
-    const s = SKILLS.find((x) => x.k === el.dataset.k);
-    if (s.k === 'stealth' && armorStealthDis(ch()) && advMode === 0) setAdv(-1);
-    rollD20(s.n, skillBonus(ch(), s));
+    const c = ch(), s = SKILLS.find((x) => x.k === el.dataset.k);
+    if (s.k === 'stealth' && armorStealthDis(c) && advMode === 0) setAdv(-1);
+    if (s.a === 'str' && raging(c) && advMode === 0) setAdv(1);
+    rollD20(s.n, skillBonus(c, s), { floor10: clsIs(c, 'Плут') && lvl(c) >= 7 && (c.skills[s.k] || 0) > 0 });
   },
   skillProf(el) { const c = ch(), k = el.dataset.k; c.skills[k] = ((c.skills[k] || 0) + 1) % 3; },
   skillInfo(el) {
@@ -1192,6 +1302,27 @@ const ACT = {
   addFeature() { formModal('Новое умение', FEAT_FIELDS(), {}, (v) => ch().features.push({ id: uid(), ...v })); },
   editFeature(el) { const f = findById(ch().features, el.dataset.id); formModal('Изменить умение', FEAT_FIELDS(), f, (v) => Object.assign(f, v)); },
   delFeature(el) { const c = ch(), f = findById(c.features, el.dataset.id); if (confirmBox(`Удалить «${f.n}»?`)) c.features = c.features.filter((x) => x !== f); },
+  rageToggle() {
+    const c = ch();
+    if (raging(c)) { c.effects = c.effects.filter((e) => e.n !== 'Ярость'); toast('Ярость закончилась'); return; }
+    const r = c.resources.find((x) => x.auto === 'rage');
+    if (r && r.max - r.used <= 0) { toast('Нет использований Ярости — нужен отдых'); return; }
+    if (r) r.used++;
+    if (heavyArmor(c)) toast('⚠ В тяжёлом доспехе Ярость не даёт преимуществ', 'fumble');
+    if (c.combat.conc) { toast(`Концентрация на «${esc(c.combat.conc)}» прервана: в ярости нельзя концентрироваться`); endConc(c); }
+    addEffect(c, { n: 'Ярость', left: 100, conc: false, x: `Сопротивление дробящему, колющему и рубящему урону; преимущество на проверки и спасброски Силы; +${rageDmg(c)} к урону атак Силой; нельзя творить заклинания и концентрироваться. Длится до конца вашего следующего хода, продлевается атакой, вынужденным спасброском или бонусным действием; максимум 10 минут.` });
+    toast(`🔥 Ярость! +${rageDmg(c)} к урону атак Силой`, 'crit');
+  },
+  sneak(el) { const n = Math.ceil(lvl(ch()) / 2) * (el.dataset.crit ? 2 : 1); rollDice(`${el.dataset.crit ? 'КРИТ ' : ''}Скрытая атака`, `${n}d6`); },
+  secondWind() {
+    const c = ch(), r = c.resources.find((x) => x.auto === 'secondWind');
+    if (r && r.max - r.used <= 0) { toast('Второе дыхание исчерпано — нужен отдых'); return; }
+    if (r) r.used++;
+    const res = rollDice('Второе дыхание', `1d10+${lvl(c)}`);
+    if (res) applyHeal(res.total);
+  },
+  bardDie(el) { rollDice('Кость вдохновения барда', `1d${el.dataset.d}`); },
+  radiantStrike() { rollDice('Сияющие удары (излучение)', '1d8'); },
   levelUp() { openLevelUp(); },
   lvlRoll() { const c = ch(); lvlState.roll = die(+c.combat.hdDie); logRoll('Хиты за уровень', lvlState.roll, `к${c.combat.hdDie} [${lvlState.roll}]`); renderLevelUp(); },
   lvlApply() {
@@ -1215,6 +1346,8 @@ const ACT = {
       if (!c.features.some((x) => x.n === n && x.src === src)) c.features.push({ id: uid(), n, src, x: '' });
     });
     if (c.info.cls.trim() === 'Бард' && N >= 2) c.combat.jack = true;
+    const cap = N === 20 && CAPSTONE[c.info.cls.trim()];
+    if (cap) { cap[1].forEach((k) => { c.abil[k] = Math.min(25, (+c.abil[k] || 0) + 4); }); notes.push(`${cap[0]}: +4`); }
     closeModal();
     toast(`⬆ ${N} уровень! ${notes.join(' · ')}`, 'crit');
   },
@@ -1311,9 +1444,18 @@ const ACT = {
   goTab(el) { switchTab(el.dataset.tabGo); },
 };
 // Действия, которые не меняют персонажа (не нужно сохранять/перерисовывать)
-const NO_RENDER = new Set(['exportChar', 'importChar', 'toggleDice', 'clearLog', 'closeModal', 'skillInfo', 'condInfo', 'masteryInfo', 'addSpellDb', 'addClassRes', 'shortRest','addAttack', 'editAttack', 'addSpellCustom', 'editSpell', 'addItem', 'editItem', 'addResource', 'editRes', 'addFeature', 'editFeature', 'goTab', 'abilGen', 'genMode', 'genPb', 'genRoll', 'genReset', 'levelUp', 'lvlRoll', 'openCatalog', 'catTab', 'addEffect']);
+const NO_RENDER = new Set(['exportChar', 'importChar', 'toggleDice', 'clearLog', 'closeModal', 'skillInfo', 'condInfo', 'masteryInfo', 'addSpellDb', 'addClassRes', 'shortRest','addAttack', 'editAttack', 'addSpellCustom', 'editSpell', 'addItem', 'editItem', 'addResource', 'editRes', 'addFeature', 'editFeature', 'goTab', 'abilGen', 'genMode', 'genPb', 'genRoll', 'genReset', 'levelUp', 'lvlRoll', 'openCatalog', 'catTab', 'addEffect', 'sneak', 'bardDie', 'radiantStrike']);
 
+// Высота закреплённой шапки — под ней закрепляется панель вкладок (на телефоне шапка не закреплена)
+function syncStickyOffset() {
+  const qb = $('.quickbar');
+  document.documentElement.style.setProperty('--qbh', getComputedStyle(qb).position === 'sticky' ? qb.offsetHeight + 'px' : '0px');
+}
 function switchTab(t) {
+  // Если страница прокручена ниже начала вкладок — вернуться к началу новой вкладки
+  const qbh = parseInt(getComputedStyle(document.documentElement).getPropertyValue('--qbh')) || 0;
+  const top = $('main').getBoundingClientRect().top + window.scrollY - $('#tabs').offsetHeight - qbh;
+  if (curTab !== t && window.scrollY > top) window.scrollTo(0, top);
   curTab = t; lsSet('dnd55-tab', t);
   $$('#tabs button').forEach((b) => b.classList.toggle('on', b.dataset.tab === t));
   $$('.tab').forEach((s) => s.classList.toggle('on', s.id === 'tab-' + t));
@@ -1393,6 +1535,8 @@ function bindEvents() {
   ['#spellFilter', '#spellOnlyPrep'].forEach((s) => $(s).addEventListener('input', renderSpells));
   ['#itemFilter', '#itemCat'].forEach((s) => $(s).addEventListener('input', renderInventory));
   ['#refFilter', '#refLevel', '#refClass'].forEach((s) => $(s).addEventListener('input', renderRef));
+  new ResizeObserver(syncStickyOffset).observe($('.quickbar'));
+  window.addEventListener('resize', syncStickyOffset);
 }
 
 loadState();
