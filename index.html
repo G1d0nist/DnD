@@ -87,7 +87,7 @@
         </div>
         <div class="row gap mt">
           <button class="primary" data-act="levelUp">⬆ Новый уровень</button>
-          <button data-act="applyClass">⚙ Применить шаблон класса</button>
+          <button data-act="applyClass" title="Шаблон применяется сам при выборе класса; кнопка — применить заново">⚙ Шаблон класса заново</button>
           <button data-act="calcHp">❤ Рассчитать макс. хиты (среднее)</button>
           <span class="muted small" id="xpHint"></span>
         </div>
@@ -166,7 +166,8 @@
 
       <div class="card span-all" id="classCard" hidden>
         <h2>Умения класса</h2>
-        <div id="classPanel" class="class-panel"></div>
+        <div id="classRes" class="res-grid"></div>
+        <div id="classPanel" class="class-panel mt"></div>
       </div>
 
       <div class="card span-all">
@@ -275,8 +276,15 @@
     <div class="grid g-feat">
       <div class="card span-all">
         <div class="row between wrap gap"><h2>Ресурсы (Ци, Ярость, Божественный канал…)</h2>
-          <div class="row gap"><button data-act="addClassRes">⚙ Ресурсы класса</button><button data-act="addResource">＋ Свой ресурс</button></div></div>
+          <div class="row gap"><button data-act="addClassRes" title="Ресурсы других классов — для мультикласса">⚙ Ресурсы другого класса</button><button data-act="addResource">＋ Свой ресурс</button></div></div>
+        <p class="muted small">Ресурсы вашего класса добавляются автоматически и считаются по уровню.</p>
         <div id="resList" class="res-grid"></div>
+      </div>
+      <div class="card span-all">
+        <div class="row between wrap gap"><h2>Черты</h2><button data-act="addFeat">＋ Черта</button></div>
+        <div id="featSlots" class="row gap wrap"></div>
+        <p class="muted small">Число черт ограничено правилами: черта происхождения от предыстории (+1 человеку), общие черты на уровнях «Увеличения характеристик», боевой стиль и эпический дар по таблице класса. Прибавки к характеристикам применяются автоматически.</p>
+        <div id="featChosen" class="list"></div>
       </div>
       <div class="card span-all">
         <div class="row between"><h2>Умения, черты и особенности</h2><button data-act="addFeature">＋ Умение</button></div>

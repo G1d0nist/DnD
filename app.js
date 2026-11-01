@@ -23,13 +23,14 @@ function blankChar() {
   return {
     id: uid(),
     updatedAt: Date.now(),
-    info: { name: 'Новый персонаж', cls: '', subclass: '', level: 1, species: '', background: '', alignment: '', xp: 0, size: 'Средний' },
+    info: { name: 'Новый персонаж', cls: '', subclass: '', level: 1, species: '', background: '', alignment: '', xp: 0, size: 'Средний', clsApplied: '' },
     abil,
     saves: Object.fromEntries(Object.keys(abil).map((k) => [k, false])),
     skills: {},
     combat: { ac: 10, initBonus: 0, speed: 30, hp: 10, hpMax: 10, temp: 0, hdDie: 8, hdUsed: 0, deathS: 0, deathF: 0, inspiration: false, exhaustion: 0, conc: '', conditions: [], jack: false, defenses: '', round: 1 },
-    armor: { mode: 'manual', id: '', shield: false, unarmored: '', bonus: 0 },
+    armor: { mode: 'auto', id: '', shield: false, unarmored: '', bonus: 0, v: 1 },
     effects: [],
+    feats: [], // { id, key, slot, a, a1, a2, mode, lvl }
     attacks: [{ id: uid(), n: 'Безоружный удар', ability: 'str', prof: true, hit: 0, dmg: '1', addMod: true, dmgBonus: 0, type: 'дробящий', mastery: '', range: '5 фт', x: '' }],
     spellcasting: { ability: 'int', casterType: 'none', bonus: 0 },
     slots: Array.from({ length: 9 }, () => ({ max: 0, used: 0 })),
@@ -46,7 +47,20 @@ function deepFill(t, s) {
     else if (s[k] && typeof s[k] === 'object' && !Array.isArray(s[k]) && typeof t[k] === 'object') deepFill(t[k], s[k]);
   }
 }
-const migrate = (c) => { deepFill(c, blankChar()); return c; };
+function migrate(c) {
+  const old = { armorV: c.armor && c.armor.v, clsApplied: c.info && c.info.clsApplied };
+  deepFill(c, blankChar());
+  // Авто-КД стал режимом по умолчанию: старых персонажей переводим, только если ручной КД
+  // не задан (10) или совпадает с расчётом — иначе там учтено что-то, чего сайт не знает
+  if (!old.armorV) {
+    const ac = +c.combat.ac;
+    c.armor.mode = c.armor.mode === 'auto' || ac === 10 || computeAC(c).ac === ac ? 'auto' : 'manual';
+    c.armor.v = 1;
+  }
+  // У старых персонажей шаблон класса уже применён (или настроен вручную) — не переприменяем
+  if (old.clsApplied === undefined) c.info.clsApplied = c.info.cls.trim();
+  return c;
+}
 
 let state;
 function loadState() {
@@ -101,7 +115,30 @@ window.dndApp = {
 /* ---------- Производные значения ---------- */
 const lvl = (c) => clamp(parseInt(c.info.level) || 1, 1, 20);
 const pb = (c) => 2 + Math.floor((lvl(c) - 1) / 4);
-const am = (c, k) => mod(c.abil[k]);
+const hasFeat = (c, key) => c.feats.some((f) => f.key === key);
+// Прибавки к характеристике от черт: обычные (до 20) и эпические дары (до 30)
+function featAbilBonus(c, k) {
+  let gen = 0, epic = 0;
+  c.feats.forEach((f) => {
+    const d = FEATS_BY[f.key];
+    if (!d || !d.abil) return;
+    const add = d.abil === 'asi' ? (f.mode === 'plus11' ? (f.a1 === k) + (f.a2 === k) : f.a1 === k ? 2 : 0) : f.a === k ? 1 : 0;
+    if (d.cat === 'epic') epic += add; else gen += add;
+  });
+  return { gen, epic };
+}
+// Итоговое значение характеристики: базовое (введённое) + черты + умение 20 уровня
+function score(c, k) {
+  const base = +c.abil[k] || 0, { gen, epic } = featAbilBonus(c, k);
+  let v = base + gen > 20 ? Math.max(base, 20) : base + gen;
+  const cap = CAPSTONE[c.info.cls.trim()];
+  if (cap && lvl(c) >= 20 && cap[1].includes(k)) v = Math.max(v, Math.min(25, v + 4));
+  if (epic) v = Math.max(v, Math.min(30, v + epic));
+  return v;
+}
+const am = (c, k) => mod(score(c, k));
+// Умения 20 уровня, повышающие характеристики (максимум 25)
+const CAPSTONE = { 'Варвар': ['Первобытный чемпион', ['str', 'con']], 'Монах': ['Тело и разум', ['dex', 'wis']] };
 const exhPen = (c) => 2 * (c.combat.exhaustion || 0);
 const skillBonus = (c, s) => {
   const p = c.skills[s.k] || 0;
@@ -110,8 +147,10 @@ const skillBonus = (c, s) => {
 const clsIs = (c, n) => c.info.cls.trim() === n;
 // Аура защиты паладина (6+ ур.): +Хар (мин. +1) ко всем спасброскам, пока паладин в сознании
 const auraBonus = (c) => (clsIs(c, 'Паладин') && lvl(c) >= 6 && (+c.combat.hp || 0) > 0 ? Math.max(1, am(c, 'cha')) : 0);
-const saveBonus = (c, k) => am(c, k) + (c.saves[k] ? pb(c) : 0) + auraBonus(c);
-const initBonus = (c) => am(c, 'dex') + (+c.combat.initBonus || 0);
+// Владение спасброском: отмечено в листе или дано чертой «Устойчивый»
+const saveProf = (c, k) => !!c.saves[k] || c.feats.some((f) => f.key === 'resilient' && f.a === k);
+const saveBonus = (c, k) => am(c, k) + (saveProf(c, k) ? pb(c) : 0) + auraBonus(c);
+const initBonus = (c) => am(c, 'dex') + (+c.combat.initBonus || 0) + (hasFeat(c, 'alert') ? pb(c) : 0);
 const spellMod = (c) => am(c, c.spellcasting.ability);
 const spellDC = (c) => 8 + pb(c) + spellMod(c) + (+c.spellcasting.bonus || 0);
 const spellAtk = (c) => pb(c) + spellMod(c) + (+c.spellcasting.bonus || 0);
@@ -122,11 +161,13 @@ function computeAC(c) {
   const arm = ARMOR.find((x) => x.id === A.id);
   let ac, src;
   if (arm) {
-    const d = arm.type === 'heavy' ? 0 : arm.type === 'medium' ? Math.min(2, dex) : dex;
+    const medMax = hasFeat(c, 'mediumArmorMaster') ? 3 : 2;
+    const d = arm.type === 'heavy' ? 0 : arm.type === 'medium' ? Math.min(medMax, dex) : dex;
     ac = arm.ac + d;
-    src = `${arm.n} ${arm.ac}${arm.type === 'heavy' ? '' : ` ${fmt(d)} Лов${arm.type === 'medium' ? ' (макс. +2)' : ''}`}`;
-    if (arm.stealth) notes.push('помеха на Ловкость (Скрытность)');
-    if (arm.str && (+c.abil.str || 0) < arm.str) notes.push(`Сила ниже ${arm.str} — скорость −10 фт`);
+    src = `${arm.n} ${arm.ac}${arm.type === 'heavy' ? '' : ` ${fmt(d)} Лов${arm.type === 'medium' ? ` (макс. +${medMax})` : ''}`}`;
+    if (hasFeat(c, 'defense')) { ac += 1; src += ' + Оборона 1'; }
+    if (arm.stealth && !(arm.type === 'medium' && hasFeat(c, 'mediumArmorMaster'))) notes.push('помеха на Ловкость (Скрытность)');
+    if (arm.str && score(c, 'str') < arm.str) notes.push(`Сила ниже ${arm.str} — скорость −10 фт`);
   } else {
     let u = UNARMORED[A.unarmored] || UNARMORED[''];
     if (u.noShield && A.shield) { notes.push('защита монаха не работает со щитом'); u = UNARMORED['']; }
@@ -138,8 +179,8 @@ function computeAC(c) {
   if (+A.bonus) { ac += +A.bonus; src += ` ${fmt(+A.bonus)} прочее`; }
   return { ac, src, notes, arm };
 }
-const armorStealthDis = (c) => c.armor.mode === 'auto' && !!ARMOR.find((x) => x.id === c.armor.id && x.stealth);
-const armorSlow = (c) => { const a = c.armor.mode === 'auto' && ARMOR.find((x) => x.id === c.armor.id); return a && a.str && (+c.abil.str || 0) < a.str ? 10 : 0; };
+const armorStealthDis = (c) => c.armor.mode === 'auto' && !!ARMOR.find((x) => x.id === c.armor.id && x.stealth && !(x.type === 'medium' && hasFeat(c, 'mediumArmorMaster')));
+const armorSlow = (c) => { const a = c.armor.mode === 'auto' && ARMOR.find((x) => x.id === c.armor.id); return a && a.str && score(c, 'str') < a.str ? 10 : 0; };
 // Доспех известен только в режиме авто-КД; в ручном режиме считаем, что доспеха нет
 const wearingArmor = (c) => c.armor.mode === 'auto' && !!c.armor.id;
 const heavyArmor = (c) => c.armor.mode === 'auto' && ARMOR.find((x) => x.id === c.armor.id)?.type === 'heavy';
@@ -148,6 +189,8 @@ function speedBonuses(c) {
   if (clsIs(c, 'Монах') && L >= 2 && !wearingArmor(c) && !c.armor.shield) out.push(['Движение без доспехов', L >= 18 ? 30 : L >= 14 ? 25 : L >= 10 ? 20 : L >= 6 ? 15 : 10]);
   if (clsIs(c, 'Варвар') && L >= 5 && !heavyArmor(c)) out.push(['Быстрое передвижение', 10]);
   if (clsIs(c, 'Следопыт') && L >= 6 && !heavyArmor(c)) out.push(['Бродяга', 10]);
+  if (hasFeat(c, 'speedy')) out.push(['Черта «Быстрый»', 10]);
+  if (hasFeat(c, 'boonSpeed')) out.push(['Дар скорости', 30]);
   return out;
 }
 const curSpeed = (c) => (c.combat.conditions.some((k) => SPEED_ZERO.includes(k)) ? 0
@@ -157,11 +200,13 @@ const raging = (c) => c.effects.some((e) => e.n === 'Ярость');
 const rageDmg = (c) => (lvl(c) >= 16 ? 4 : lvl(c) >= 9 ? 3 : 2);
 const usesStr = (c, a) => a.ability === 'str' || (a.ability === 'fin' && am(c, 'str') >= am(c, 'dex'));
 const isLucky = (c) => /полурослик|halfling/i.test(c.info.species);
-const hpPerLevelBonus = (c) => (/дварф|dwarf/i.test(c.info.species) ? 1 : 0) + (c.features.some((f) => /крепкий|tough/i.test(f.n)) ? 2 : 0);
+const hpPerLevelBonus = (c) => (/дварф|dwarf/i.test(c.info.species) ? 1 : 0) + (hasFeat(c, 'tough') || c.features.some((f) => /крепкий|tough/i.test(f.n)) ? 2 : 0);
+// Дальнобойное оружие — дистанция вида «80/320 фт» (метательное записано как «5 фт · бросок …»)
+const isRangedWeapon = (a) => a.ability !== 'spell' && /^\d+\/\d+/.test(a.range || '');
 // ability: характеристика, 'spell' — заклинательная, 'fin' — лучшая из Силы и Ловкости (фехтовальное оружие)
 const abilFor = (c, a) => (a.ability === 'spell' ? spellMod(c) : a.ability === 'fin' ? Math.max(am(c, 'str'), am(c, 'dex')) : am(c, a.ability));
 const atkAbilMod = (c, a) => abilFor(c, a) + (a.ability === 'spell' ? (+c.spellcasting.bonus || 0) : 0);
-const attackBonus = (c, a) => atkAbilMod(c, a) + (a.prof ? pb(c) : 0) + (+a.hit || 0);
+const attackBonus = (c, a) => atkAbilMod(c, a) + (a.prof ? pb(c) : 0) + (+a.hit || 0) + (hasFeat(c, 'archery') && isRangedWeapon(a) ? 2 : 0);
 const dmgMod = (c, a) => (a.addMod ? abilFor(c, a) : 0) + (+a.dmgBonus || 0) + (raging(c) && a.ability !== 'spell' && usesStr(c, a) ? rageDmg(c) : 0);
 // Боевые искусства монаха (2024): кость урона безоружного удара по уровню
 const martialDie = (L) => (L >= 17 ? '1d12' : L >= 11 ? '1d10' : L >= 5 ? '1d8' : '1d6');
@@ -195,12 +240,46 @@ function autoSlots(c) {
   c.slots.forEach((s) => { s.used = clamp(s.used, 0, s.max); });
   c.pact.used = clamp(c.pact.used, 0, c.pact.max);
 }
+// Шаблон класса: кость хитов, спасброски, колдовство, защита без доспехов
+function applyClassTemplate(c) {
+  const name = c.info.cls.trim(), def = CLASSES[name];
+  if (!def) return;
+  c.combat.hdDie = def.hd;
+  ABILITIES.forEach((a) => { c.saves[a.k] = def.saves.includes(a.k); });
+  c.spellcasting.ability = def.sa;
+  c.spellcasting.casterType = def.caster;
+  if (name === 'Бард') c.combat.jack = lvl(c) >= 2;
+  const ua = name === 'Монах' ? 'monk' : name === 'Варвар' ? 'barbarian' : '';
+  if (ua && !c.armor.id) Object.assign(c.armor, { mode: 'auto', unarmored: ua });
+  else if (!ua && (c.armor.unarmored === 'monk' || c.armor.unarmored === 'barbarian')) c.armor.unarmored = '';
+  c.info.clsApplied = name;
+}
+// Ресурсы, которые даёт класс или черта, — добавляются и убираются сами.
+// manual: ресурс добавлен вручную из списка «Ресурсы класса» (например, для мультикласса) — его не трогаем.
 function autoResources(c) {
+  const def = CLASSES[c.info.cls.trim()];
+  const wanted = [...(def ? def.res : []), ...(hasFeat(c, 'lucky') ? ['luckyFeat'] : [])];
+  c.resources = c.resources.filter((r) => !r.auto || r.manual || wanted.includes(r.auto));
+  wanted.forEach((k) => {
+    if (c.resources.some((r) => r.auto === k)) return;
+    const R = CLASS_RESOURCES[k];
+    c.resources.push({ id: uid(), n: R.n, max: 0, used: 0, recharge: 'long', auto: k, x: R.d });
+  });
   c.resources.forEach((r) => {
-    const def = CLASS_RESOURCES[r.auto];
-    if (def) { const v = def.f(lvl(c), c); r.max = v.max; r.recharge = v.recharge; }
+    const d = CLASS_RESOURCES[r.auto];
+    if (d) {
+      const v = d.f(lvl(c), c); r.max = v.max; r.recharge = v.recharge;
+      if (r.auto === 'focus' && /^Очки сосредоточенности/.test(r.n)) r.n = d.n;
+    }
     r.used = clamp(r.used, 0, r.max);
   });
+}
+// С какого уровня ресурс становится доступен (для подсказки)
+function resFromLevel(c, r) {
+  const d = CLASS_RESOURCES[r.auto];
+  if (!d) return 0;
+  for (let L = 1; L <= 20; L++) if (d.f(L, c).max > 0) return L;
+  return 0;
 }
 
 /* ---------- Кости ---------- */
@@ -319,6 +398,11 @@ let refMode = 'spells';
 
 function render() {
   const c = ch();
+  // Класс выбран (или сменён) — применить его шаблон автоматически
+  if (CLASSES[c.info.cls.trim()] && c.info.clsApplied !== c.info.cls.trim()) {
+    applyClassTemplate(c);
+    toast(`Применён шаблон класса «${esc(c.info.cls.trim())}»: кость хитов, спасброски, колдовство, ресурсы`);
+  }
   autoSlots(c);
   autoResources(c);
   if (c.armor.mode === 'auto') c.combat.ac = computeAC(c).ac;
@@ -382,6 +466,10 @@ function renderAbil() {
   ABILITIES.forEach((a) => {
     $(`#am-${a.k}`).textContent = fmt(am(c, a.k));
     $(`#as-${a.k}`).textContent = `Спас ${fmt(saveBonus(c, a.k))}`;
+    const s = score(c, a.k), base = +c.abil[a.k] || 0;
+    $(`#af-${a.k}`).textContent = s !== base ? `итог ${s} (${fmt(s - base)})` : '';
+    $(`#af-${a.k}`).title = s !== base ? 'Базовое значение + черты / умения класса' : '';
+    $(`#as-${a.k}`).title = !c.saves[a.k] && saveProf(c, a.k) ? 'Владение от черты «Устойчивый»' : '';
   });
 }
 
@@ -523,7 +611,7 @@ function renderInventory() {
   const coins = ['cp', 'sp', 'ep', 'gp', 'pp'].reduce((a, k) => a + (+c.coins[k] || 0), 0);
   const weight = c.items.reduce((a, i) => a + (+i.w || 0) * (+i.qty || 0), 0) + coins / 50;
   const sizeK = { 'Крошечный': 0.5, 'Маленький': 1, 'Средний': 1, 'Большой': 2 }[c.info.size] || 1;
-  const cap = (+c.abil.str || 0) * 15 * sizeK;
+  const cap = score(c, 'str') * 15 * sizeK;
   const pct = cap ? weight / cap * 100 : 0;
   const attuned = c.items.filter((i) => i.att && i.attuned).length;
   $('#loadBox').innerHTML = `<div class="row between"><span>Вес: <b>${+weight.toFixed(1)}</b> / ${cap} фнт</span><span class="muted small">монеты: ${+(coins / 50).toFixed(1)} фнт</span></div>
@@ -534,19 +622,39 @@ function renderInventory() {
   $('#coinTotal').textContent = `Всего ≈ ${+coinGp(c.coins).toFixed(2)} зм`;
 }
 
+// Карточка ресурса; compact — для вкладки «Бой» (без правки и удаления)
+function resCardHtml(c, r, compact) {
+  const left = r.max - r.used, big = r.max > 20;
+  const managed = r.auto && !r.manual && CLASS_RESOURCES[r.auto];
+  const from = !r.max && managed ? resFromLevel(c, r) : 0;
+  return `<div class="res ${r.max ? '' : 'dim'}"><div class="row between gap"><span class="rn" data-act="toggleOpen" data-id="${r.id}">${esc(r.n)}</span><span class="rcount">${left}<span class="muted small"> / ${r.max}</span></span></div>
+    ${compact ? '' : `<div class="muted small">восстановление: ${RECHARGE[r.recharge] || r.recharge}${r.auto ? ' · авто по уровню' : ''}${from ? ` · появится с ${from} уровня` : !r.max && r.auto ? ' · недоступно на этом уровне' : ''}</div>`}
+    ${!big && r.max ? `<div class="mt">${pipsHtml(r.max, r.used, 'resPip', `data-id="${r.id}"`)}</div>` : ''}
+    ${r.max ? `<div class="rctl">${big ? `<input type="number" min="1" placeholder="кол-во" class="resAmt"><button data-act="resUse" data-id="${r.id}" data-d="1" data-amt="1">Потратить</button><button data-act="resUse" data-id="${r.id}" data-d="-1" data-amt="1">Вернуть</button>`
+      : `<button data-act="resUse" data-id="${r.id}" data-d="1">−1</button><button data-act="resUse" data-id="${r.id}" data-d="-1">+1</button>`}
+      <button class="ghost" data-act="resReset" data-id="${r.id}" title="Восстановить всё">⟲</button>
+      ${compact ? '' : `<button class="ghost" data-act="editRes" data-id="${r.id}">✎</button>${managed ? '' : `<button class="ghost" data-act="delRes" data-id="${r.id}">✕</button>`}`}</div>` : ''}
+    ${openSet.has(r.id) && r.x ? `<div class="li-desc">${esc(r.x)}</div>` : ''}</div>`;
+}
 function renderFeatures() {
   const c = ch();
-  $('#resList').innerHTML = c.resources.map((r) => {
-    const left = r.max - r.used;
-    const big = r.max > 20;
-    return `<div class="res ${r.max ? '' : 'dim'}"><div class="row between gap"><span class="rn" data-act="toggleOpen" data-id="${r.id}">${esc(r.n)}</span><span class="rcount">${left}<span class="muted small"> / ${r.max}</span></span></div>
-      <div class="muted small">восстановление: ${RECHARGE[r.recharge] || r.recharge}${r.auto ? ' · авто по уровню' : ''}${!r.max && r.auto ? ' · недоступно на этом уровне' : ''}</div>
-      ${!big && r.max ? `<div class="mt">${pipsHtml(r.max, r.used, 'resPip', `data-id="${r.id}"`)}</div>` : ''}
-      <div class="rctl">${big ? `<input type="number" min="1" placeholder="кол-во" class="resAmt"><button data-act="resUse" data-id="${r.id}" data-d="1" data-amt="1">Потратить</button><button data-act="resUse" data-id="${r.id}" data-d="-1" data-amt="1">Вернуть</button>`
-        : `<button data-act="resUse" data-id="${r.id}" data-d="1">−1</button><button data-act="resUse" data-id="${r.id}" data-d="-1">+1</button>`}
-        <button class="ghost" data-act="resReset" data-id="${r.id}" title="Восстановить всё">⟲</button><button class="ghost" data-act="editRes" data-id="${r.id}">✎</button><button class="ghost" data-act="delRes" data-id="${r.id}">✕</button></div>
-      ${openSet.has(r.id) && r.x ? `<div class="li-desc">${esc(r.x)}</div>` : ''}</div>`;
-  }).join('') || '<div class="muted">Нет ресурсов. Нажмите «Ресурсы класса», чтобы добавить Ци, Ярость, Вдохновение и т.п.</div>';
+  $('#resList').innerHTML = c.resources.map((r) => resCardHtml(c, r, false)).join('')
+    || '<div class="muted">Укажите класс во вкладке «Персонаж» — ресурсы (Ци, Ярость, Вдохновение…) появятся сами. Свои ресурсы можно добавить кнопкой выше.</div>';
+
+  const slots = featSlots(c);
+  $('#featSlots').innerHTML = Object.entries(FEAT_SLOTS).filter(([k]) => slots[k]).map(([k, s]) => {
+    const used = c.feats.filter((f) => f.slot === k).length;
+    return `<span class="badge ${used < slots[k] ? 'free' : ''}">${s.n}: <b>${used}/${slots[k]}</b></span>`;
+  }).join('');
+  $('#featChosen').innerHTML = c.feats.map((f) => {
+    const d = FEATS_BY[f.key] || { n: f.key, x: '', cat: '' }, eff = featEffectText(f);
+    return `<div class="li"><div class="li-head">
+      <span class="li-title" data-act="toggleOpen" data-id="${f.id}">${esc(d.n)}</span>
+      <span class="tag">${esc(FEAT_SLOTS[f.slot] ? FEAT_SLOTS[f.slot].n : '')}</span>${eff ? `<span class="tag e">${eff}</span>` : ''}
+      ${f.lvl ? `<span class="li-sub">${f.lvl} ур.</span>` : ''}
+      <span class="btns"><button class="ghost" data-act="delFeat" data-id="${f.id}" title="Убрать черту">✕</button></span>
+    </div>${openSet.has(f.id) ? `<div class="li-desc">${esc(d.x)}</div>` : ''}</div>`;
+  }).join('') || '<div class="muted small">Черт пока нет. Черту происхождения даёт предыстория на 1 уровне.</div>';
 
   $('#featList').innerHTML = c.features.map((f) => `<div class="li"><div class="li-head">
       <span class="li-title" data-act="toggleOpen" data-id="${f.id}">${esc(f.n)}</span>${f.src ? `<span class="tag">${esc(f.src)}</span>` : ''}
@@ -590,8 +698,9 @@ function classPanelItems(c) {
   return items;
 }
 function renderClassPanel() {
-  const c = ch(), items = classPanelItems(c);
-  $('#classCard').hidden = !items.length;
+  const c = ch(), items = classPanelItems(c), res = c.resources.filter((r) => r.max > 0);
+  $('#classCard').hidden = !items.length && !res.length;
+  $('#classRes').innerHTML = res.map((r) => resCardHtml(c, r, true)).join('');
   $('#classPanel').innerHTML = items.map((i) => `<div class="cp-item ${i.on ? 'on' : ''}"><div class="cp-n">${esc(i.n)}</div><div class="cp-v">${esc(String(i.v))}</div>
     ${i.sub ? `<div class="muted small">${esc(i.sub)}</div>` : ''}${i.btn ? `<div class="cp-btns">${i.btn}</div>` : ''}</div>`).join('');
 }
@@ -785,26 +894,131 @@ function advanceEffects(c, rounds) {
 }
 function endConc(c) { c.combat.conc = ''; c.effects = c.effects.filter((e) => !e.conc); }
 
+/* ---------- Черты ---------- */
+// Какие ячейки черт даёт уровень L (по таблице класса; для класса не из списка — стандартные 4/8/12/16 и 19)
+function featSlotsAt(c, L) {
+  const row = CLASS_FEATURES[c.info.cls.trim()];
+  if (!row) return [4, 8, 12, 16].includes(L) ? ['general'] : L === 19 ? ['epic'] : [];
+  return (row[L - 1] || '').split(';').map((s) => s.trim())
+    .flatMap((s) => (s === 'ASI' ? ['general'] : s === 'EPIC' ? ['epic'] : s.startsWith('Боевой стиль') ? ['style'] : []));
+}
+// Всего ячеек черт на текущем уровне: происхождение (+1 человеку) и выданные классом
+function featSlots(c) {
+  const s = { origin: 1 + (/человек|human/i.test(c.info.species) ? 1 : 0), general: 0, style: 0, epic: 0 };
+  for (let L = 1; L <= lvl(c); L++) featSlotsAt(c, L).forEach((k) => { s[k]++; });
+  return s;
+}
+const featFree = (c, slot) => featSlots(c)[slot] - c.feats.filter((f) => f.slot === slot).length;
+const featChoices = (c, slot) => FEATS.filter((f) => FEAT_SLOTS[slot].allows.includes(f.cat) && (f.rep || !hasFeat(c, f.key)));
+function normPick(p) {
+  const d = FEATS_BY[p.key];
+  if (d && Array.isArray(d.abil) && !d.abil.includes(p.a)) p.a = d.abil[0];
+  return p;
+}
+function defaultPick(c, slot) {
+  const opts = featChoices(c, slot);
+  const f = slot === 'general' && opts.includes(FEATS_BY.asi) ? FEATS_BY.asi : opts[0];
+  return normPick({ key: f ? f.key : '', mode: 'plus2', a1: 'str', a2: 'dex', a: '' });
+}
+const pickValid = (p) => { const d = FEATS_BY[p.key]; return !!d && !(d.abil === 'asi' && p.mode === 'plus11' && p.a1 === p.a2); };
+// Выбор черты для ячейки slot: список черт + выбор характеристик, которые она повышает
+function featPickerHtml(c, slot, p) {
+  const opts = featChoices(c, slot);
+  const groups = FEAT_SLOTS[slot].allows.map((cat) => {
+    const list = opts.filter((f) => f.cat === cat);
+    return list.length ? `<optgroup label="${FEAT_CATS[cat]}">${list.map((f) => `<option value="${f.key}" ${p.key === f.key ? 'selected' : ''}>${esc(f.n)}</option>`).join('')}</optgroup>` : '';
+  }).join('');
+  const d = FEATS_BY[p.key];
+  const sel = (list, v, field) => `<select data-fp="${field}">${list.map((k) => `<option value="${k}" ${v === k ? 'selected' : ''}>${ABILITIES.find((a) => a.k === k).n} (${score(c, k)})</option>`).join('')}</select>`;
+  let abil = '';
+  if (d && d.abil === 'asi') {
+    abil = `<select data-fp="mode"><option value="plus2" ${p.mode === 'plus2' ? 'selected' : ''}>+2 к одной</option><option value="plus11" ${p.mode === 'plus11' ? 'selected' : ''}>+1 к двум</option></select>`
+      + sel(ALL6, p.a1, 'a1') + (p.mode === 'plus11' ? sel(ALL6, p.a2, 'a2') : '');
+  } else if (d && d.abil) abil = `<span class="muted small">+1 к</span>${sel(d.abil, p.a, 'a')}`;
+  return `<div class="feat-pick" data-pslot="${slot}"><div class="row gap wrap"><select data-fp="key">${groups}</select>${abil}</div>
+    ${d ? `<p class="muted small">${esc(d.x)}${d.cat === 'epic' ? ' Характеристика до 30.' : d.abil ? ' Характеристика до 20.' : ''}</p>` : ''}
+    ${d && d.abil === 'asi' && p.mode === 'plus11' && p.a1 === p.a2 ? '<p class="small gen-warn">Выберите две разные характеристики</p>' : ''}</div>`;
+}
+// Изменение в выборе черты: picks — объект { slot: pick }
+function pickChange(picks, el) {
+  const box = el.closest('[data-pslot]');
+  if (!box || !el.dataset.fp) return false;
+  const p = picks[box.dataset.pslot];
+  p[el.dataset.fp] = el.value;
+  normPick(p);
+  return true;
+}
+// Черты, меняющие максимум хитов при добавлении/удалении
+function featHp(c, key, sign) {
+  const d = key === 'tough' ? 2 * lvl(c) : key === 'boonFortitude' ? 40 : 0;
+  if (!d) return;
+  c.combat.hpMax = Math.max(1, (+c.combat.hpMax || 0) + sign * d);
+  c.combat.hp = clamp((+c.combat.hp || 0) + sign * d, 0, c.combat.hpMax);
+}
+function addFeat(c, slot, p, L) {
+  c.feats.push({ id: uid(), key: p.key, slot, a: p.a, a1: p.a1, a2: p.a2, mode: p.mode, lvl: L });
+  featHp(c, p.key, 1);
+}
+function featEffectText(f) {
+  const d = FEATS_BY[f.key], s = (k) => ABILITIES.find((a) => a.k === k).s;
+  if (!d || !d.abil) return '';
+  if (d.abil === 'asi') return f.mode === 'plus11' ? `${s(f.a1)} +1, ${s(f.a2)} +1` : `${s(f.a1)} +2`;
+  return `${s(f.a)} +1`;
+}
+let featAdd = null; // состояние окна «Добавить черту»: { slot, picks }
+function openFeatAdd() {
+  const c = ch();
+  const free = Object.keys(FEAT_SLOTS).filter((k) => featFree(c, k) > 0);
+  if (!free.length) {
+    openModal(`<h2>Черты</h2><p>Все доступные ячейки черт заняты.</p><p class="muted small">Новые черты дают уровни с «Увеличением характеристик» (обычно 4, 8, 12, 16), эпический дар на 19 уровне и «Боевой стиль» у воина, паладина и следопыта. Человек получает дополнительную черту происхождения.</p>
+      <div class="modal-actions"><button data-act="closeModal">Закрыть</button></div>`);
+    return;
+  }
+  featAdd = { slot: free[0], picks: Object.fromEntries(free.map((k) => [k, defaultPick(c, k)])) };
+  openModal('<h2>＋ Черта</h2><div id="featAddBody"></div>');
+  modalRefresh = renderFeatAdd;
+  $('#modalBody').onchange = (e) => {
+    if (e.target.name === 'featSlot') featAdd.slot = e.target.value;
+    else if (!pickChange(featAdd.picks, e.target)) return;
+    renderFeatAdd();
+  };
+  renderFeatAdd();
+}
+function renderFeatAdd() {
+  const box = $('#featAddBody');
+  if (!box) return;
+  const c = ch(), slots = featSlots(c), S = featAdd, p = S.picks[S.slot];
+  box.innerHTML = `<p class="muted small">Выберите ячейку, в которую берёте черту:</p>
+    <div class="row gap wrap">${Object.entries(FEAT_SLOTS).filter(([k]) => slots[k]).map(([k, s]) => {
+      const free = featFree(c, k);
+      return `<label class="check"><input type="radio" name="featSlot" value="${k}" ${S.slot === k ? 'checked' : ''} ${free > 0 ? '' : 'disabled'}> ${s.n} (${slots[k] - free}/${slots[k]})</label>`;
+    }).join('')}</div>
+    <h3>${FEAT_SLOTS[S.slot].n}</h3>${featPickerHtml(c, S.slot, p)}
+    <div class="modal-actions"><button data-act="closeModal">Отмена</button><button class="primary" data-act="featAddApply" ${pickValid(p) ? '' : 'disabled'}>Добавить</button></div>`;
+}
+
 /* ---------- Повышение уровня ---------- */
 let lvlState = null;
+// Названия умений класса на уровне L; токены ячеек черт (ASI, EPIC, Боевой стиль) выбираются отдельно
 function featuresAt(c, L) {
   const row = (CLASS_FEATURES[c.info.cls.trim()] || [])[L - 1] || '';
   const sub = 'Умение подкласса' + (c.info.subclass ? `: ${c.info.subclass}` : '');
-  return row.split(';').map((s) => s.trim()).filter(Boolean)
-    .map((s) => (s === 'ASI' ? ASI_NAME : s === 'SUB' ? sub : s === 'EPIC' ? EPIC_NAME : s));
+  return row.split(';').map((s) => s.trim()).filter((s) => s && s !== 'ASI' && s !== 'EPIC' && !s.startsWith('Боевой стиль'))
+    .map((s) => (s === 'SUB' ? sub : s));
 }
 function openLevelUp() {
   const c = ch();
   if (lvl(c) >= 20) { toast('Персонаж уже 20 уровня'); return; }
-  lvlState = { hpMode: 'avg', roll: null, asi: 'plus2', a1: 'str', a2: 'dex', skip: new Set() };
+  const N = lvl(c) + 1;
+  lvlState = { hpMode: 'avg', roll: null, skip: new Set(), slots: featSlotsAt(c, N), picks: {} };
+  lvlState.slots.forEach((k) => { lvlState.picks[k] = defaultPick(c, k); });
   openModal('<h2>⬆ Повышение уровня</h2><div id="lvlBody"></div>');
   modalRefresh = renderLevelUp;
   $('#modalBody').onchange = (e) => {
     const el = e.target, S = lvlState;
     if (el.name === 'hpMode') S.hpMode = el.value;
-    else if (el.dataset.lv) S[el.dataset.lv] = el.value;
     else if (el.dataset.feat != null) { el.checked ? S.skip.delete(+el.dataset.feat) : S.skip.add(+el.dataset.feat); return; }
-    else return;
+    else if (!pickChange(S.picks, el)) return;
     renderLevelUp();
   };
   renderLevelUp();
@@ -814,15 +1028,12 @@ function lvlGain(c) {
   const base = S.hpMode === 'avg' ? hd / 2 + 1 : S.roll;
   return base == null ? null : Math.max(1, base + am(c, 'con')) + hpPerLevelBonus(c);
 }
-// Умения 20 уровня, повышающие характеристики (максимум 25)
-const CAPSTONE = { 'Варвар': ['Первобытный чемпион', ['str', 'con']], 'Монах': ['Тело и разум', ['dex', 'wis']] };
 function renderLevelUp() {
   const box = $('#lvlBody');
   if (!box) return;
   const c = ch(), S = lvlState, L = lvl(c), N = L + 1, hd = +c.combat.hdDie, con = am(c, 'con');
   const gain = lvlGain(c);
   const feats = featuresAt(c, N);
-  const hasAsi = feats.includes(ASI_NAME);
   const changes = [];
   const pbN = 2 + Math.floor((N - 1) / 4);
   if (pbN !== pb(c)) changes.push(`Бонус мастерства: ${fmt(pb(c))} → <b>${fmt(pbN)}</b>`);
@@ -838,12 +1049,12 @@ function renderLevelUp() {
     changes.push('Подготовьте новые заклинания, если положено по таблице класса');
   }
   const cap = N === 20 && CAPSTONE[c.info.cls.trim()];
-  if (cap) changes.push(`${cap[0]}: ${cap[1].map((k) => `${ABILITIES.find((a) => a.k === k).s} ${c.abil[k]} → <b>${Math.min(25, +c.abil[k] + 4)}</b>`).join(', ')}`);
+  if (cap) changes.push(`${cap[0]}: ${cap[1].map((k) => `${ABILITIES.find((a) => a.k === k).s} ${score(c, k)} → <b>${Math.min(25, score(c, k) + 4)}</b>`).join(', ')}`);
   c.resources.filter((r) => CLASS_RESOURCES[r.auto]).forEach((r) => {
     const m = CLASS_RESOURCES[r.auto].f(N, c).max;
     if (m !== r.max) changes.push(`${esc(r.n)}: ${r.max} → <b>${m}</b>`);
   });
-  const abilOpts = (sel) => ABILITIES.map((a) => `<option value="${a.k}" ${sel === a.k ? 'selected' : ''}>${a.n} (${c.abil[a.k]})</option>`).join('');
+  const picksOk = S.slots.every((k) => pickValid(S.picks[k]));
 
   box.innerHTML = `<p class="muted">${esc(c.info.name)}${c.info.cls ? ` — ${esc(c.info.cls)}` : ''}: <b>${L} → ${N} уровень</b></p>
     <h3>Хиты</h3>
@@ -854,16 +1065,12 @@ function renderLevelUp() {
     </div>
     <p>${gain == null ? '<span class="muted">Бросьте кость хитов</span>' : `+<b>${gain}</b> хитов (${S.hpMode === 'avg' ? hd / 2 + 1 : S.roll} ${fmt(con)} Тел${hpPerLevelBonus(c) ? ` +${hpPerLevelBonus(c)} вид/черта` : ''}) · максимум ${c.combat.hpMax} → <b>${+c.combat.hpMax + gain}</b>`}</p>
     <h3>Что изменится</h3><ul class="lvl-list">${changes.map((x) => `<li>${x}</li>`).join('')}</ul>
-    ${feats.some((f) => f !== ASI_NAME) ? `<h3>Новые умения</h3><p class="muted small">Отмеченные добавятся во вкладку «Способности». Описания — в Книге игрока.</p>
-      <div class="lvl-feats">${feats.map((f, i) => (f === ASI_NAME ? '' : `<label class="check"><input type="checkbox" data-feat="${i}" ${S.skip.has(i) ? '' : 'checked'}> ${esc(f)}</label>`)).join('')}</div>`
-    : hasAsi ? ''
+    ${feats.length ? `<h3>Новые умения</h3><p class="muted small">Отмеченные добавятся во вкладку «Способности». Описания — в Книге игрока.</p>
+      <div class="lvl-feats">${feats.map((f, i) => `<label class="check"><input type="checkbox" data-feat="${i}" ${S.skip.has(i) ? '' : 'checked'}> ${esc(f)}</label>`).join('')}</div>`
+    : S.slots.length ? ''
     : c.info.cls && !CLASS_FEATURES[c.info.cls.trim()] ? '<p class="muted small">Класс не из списка — умения добавьте вручную.</p>' : !c.info.cls ? '<p class="muted small">Укажите класс, чтобы увидеть новые умения.</p>' : ''}
-    ${hasAsi ? `<h3>Увеличение характеристик</h3>
-      <div class="row gap wrap"><select data-lv="asi"><option value="plus2" ${S.asi === 'plus2' ? 'selected' : ''}>+2 к одной</option><option value="plus11" ${S.asi === 'plus11' ? 'selected' : ''}>+1 к двум</option><option value="feat" ${S.asi === 'feat' ? 'selected' : ''}>Взять черту вместо этого</option></select>
-      ${S.asi !== 'feat' ? `<select data-lv="a1">${abilOpts(S.a1)}</select>` : ''}${S.asi === 'plus11' ? `<select data-lv="a2">${abilOpts(S.a2)}</select>` : ''}</div>
-      ${S.asi === 'plus11' && S.a1 === S.a2 ? '<p class="small gen-warn">Выберите две разные характеристики</p>' : ''}
-      ${S.asi === 'feat' ? '<p class="muted small">Черта добавится в «Способности» — впишите её название и описание.</p>' : '<p class="muted small">Значение не может превысить 20.</p>'}` : ''}
-    <div class="modal-actions"><button data-act="closeModal">Отмена</button><button class="primary" data-act="lvlApply" ${gain == null || (hasAsi && S.asi === 'plus11' && S.a1 === S.a2) ? 'disabled' : ''}>Повысить до ${N} уровня</button></div>`;
+    ${S.slots.map((k) => `<h3>${k === 'general' ? 'Увеличение характеристик или черта' : FEAT_SLOTS[k].n}</h3>${featPickerHtml(c, k, S.picks[k])}`).join('')}
+    <div class="modal-actions"><button data-act="closeModal">Отмена</button><button class="primary" data-act="lvlApply" ${gain == null || !picksOk ? 'disabled' : ''}>Повысить до ${N} уровня</button></div>`;
 }
 
 /* ---------- Каталог снаряжения ---------- */
@@ -1130,23 +1337,10 @@ const ACT = {
     toast('🌙 Долгий отдых завершён — всё восстановлено');
   },
   applyClass() {
-    const c = ch(), name = c.info.cls.trim(), def = CLASSES[name];
-    if (!def) { toast('Выберите класс из списка (поле «Класс»)'); return; }
-    if (!confirmBox(`Применить шаблон класса «${name}»? Будут заданы кость хитов, спасброски, заклинательная характеристика, тип заклинателя и ресурсы класса.`)) return;
-    c.combat.hdDie = def.hd;
-    ABILITIES.forEach((a) => { c.saves[a.k] = def.saves.includes(a.k); });
-    c.spellcasting.ability = def.sa;
-    c.spellcasting.casterType = def.caster;
-    def.res.forEach((k) => {
-      if (c.resources.some((r) => r.auto === k)) return;
-      const R = CLASS_RESOURCES[k];
-      c.resources.push({ id: uid(), n: R.n, max: 0, used: 0, recharge: 'long', auto: k, x: R.d });
-    });
-    if (name === 'Бард') c.combat.jack = lvl(c) >= 2;
-    // Защита без доспехов у монаха и варвара
-    if ((name === 'Монах' || name === 'Варвар') && !c.armor.id) {
-      Object.assign(c.armor, { mode: 'auto', unarmored: name === 'Монах' ? 'monk' : 'barbarian' });
-    }
+    const c = ch(), name = c.info.cls.trim();
+    if (!CLASSES[name]) { toast('Выберите класс из списка (поле «Класс»)'); return; }
+    if (!confirmBox(`Применить шаблон класса «${name}» заново? Будут заданы кость хитов, спасброски, заклинательная характеристика и тип заклинателя.`)) return;
+    applyClassTemplate(c);
     toast(`Шаблон «${name}» применён`);
   },
   calcHp() {
@@ -1195,6 +1389,7 @@ const ACT = {
   dropConc() { if (ch().combat.conc) toast(`Концентрация на «${esc(ch().combat.conc)}» прервана`); endConc(ch()); pendingConc = 0; },
   concSave() {
     const c = ch(), dc = pendingConc || 10;
+    if (hasFeat(c, 'warCaster') && advMode === 0) setAdv(1);
     const r = rollD20(`Концентрация (СЛ ${dc})`, saveBonus(c, 'con'), { dc });
     if (r.total < dc && c.combat.conc) { toast(`Концентрация на «${esc(c.combat.conc)}» потеряна`, 'fumble'); endConc(c); }
     pendingConc = 0;
@@ -1275,7 +1470,7 @@ const ACT = {
   },
   addAutoRes(el) {
     const k = el.dataset.k, R = CLASS_RESOURCES[k];
-    ch().resources.push({ id: uid(), n: R.n, max: 0, used: 0, recharge: 'long', auto: k, x: R.d });
+    ch().resources.push({ id: uid(), n: R.n, max: 0, used: 0, recharge: 'long', auto: k, x: R.d, manual: true });
     el.disabled = true; toast(`Добавлено: ${R.n}`);
   },
   addResource() { formModal('Свой ресурс', RES_FIELDS().filter((f) => f.k !== 'autoOn'), { max: 3, recharge: 'long' }, (v) => ch().resources.push({ id: uid(), ...v, used: 0, auto: '' })); },
@@ -1323,31 +1518,48 @@ const ACT = {
   },
   bardDie(el) { rollDice('Кость вдохновения барда', `1d${el.dataset.d}`); },
   radiantStrike() { rollDice('Сияющие удары (излучение)', '1d8'); },
+  addFeat() { openFeatAdd(); },
+  featAddApply() {
+    const c = ch(), S = featAdd, p = S.picks[S.slot];
+    if (!pickValid(p) || featFree(c, S.slot) <= 0) return;
+    addFeat(c, S.slot, p, lvl(c));
+    toast(`Черта «${esc(FEATS_BY[p.key].n)}» добавлена`);
+    closeModal();
+  },
+  delFeat(el) {
+    const c = ch(), f = findById(c.feats, el.dataset.id), d = FEATS_BY[f.key];
+    if (!confirmBox(`Убрать черту «${d ? d.n : f.key}»? Её эффекты (прибавки к характеристикам и т.п.) будут сняты.`)) return;
+    featHp(c, f.key, -1);
+    c.feats = c.feats.filter((x) => x !== f);
+  },
   levelUp() { openLevelUp(); },
   lvlRoll() { const c = ch(); lvlState.roll = die(+c.combat.hdDie); logRoll('Хиты за уровень', lvlState.roll, `к${c.combat.hdDie} [${lvlState.roll}]`); renderLevelUp(); },
   lvlApply() {
     const c = ch(), S = lvlState, N = lvl(c) + 1, gain = lvlGain(c);
     if (gain == null || N > 20) return;
-    const feats = featuresAt(c, N), hasAsi = feats.includes(ASI_NAME);
-    if (hasAsi && S.asi === 'plus11' && S.a1 === S.a2) return;
+    const feats = featuresAt(c, N);
+    if (!S.slots.every((k) => pickValid(S.picks[k]))) return;
+    // Одна и та же неповторяемая черта не может быть выбрана в двух ячейках
+    const keys = S.slots.map((k) => S.picks[k].key);
+    if (keys.some((k, i) => keys.indexOf(k) !== i && !FEATS_BY[k].rep)) { toast('Одну черту нельзя взять дважды'); return; }
     c.info.level = N;
     c.combat.hpMax = (+c.combat.hpMax || 0) + gain;
     c.combat.hp = (+c.combat.hp || 0) + gain;
     const notes = [`+${gain} хитов`];
-    if (hasAsi && S.asi !== 'feat') {
-      const inc = S.asi === 'plus2' ? [[S.a1, 2]] : [[S.a1, 1], [S.a2, 1]];
-      inc.forEach(([k, n]) => { c.abil[k] = Math.min(20, (+c.abil[k] || 0) + n); });
-      notes.push(inc.map(([k, n]) => `${ABILITIES.find((a) => a.k === k).s} +${n}`).join(', '));
-    }
+    S.slots.forEach((k) => {
+      const p = S.picks[k];
+      addFeat(c, k, p, N);
+      const eff = featEffectText(c.feats[c.feats.length - 1]);
+      notes.push(`${FEATS_BY[p.key].n}${eff ? ` (${eff})` : ''}`);
+    });
     const src = `${c.info.cls.trim()} ${N}`;
     feats.forEach((f, i) => {
-      if (f === ASI_NAME ? S.asi !== 'feat' : S.skip.has(i)) return;
-      const n = f === ASI_NAME ? 'Черта (впишите название)' : f === EPIC_NAME ? 'Эпический дар (впишите черту)' : f;
-      if (!c.features.some((x) => x.n === n && x.src === src)) c.features.push({ id: uid(), n, src, x: '' });
+      if (S.skip.has(i)) return;
+      if (!c.features.some((x) => x.n === f && x.src === src)) c.features.push({ id: uid(), n: f, src, x: '' });
     });
     if (c.info.cls.trim() === 'Бард' && N >= 2) c.combat.jack = true;
     const cap = N === 20 && CAPSTONE[c.info.cls.trim()];
-    if (cap) { cap[1].forEach((k) => { c.abil[k] = Math.min(25, (+c.abil[k] || 0) + 4); }); notes.push(`${cap[0]}: +4`); }
+    if (cap) notes.push(`${cap[0]}: +4`);
     closeModal();
     toast(`⬆ ${N} уровень! ${notes.join(' · ')}`, 'crit');
   },
@@ -1444,7 +1656,7 @@ const ACT = {
   goTab(el) { switchTab(el.dataset.tabGo); },
 };
 // Действия, которые не меняют персонажа (не нужно сохранять/перерисовывать)
-const NO_RENDER = new Set(['exportChar', 'importChar', 'toggleDice', 'clearLog', 'closeModal', 'skillInfo', 'condInfo', 'masteryInfo', 'addSpellDb', 'addClassRes', 'shortRest','addAttack', 'editAttack', 'addSpellCustom', 'editSpell', 'addItem', 'editItem', 'addResource', 'editRes', 'addFeature', 'editFeature', 'goTab', 'abilGen', 'genMode', 'genPb', 'genRoll', 'genReset', 'levelUp', 'lvlRoll', 'openCatalog', 'catTab', 'addEffect', 'sneak', 'bardDie', 'radiantStrike']);
+const NO_RENDER = new Set(['exportChar', 'importChar', 'toggleDice', 'clearLog', 'closeModal', 'skillInfo', 'condInfo', 'masteryInfo', 'addSpellDb', 'addClassRes', 'shortRest','addAttack', 'editAttack', 'addSpellCustom', 'editSpell', 'addItem', 'editItem', 'addResource', 'editRes', 'addFeature', 'editFeature', 'goTab', 'abilGen', 'genMode', 'genPb', 'genRoll', 'genReset', 'levelUp', 'lvlRoll', 'openCatalog', 'catTab', 'addEffect', 'sneak', 'bardDie', 'radiantStrike', 'addFeat']);
 
 // Высота закреплённой шапки — под ней закрепляется панель вкладок (на телефоне шапка не закреплена)
 function syncStickyOffset() {
@@ -1466,7 +1678,8 @@ function switchTab(t) {
 function buildStatic() {
   $('#abilGrid').innerHTML = ABILITIES.map((a) => `<div class="abil"><div class="an">${a.n}</div>
     <button class="amod" data-act="rollCheck" data-k="${a.k}" id="am-${a.k}" title="Проверка ${a.n}"></button>
-    <input type="number" min="1" max="30" data-bind="abil.${a.k}" data-num aria-label="${a.n}">
+    <input type="number" min="1" max="30" data-bind="abil.${a.k}" data-num aria-label="${a.n}" title="Базовое значение (без черт)">
+    <div class="afinal" id="af-${a.k}"></div>
     <div class="asave"><input type="checkbox" data-bind="saves.${a.k}" title="Владение спасброском"><button data-act="rollSave" data-k="${a.k}" id="as-${a.k}"></button></div></div>`).join('');
   $('#slotList').innerHTML = Array.from({ length: 9 }, (_, i) => `<div class="slot-row" id="slotRow${i}"><span class="lv">${i + 1} ур.</span>
       <input type="number" min="0" max="9" data-bind="slots.${i}.max" data-num title="Максимум"><span id="slotPips${i}"></span><span class="muted small" id="slotCnt${i}"></span></div>`).join('') +
