@@ -1285,7 +1285,7 @@ const ACT_LABELS = {
   skillProf: 'владение навыком', togglePrep: 'подготовка заклинания', addSpellFromDb: 'добавление заклинания', catWeapon: 'снаряжение из каталога',
   catArmor: 'доспех из каталога', catShield: 'щит', catGear: 'снаряжение из каталога', addMulti: 'мультикласс', delMulti: 'удаление класса',
   delAttack: 'удаление атаки', atkRoll: 'боеприпас', recoverAmmo: 'сбор боеприпасов', delSpell: 'удаление заклинания', delItem: 'удаление предмета', delRes: 'удаление ресурса', delFeature: 'удаление умения',
-  addAutoRes: 'ресурс класса', calcHp: 'расчёт хитов', applyClass: 'шаблон класса', abilEdit: 'характеристики',
+  calcHp: 'расчёт хитов', applyClass: 'шаблон класса', abilEdit: 'характеристики',
 };
 function pushUndo(id, before, label) {
   const st = undoStacks[id] || (undoStacks[id] = []);
@@ -1979,21 +1979,6 @@ const ACT = {
     if (!i.attuned && c.items.filter((x) => x.attuned).length >= 3) { toast('Нельзя настроиться больше чем на 3 предмета'); return; }
     i.attuned = !i.attuned;
   },
-  addClassRes() {
-    // Только ресурсы классов, сгруппированные по классу (ресурсы расы и черт добавляются сами)
-    const c = ch();
-    const groups = '<div class="res-groups">' + Object.entries(CLASSES).filter(([, d]) => d.res.length).map(([cls, d]) => `<div><h3>${cls}</h3><div class="slot-choice">${d.res.map((k) => {
-      const has = c.resources.some((x) => x.auto === k);
-      return `<button data-act="addAutoRes" data-k="${k}" ${has ? 'disabled' : ''}>${has ? '✓ ' : ''}${CLASS_RESOURCES[k].n}</button>`;
-    }).join('')}</div></div>`).join('') + '</div>';
-    openModal(`<h2>Ресурсы других классов</h2><p class="muted small">Ресурсы ваших классов (в том числе мультикласса), расы и черт добавляются автоматически. Здесь можно вручную добавить ресурс любого класса — максимум считается по общему уровню персонажа, его можно поправить в настройках ресурса (✎).</p>
-      ${groups}<div class="modal-actions"><button data-act="closeModal">Готово</button></div>`);
-  },
-  addAutoRes(el) {
-    const k = el.dataset.k, R = CLASS_RESOURCES[k];
-    ch().resources.push({ id: uid(), n: R.n, max: 0, used: 0, recharge: 'long', auto: k, x: R.d, manual: true });
-    el.disabled = true; toast(`Добавлено: ${R.n}`);
-  },
   addResource() { formModal('Свой ресурс', RES_FIELDS().filter((f) => f.k !== 'autoOn'), { max: 3, recharge: 'long' }, (v) => ch().resources.push({ id: uid(), ...v, used: 0, auto: '' })); },
   editRes(el) {
     const r = findById(ch().resources, el.dataset.id);
@@ -2201,7 +2186,7 @@ const ACT = {
   goTab(el) { switchTab(el.dataset.tabGo); },
 };
 // Действия, которые не меняют персонажа (не нужно сохранять/перерисовывать)
-const NO_RENDER = new Set(['exportChar', 'importChar', 'toggleDice', 'clearLog', 'closeModal', 'skillInfo', 'condInfo', 'masteryInfo', 'addSpellDb', 'addClassRes', 'shortRest','addAttack', 'editAttack', 'addSpellCustom', 'editSpell', 'addItem', 'editItem', 'addResource', 'editRes', 'addFeature', 'editFeature', 'goTab', 'abilGen', 'genMode', 'genPb', 'genRoll', 'genReset', 'levelUp', 'lvlRoll', 'openCatalog', 'catTab', 'addEffect', 'sneak', 'bardDie', 'radiantStrike', 'addFeat', 'undo', 'newChar', 'originWizard', 'wizNext', 'wizPrev', 'wizGo']);
+const NO_RENDER = new Set(['exportChar', 'importChar', 'toggleDice', 'clearLog', 'closeModal', 'skillInfo', 'condInfo', 'masteryInfo', 'addSpellDb', 'shortRest','addAttack', 'editAttack', 'addSpellCustom', 'editSpell', 'addItem', 'editItem', 'addResource', 'editRes', 'addFeature', 'editFeature', 'goTab', 'abilGen', 'genMode', 'genPb', 'genRoll', 'genReset', 'levelUp', 'lvlRoll', 'openCatalog', 'catTab', 'addEffect', 'sneak', 'bardDie', 'radiantStrike', 'addFeat', 'undo', 'newChar', 'originWizard', 'wizNext', 'wizPrev', 'wizGo']);
 
 // Высота закреплённой шапки — под ней закрепляется панель вкладок (на телефоне шапка не закреплена)
 function syncStickyOffset() {
