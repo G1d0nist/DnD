@@ -286,6 +286,14 @@ button.stat:hover { border-color: var(--gold); }
 .multi h3 { margin-top: 10px; }
 @media (max-width: 760px) { .multi-row { grid-template-columns: 1fr 1fr; } }
 
+/* Приёмы оружия и подклассы */
+.mastery-box { margin: 0 0 10px; }
+.mastery-box .chip { padding-left: 10px; }
+.tag.off { border-style: dashed; color: var(--muted); }
+.mst-list { max-height: 60vh; overflow-y: auto; display: grid; gap: 4px; }
+.mst-list h3 { margin: 8px 0 2px; }
+.db-row.on { border-color: var(--gold); }
+
 /* Черты */
 .afinal { font-size: 11px; color: var(--muted); margin-top: 2px; }
 .afinal:empty { display: none; }
@@ -318,6 +326,7 @@ button.stat:hover { border-color: var(--gold); }
 .qs-slot .pip { width: 16px; height: 16px; }
 .lvl-badge { display: inline-flex; align-items: center; justify-content: center; min-width: 22px; height: 22px; border-radius: 6px; background: var(--card2); border: 1px solid var(--line); color: var(--gold); font-size: 12px; font-weight: 700; }
 .li.qs { padding: 6px 10px; }
+.lvl-badge.cantrip { color: var(--muted); }
 
 /* КД, эффекты, повышение уровня */
 .ac-mode { margin: 4px 0 8px; }

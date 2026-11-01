@@ -78,7 +78,7 @@
         <div class="form-grid">
           <label class="w2">Имя<input data-bind="info.name"></label>
           <label>Класс<input data-bind="info.cls" list="dlClasses"></label>
-          <label>Подкласс<input data-bind="info.subclass"></label>
+          <label>Подкласс<input data-bind="info.subclass" list="dlSubclass" placeholder="выбирается на 3 уровне"></label>
           <label>Уровень класса<input type="number" min="1" max="20" data-bind="info.level" data-num></label>
           <label>Раса<input data-bind="info.species" list="dlSpecies"></label>
           <label>Предыстория<input data-bind="info.background" list="dlBackgrounds"></label>
@@ -175,6 +175,7 @@
 
       <div class="card span-all">
         <div class="row between wrap gap"><h2>Атаки</h2><div class="row gap wrap"><button id="recoverAmmo" data-act="recoverAmmo" hidden title="После боя можно найти половину выпущенных боеприпасов"></button><button data-act="openCatalog" data-t="weapons">📖 Каталог оружия</button><button data-act="addAttack">＋ Атака</button></div></div>
+        <div id="masteryBox" class="row gap wrap mastery-box" hidden></div>
         <div id="attackList" class="list"></div>
       </div>
 
@@ -359,9 +360,10 @@
 </div>
 <input type="file" id="importFile" accept=".json,application/json" hidden>
 
-<datalist id="dlClasses"></datalist><datalist id="dlSpecies"></datalist><datalist id="dlBackgrounds"></datalist><datalist id="dlAlign"></datalist>
+<datalist id="dlClasses"></datalist><datalist id="dlSubclass"></datalist><datalist id="dlSpecies"></datalist><datalist id="dlBackgrounds"></datalist><datalist id="dlAlign"></datalist>
 
 <script src="data.js"></script>
+<script src="data2.js"></script>
 <script src="app.js"></script>
 <script type="module" src="sync.js"></script>
 <script>

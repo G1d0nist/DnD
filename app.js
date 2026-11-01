@@ -31,7 +31,8 @@ function blankChar() {
     combat: { ac: 10, initBonus: 0, speed: 30, hp: 10, hpMax: 10, temp: 0, hdDie: 8, hdUsed: 0, hdUsedBy: {}, deathS: 0, deathF: 0, inspiration: false, exhaustion: 0, conc: '', conditions: [], jack: false, defenses: '', round: 1 },
     armor: { mode: 'auto', id: '', shield: false, unarmored: '', bonus: 0, v: 1 },
     effects: [],
-    feats: [], // { id, key, slot, a, a1, a2, mode, lvl, bg }
+    feats: [], // { id, key, slot, a, a1, a2, mode, lvl, bg, spells, list }
+    masteries: [], // виды оружия с изученными приёмами (Weapon Mastery)
     bgAbil: {}, // прибавки к характеристикам от предыстории: { str: 2, dex: 1 }
     abilSet: false, // характеристики уже заданы (генерацией, мастером или вручную) — кнопка «Генерация» скрывается
     attacks: [{ id: uid(), n: 'Безоружный удар', ability: 'str', prof: true, hit: 0, dmg: '1', addMod: true, dmgBonus: 0, type: 'дробящий', mastery: '', range: '5 фт', x: '' }],
@@ -268,7 +269,8 @@ function casterOf(e) {
   return (e.cls === 'Воин' || e.cls === 'Плут') && /мистическ|eldritch|arcane/i.test(e.sub) ? 'third' : 'none';
 }
 function autoSlots(c) {
-  const t = c.spellcasting.casterType;
+  // Воин/плут без своей магии становятся третью заклинателя с подклассом Мистический рыцарь/ловкач
+  const t = c.spellcasting.casterType === 'none' ? casterOf(classList(c)[0]) : c.spellcasting.casterType;
   if (t !== 'manual') {
     let arr, pact = null;
     if (!isMulti(c)) {
@@ -400,6 +402,10 @@ function setAdv(v) { advMode = v; $$('.advmode button').forEach((b) => b.classLi
 // Источники преимущества и помехи для броска: состояния, ярость, доспех, черты.
 // kind: attack | check | save | init | death; abil — характеристика; skill — навык
 const AUTO_FAIL = ['paralyzed', 'stunned', 'unconscious', 'petrified'];
+const critMin = (c) => {
+  const f = classList(c).find((e) => e.cls === 'Воин' && e.sub === 'Чемпион');
+  return !f || f.lvl < 3 ? 20 : f.lvl >= 15 ? 18 : 19;
+};
 function autoAdv(c, o) {
   const has = (k) => c.combat.conditions.includes(k), n = (k) => CONDITIONS.find((x) => x.k === k).n.toLowerCase();
   const adv = [], dis = [], k = o.kind;
@@ -444,10 +450,12 @@ function rollD20(label, bonus, opts = {}) {
   if (opts.floor10 && nat < 10) { used = 10; notes.push(`Надёжный талант: ${nat}→10`); }
   const total = used + bonus - pen;
   detail += ` ${fmt(bonus)}` + (pen ? ` −${pen} (истощение)` : '') + (notes.length ? ` · ${notes.join(', ')}` : '');
-  let cls = nat === 20 ? 'crit' : nat === 1 ? 'fumble' : '';
+  // Чемпион: критическое попадание оружием на 19–20 (с 15 уровня — на 18–20)
+  const critAt = opts.weapon ? critMin(c) : 20;
+  let cls = nat >= critAt && opts.attack ? 'crit' : nat === 20 ? 'crit' : nat === 1 ? 'fumble' : '';
   let extra = '';
   if (opts.dc != null) { extra = total >= opts.dc ? ' ✔ успех' : ' ✘ провал'; }
-  if (opts.attack && nat === 20) extra = ' — КРИТ!';
+  if (opts.attack && nat >= critAt) extra = ' — КРИТ!';
   if (opts.attack && nat === 1) extra = ' — промах';
   logRoll(label + extra, total, detail, cls);
   setAdv(0);
@@ -526,6 +534,11 @@ function render() {
   autoResources(c);
   if (c.armor.mode === 'auto') c.combat.ac = computeAC(c).ac;
   autoMartialArts(c);
+  autoSubclassFeatures(c);
+  autoSpells(c);
+  // Подсказки для поля «Подкласс» — подклассы классов персонажа
+  const subs = [...new Set(classList(c).flatMap((e) => (SUBCLASSES[e.cls] || []).map((s) => s.n)))].join('|');
+  if ($('#dlSubclass').dataset.sig !== subs) { $('#dlSubclass').dataset.sig = subs; $('#dlSubclass').innerHTML = subs.split('|').filter(Boolean).map((s) => `<option value="${esc(s)}">`).join(''); }
   renderMulti();
   fillBound();
   renderUndo();
@@ -540,7 +553,7 @@ function renderMulti() {
     multiSig = sig;
     $('#multiBox').innerHTML = (c.multi.length ? `<h3>Мультикласс</h3>` + c.multi.map((m, i) => `<div class="multi-row">
         <label>Класс<input data-bind="multi.${i}.cls" list="dlClasses"></label>
-        <label>Подкласс<input data-bind="multi.${i}.sub"></label>
+        <label>Подкласс<input data-bind="multi.${i}.sub" list="dlSubclass"></label>
         <label>Уровень<input type="number" min="1" max="19" data-bind="multi.${i}.lvl" data-num></label>
         <button class="ghost" data-act="delMulti" data-id="${m.id}" title="Убрать класс">✕</button></div>`).join('') : '')
       + `<div class="row gap wrap mt"><span class="badge" id="totalLvl"></span><button class="ghost" data-act="addMulti" title="Добавить второй класс (новый уровень лучше брать через «Новый уровень»)">＋ мультикласс</button></div>`;
@@ -672,11 +685,18 @@ function renderCombat() {
       ${a.ammo ? `<span class="tag ${ammoLeft(c, a) ? 'r' : 'c'}" title="Боеприпасы из инвентаря">🏹 ${esc(a.ammo)}: ${ammoLeft(c, a)}</span>` : ''}
       ${a.ability === 'fin' ? `<span class="tag" title="Сила или Ловкость выбирается автоматически — по большему урону (в ярости учитывается её бонус к урону Силой)">${finUsesStr(c) ? 'СИЛ' : 'ЛОВ'}${raging(c) && finUsesStr(c) ? ' · ярость' : ''}</span>` : ''}
       ${a.ma ? `<span class="tag e" title="Кость урона растёт с уровнем: к6 → к8 (5) → к10 (11) → к12 (17)">Боевые искусства</span>` : ''}
-      ${a.mastery && m ? `<span class="tag g" data-act="masteryInfo" data-k="${a.mastery}" style="cursor:pointer">⚔ ${m.n}</span>` : ''}
+      ${a.mastery && m ? (masteryActive(c, a)
+        ? `<span class="tag g" data-act="masteryInfo" data-k="${a.mastery}" style="cursor:pointer">⚔ ${m.n}</span>`
+        : `<span class="tag off" data-act="masteryPick" style="cursor:pointer" title="Приём «${m.n}» не изучен для вида «${esc(weaponKind(a))}» — нажмите, чтобы выбрать в «Приёмах оружия»">⚔ ${m.n} · не изучен</span>`) : ''}
       <span class="btns"><button data-act="atkRoll" data-id="${a.id}">🎯 Атака</button><button data-act="dmgRoll" data-id="${a.id}">Урон</button><button data-act="dmgRoll" data-crit="1" data-id="${a.id}">Крит</button>
       <button class="ghost" data-act="editAttack" data-id="${a.id}" title="Изменить">✎</button><button class="ghost" data-act="delAttack" data-id="${a.id}" title="Удалить">✕</button></span>
     </div>${openSet.has(a.id) && (a.x || m?.d) ? `<div class="li-desc">${esc(a.x)}${a.x && m?.d ? '\n\n' : ''}${m?.d ? '<b>' + m.n + ':</b> ' + esc(m.d) : ''}</div>` : ''}</div>`;
   }).join('') || '<div class="muted">Нет атак</div>';
+  const lim = masteryLimit(c);
+  $('#masteryBox').hidden = !lim && !c.masteries.length;
+  $('#masteryBox').innerHTML = `<span class="muted small" title="Сколько видов оружия с приёмами (Weapon Mastery) вы знаете">Приёмы оружия ${c.masteries.length}/${lim}:</span>
+    ${c.masteries.map((w) => { const wp = WEAPONS.find((x) => x.n === w); return `<span class="chip"><span>${esc(w)}${wp ? ` · ${MASTERY[wp.m].n}` : ''}</span><button data-act="masteryDel" data-w="${esc(w)}" title="Убрать">✕</button></span>`; }).join('')}
+    <button data-act="masteryPick" class="${c.masteries.length < lim ? 'primary' : ''}">${c.masteries.length < lim ? '＋ Выбрать' : 'Изменить'}</button>`;
   const spent = Object.values(cb.ammoSpent || {}).reduce((s, n) => s + n, 0);
   $('#recoverAmmo').hidden = !spent;
   $('#recoverAmmo').textContent = `🏹 Собрать боеприпасы (${Math.floor(spent / 2)} из ${spent})`;
@@ -713,7 +733,7 @@ function spellLimits(c) {
   });
   return { prep, cantrips, note: parts.length ? `Подготовленных заклинаний — ${parts.join(', ')}. «Всегда подготовленные» не считаются.` : '' };
 }
-const spellCounts = (c) => ({ prep: c.spells.filter((s) => s.l > 0 && s.prep && !s.always).length, cantrips: c.spells.filter((s) => +s.l === 0).length });
+const spellCounts = (c) => ({ prep: c.spells.filter((s) => s.l > 0 && s.prep && !s.always).length, cantrips: c.spells.filter((s) => +s.l === 0 && !s.always).length });
 function renderSpells() {
   const c = ch(), sc = c.spellcasting, t = sc.casterType;
   $('#spellStats').innerHTML = `<div class="stat"><b>${spellDC(c)}</b><span>СЛ спасброска</span></div>
@@ -751,7 +771,7 @@ function renderSpells() {
     const slot = l ? c.slots[l - 1] : null;
     html += `<div class="spell-lvl"><h3>${l ? l + ' уровень' : 'Заговоры'}${slot && slot.max ? pipsHtml(slot.max, slot.used, 'slotPip', `data-l="${l - 1}"`) : ''}</h3><div class="list">`;
     html += list.map((s) => `<div class="li ${l && !s.prep && !s.always ? 'dim' : ''}"><div class="li-head">
-        ${l ? (s.always ? '<span class="tag g" title="Всегда подготовлено — не входит в лимит">всегда</span>' : `<input type="checkbox" class="prep" data-act="togglePrep" data-id="${s.id}" ${s.prep ? 'checked' : ''} title="Подготовлено">`) : ''}
+        ${s.always ? `<span class="tag g" title="Всегда подготовлено${s.auto || s.autoAlways ? ` — ${esc(s.auto || s.autoAlways)}` : ''}; не входит в лимит">${esc(s.auto || s.autoAlways || 'всегда')}</span>` : l ? `<input type="checkbox" class="prep" data-act="togglePrep" data-id="${s.id}" ${s.prep ? 'checked' : ''} title="Подготовлено">` : ''}
         <span class="li-title" data-act="toggleOpen" data-id="${s.id}">${esc(s.n)}</span>
         ${s.cn ? '<span class="tag c" title="Концентрация">К</span>' : ''}${s.rt ? '<span class="tag r" title="Ритуал">Р</span>' : ''}
         <span class="li-sub">${esc(s.t || '')}${s.r ? ' · ' + esc(s.r) : ''}</span>
@@ -838,8 +858,9 @@ function renderFeatures() {
       <span class="tag">${esc(FEAT_SLOTS[f.slot] ? FEAT_SLOTS[f.slot].n : '')}</span>${eff ? `<span class="tag e">${eff}</span>` : ''}
       ${f.bg ? `<span class="tag g" title="Черта от предыстории">предыстория${f.note ? `: ${esc(f.note)}` : ''}</span>` : ''}
       ${f.lvl ? `<span class="li-sub">${f.lvl} ур.</span>` : ''}
-      <span class="btns"><button class="ghost" data-act="delFeat" data-id="${f.id}" title="Убрать черту">✕</button></span>
-    </div>${openSet.has(f.id) ? `<div class="li-desc">${esc(d.x)}</div>` : ''}</div>`;
+      <span class="btns">${featPickNeed(f) ? `<button class="${(f.spells || []).length >= featPickNeed(f) ? '' : 'primary'}" data-act="featSpells" data-id="${f.id}" title="Выбрать заклинания черты">✨ Заклинания ${(f.spells || []).length}/${featPickNeed(f)}</button>` : ''}
+      <button class="ghost" data-act="delFeat" data-id="${f.id}" title="Убрать черту">✕</button></span>
+    </div>${openSet.has(f.id) ? `<div class="li-desc">${esc(d.x)}${(f.spells || []).length ? `\nЗаклинания: ${f.spells.map((e) => spellByE(e)?.n || e).join(', ')}${f.list ? ` (список: ${f.list})` : ''}` : ''}</div>` : ''}</div>`;
   }).join('') || '<div class="muted small">Черт пока нет. Черту происхождения даёт предыстория на 1 уровне.</div>';
 
   // Описание: своё (если вписано) или из справочника по классу из источника («Монах 5» → Монах)
@@ -860,6 +881,7 @@ function classPanelItems(c) {
   const F = CL('Воин');
   const atk = Math.max(F >= 20 ? 4 : F >= 11 ? 3 : F >= 5 ? 2 : 1, ['Варвар', 'Монах', 'Паладин', 'Следопыт'].some((n) => CL(n) >= 5) ? 2 : 1);
   if (atk > 1) items.push({ n: 'Атак за действие «Атака»', v: atk });
+  if (critMin(c) < 20) items.push({ n: 'Критическое попадание', v: `на ${critMin(c)}–20`, sub: 'Чемпион — учитывается при атаке оружием' });
   if (CL('Варвар')) {
     const on = raging(c);
     items.push({ n: 'Ярость', v: `+${rageDmg(c)} к урону Силой`, sub: on ? 'активна: сопротивление дроб./кол./руб., преимущество Силы' : left('rage'),
@@ -907,7 +929,7 @@ function renderQuickSpells() {
     + (c.pact.max ? `<span class="qs-slot pact"><b>Д${c.pact.level}</b>${pipsHtml(c.pact.max, c.pact.used, 'pactPip', '')}</span>` : '');
   const list = c.spells.filter((s) => +s.l === 0 || s.prep || s.always).sort((a, b) => a.l - b.l || a.n.localeCompare(b.n, 'ru'));
   $('#qsList').innerHTML = list.map((s) => `<div class="li qs"><div class="li-head">
-      <span class="lvl-badge" title="${s.l ? s.l + ' уровень' : 'Заговор'}">${s.l || 'З'}</span>
+      <span class="lvl-badge ${s.l ? '' : 'cantrip'}" title="${s.l ? s.l + ' уровень' : 'Заговор (0 уровень)'}">${s.l || '0'}</span>
       <span class="li-title" data-act="toggleOpen" data-id="${s.id}">${esc(s.n)}</span>
       ${s.cn ? '<span class="tag c" title="Концентрация">К</span>' : ''}${s.rt ? '<span class="tag r" title="Ритуал">Р</span>' : ''}
       <span class="li-sub">${esc(s.t || '')}${s.r ? ' · ' + esc(s.r) : ''}${s.f ? ' · ' + esc(s.f) : ''}</span>
@@ -1300,7 +1322,7 @@ const ACT_LABELS = {
   skillProf: 'владение навыком', togglePrep: 'подготовка заклинания', addSpellFromDb: 'добавление заклинания', catWeapon: 'снаряжение из каталога',
   catArmor: 'доспех из каталога', catShield: 'щит', catGear: 'снаряжение из каталога', addMulti: 'мультикласс', delMulti: 'удаление класса',
   delAttack: 'удаление атаки', atkRoll: 'боеприпас', recoverAmmo: 'сбор боеприпасов', delSpell: 'удаление заклинания', delItem: 'удаление предмета', delRes: 'удаление ресурса', delFeature: 'удаление умения',
-  calcHp: 'расчёт хитов', applyClass: 'шаблон класса', abilEdit: 'характеристики',
+  calcHp: 'расчёт хитов', applyClass: 'шаблон класса', abilEdit: 'характеристики', featSpellsSave: 'заклинания черты', masteryAdd: 'приём оружия', masteryDel: 'приём оружия',
   bardicGet: 'вдохновение барда', bardicUse: 'вдохновение барда', bardicDrop: 'вдохновение барда',
 };
 function pushUndo(id, before, label) {
@@ -1465,11 +1487,119 @@ function renderFeatAdd() {
 /* ---------- Повышение уровня ---------- */
 let lvlState = null;
 // Названия умений класса cls на его уровне L; токены ячеек черт (ASI, EPIC, Боевой стиль) выбираются отдельно
+// Если подкласс известен, токены «Подкласс»/«SUB» заменяются его умениями этого уровня
 function featuresAt(cls, subclass, L) {
   const row = (CLASS_FEATURES[cls] || [])[L - 1] || '';
+  const sc = subclassOf(cls, subclass);
   const sub = 'Умение подкласса' + (subclass ? `: ${subclass}` : '');
   return row.split(';').map((s) => s.trim()).filter((s) => s && s !== 'ASI' && s !== 'EPIC' && !s.startsWith('Боевой стиль'))
-    .map((s) => (s === 'SUB' ? sub : s));
+    .flatMap((s) => {
+      if (s !== 'SUB' && s !== 'Подкласс') return [s];
+      if (sc) return (sc.f[L] || []).map(([n]) => n);
+      return [s === 'SUB' ? sub : s];
+    });
+}
+// Заклинания «всегда подготовлено» от подкласса, расы (и её происхождения) и черт
+function wantedSpells(c) {
+  const out = [];
+  classList(c).forEach((e) => {
+    const sc = subclassOf(e.cls, e.sub);
+    if (sc) Object.entries(sc.sp).forEach(([L, list]) => { if (e.lvl >= +L) list.forEach((n) => out.push({ e: n, src: sc.n })); });
+  });
+  const sp = speciesOf(c), lin = c.info.lineage || '';
+  if (sp) {
+    Object.entries(RACE_SPELLS).forEach(([k, list]) => {
+      if (k === sp.n || (lin && lin.startsWith(k))) list.forEach(([L, n]) => { if (lvl(c) >= L) out.push({ e: n, src: k === sp.n ? sp.n : k }); });
+    });
+  }
+  c.feats.forEach((f) => {
+    const d = FEAT_SPELLS[f.key];
+    if (!d) return;
+    [...(d.fixed || []), ...(f.spells || [])].forEach((n) => out.push({ e: n, src: `черта «${FEATS_BY[f.key].n}»` }));
+  });
+  return out;
+}
+function autoSpells(c) {
+  const want = wantedSpells(c), keep = new Set();
+  want.forEach((w) => {
+    const d = spellByE(w.e), name = d ? d.n : w.e;
+    keep.add(name);
+    let s = c.spells.find((x) => x.n === name || (d && x.e === d.e));
+    if (!s) {
+      s = d ? { ...d, id: uid() } : { id: uid(), n: w.e, e: w.e, l: 1, x: 'Описание — в Книге игрока.' };
+      Object.assign(s, { always: true, prep: false, auto: w.src });
+      c.spells.push(s);
+    } else if (s.auto) s.auto = w.src;
+    else if (!s.always || s.autoAlways) { s.always = true; s.autoAlways = w.src; }
+  });
+  // Источник пропал (сменили подкласс, расу, убрали черту) — авто-заклинания убираются, свои остаются, но без «всегда»
+  c.spells = c.spells.filter((s) => !s.auto || keep.has(s.n));
+  c.spells.forEach((s) => { if (s.autoAlways && !keep.has(s.n)) { s.always = false; delete s.autoAlways; } });
+}
+// Сколько заклинаний черта даёт на выбор (0 — выбирать нечего)
+const featPickNeed = (f) => ((FEAT_SPELLS[f.key] || {}).pick || []).reduce((s, g) => s + g.n, 0);
+const isAttackCantrip = (s) => s.l === 0 && /атака заклинанием|атака оружием/i.test(s.x);
+let featSp = null; // окно выбора заклинаний черты: { featId, list, chosen: Set }
+function openFeatSpells(f) {
+  const d = FEAT_SPELLS[f.key];
+  featSp = { featId: f.id, list: f.list || (d.lists ? d.lists[0] : ''), chosen: new Set(f.spells || []) };
+  openModal(`<h2>✨ Заклинания: ${esc(FEATS_BY[f.key].n)}</h2><div id="featSpBody"></div>`);
+  modalRefresh = renderFeatSpells;
+  $('#modalBody').onchange = (e) => {
+    const el = e.target;
+    if (el.id === 'fspList') { featSp.list = el.value; featSp.chosen = new Set(); }
+    else if (el.dataset.fsp) { el.checked ? featSp.chosen.add(el.value) : featSp.chosen.delete(el.value); }
+    else return;
+    renderFeatSpells();
+  };
+  renderFeatSpells();
+}
+// Варианты для группы выбора: уровень, школы, список класса, только заговоры с атакой
+function featSpellOptions(g) {
+  const SNIPER = ['Жрец', 'Друид', 'Чародей', 'Колдун', 'Волшебник'];
+  return SPELLS.filter((s) => s.l === g.l
+    && (!g.schools || g.schools.includes(s.s))
+    && (!g.attack || (isAttackCantrip(s) && SNIPER.some((k) => s.k.includes(k))))
+    && (!featSp.list || g.schools || g.attack || s.k.includes(featSp.list)));
+}
+function renderFeatSpells() {
+  const box = $('#featSpBody');
+  if (!box) return;
+  const c = ch(), f = findById(c.feats, featSp.featId), d = FEAT_SPELLS[f.key];
+  let ok = true;
+  const groups = d.pick.map((g) => {
+    const opts = featSpellOptions(g), got = opts.filter((s) => featSp.chosen.has(s.e)).length;
+    if (got !== g.n) ok = false;
+    return `<h3>${g.l ? `Заклинание ${g.l} уровня` : 'Заговоры'}${g.schools ? ` (${g.schools.join(' / ')})` : ''}${g.attack ? ' с броском атаки' : ''} — ${got}/${g.n}</h3>
+      <div class="skill-pick">${opts.map((s) => {
+        const on = featSp.chosen.has(s.e);
+        return `<label class="check" title="${esc(s.x)}"><input type="checkbox" data-fsp="1" value="${esc(s.e)}" ${on ? 'checked' : ''} ${!on && got >= g.n ? 'disabled' : ''}> ${esc(s.n)}</label>`;
+      }).join('')}</div>`;
+  }).join('');
+  box.innerHTML = `${d.lists ? `<label class="inline">Список заклинаний <select id="fspList">${d.lists.map((k) => `<option ${featSp.list === k ? 'selected' : ''}>${k}</option>`).join('')}</select></label>` : ''}
+    ${d.fixed ? `<p class="muted small">Всегда даёт: ${d.fixed.map((e) => spellByE(e)?.n || e).join(', ')}.</p>` : ''}
+    ${groups}<p class="muted small">Выбранные заклинания всегда подготовлены и не входят в лимит. Наведите на название, чтобы увидеть описание.</p>
+    <div class="modal-actions"><button data-act="closeModal">Отмена</button><button class="primary" data-act="featSpellsSave" ${ok ? '' : 'disabled'}>Сохранить</button></div>`;
+}
+// Уровень класса, на котором выбирается подкласс (по таблице — токен «Подкласс»)
+const subclassLevel = (cls) => (CLASS_FEATURES[cls] || []).findIndex((r) => r.split(';').map((s) => s.trim()).includes('Подкласс')) + 1;
+// Умения подклассов добавляются сами по уровню класса; заглушки «Подкласс»/«Умение подкласса» убираются
+function autoSubclassFeatures(c) {
+  classList(c).forEach((e) => {
+    const sc = subclassOf(e.cls, e.sub);
+    const mine = (f) => String(f.src || '').startsWith(e.cls + ' ');
+    // Сменили подкласс — убрать умения прежнего
+    c.features = c.features.filter((f) => !(f.subOf === e.cls && (!sc || f.sub !== sc.n)));
+    if (!sc) return;
+    c.features = c.features.filter((f) => !(mine(f) && (f.n === 'Подкласс' || f.n.startsWith('Умение подкласса'))));
+    Object.entries(sc.f).forEach(([L, list]) => {
+      if (e.lvl < +L) return;
+      list.forEach(([n, x]) => {
+        const src = `${e.cls} ${L}`;
+        if (!c.features.some((f) => f.n === n && f.src === src)) c.features.push({ id: uid(), n, src, x, sub: sc.n, subOf: e.cls });
+      });
+    });
+  });
 }
 // Требования мультикласса (PHB 2024): 13+ в основной характеристике; группа — «любая из»
 const MC_REQ = {
@@ -1485,11 +1615,14 @@ function lvlTarget(c, S) {
   return { ...e, hd: hdOf(c, e) };
 }
 // Применить повышение к персонажу (используется и для предпросмотра на копии)
+// S.sub — подкласс, выбранный на уровне подкласса
 function applyAdvance(c, S) {
-  if (S.target === 'p') c.info.level = pLvl(c) + 1;
+  if (S.target === 'p') { c.info.level = pLvl(c) + 1; if (S.sub) c.info.subclass = S.sub; }
   else if (S.target === 'new') c.multi.push({ id: uid(), cls: S.newCls, sub: '', lvl: 1 });
-  else { const m = c.multi.find((x) => x.id === S.target); m.lvl = (parseInt(m.lvl) || 1) + 1; }
+  else { const m = c.multi.find((x) => x.id === S.target); m.lvl = (parseInt(m.lvl) || 1) + 1; if (S.sub) m.sub = S.sub; }
 }
+// Нужно ли выбрать подкласс: достигнут уровень подкласса, а подкласс ещё не выбран (или не из списка)
+const lvlNeedsSub = (T) => !!T.cls && T.lvl + 1 === subclassLevel(T.cls) && !subclassOf(T.cls, T.sub) && (SUBCLASSES[T.cls] || []).length > 0;
 function lvlResetPicks(c) {
   const S = lvlState, t = lvlTarget(c, S);
   S.slots = t.cls ? featSlotsAt(t.cls, t.lvl + 1) : [];
@@ -1497,6 +1630,7 @@ function lvlResetPicks(c) {
   S.slots.forEach((k) => { S.picks[k] = defaultPick(c, k); });
   S.skip = new Set();
   S.roll = null;
+  S.sub = '';
 }
 function openLevelUp() {
   const c = ch();
@@ -1511,6 +1645,7 @@ function openLevelUp() {
     if (el.name === 'hpMode') S.hpMode = el.value;
     else if (el.name === 'lvlTarget') { S.target = el.value; lvlResetPicks(c); }
     else if (el.id === 'lvlNewCls') { S.newCls = el.value; S.target = 'new'; lvlResetPicks(c); }
+    else if (el.id === 'lvlSub') { S.sub = el.value; S.skip = new Set(); }
     else if (el.dataset.feat != null) { el.checked ? S.skip.delete(+el.dataset.feat) : S.skip.add(+el.dataset.feat); return; }
     else if (!pickChange(S.picks, el)) return;
     renderLevelUp();
@@ -1528,7 +1663,8 @@ function renderLevelUp() {
   const c = ch(), S = lvlState, L = lvl(c), N = L + 1, con = am(c, 'con');
   const T = lvlTarget(c, S), hd = T.hd, CN = T.lvl + 1;
   const gain = lvlGain(c);
-  const feats = T.cls ? featuresAt(T.cls, T.sub, CN) : [];
+  const needSub = lvlNeedsSub(T);
+  const feats = T.cls ? featuresAt(T.cls, S.sub || T.sub, CN) : [];
   const changes = [];
   const pbN = 2 + Math.floor((N - 1) / 4);
   if (pbN !== pb(c)) changes.push(`Бонус мастерства: ${fmt(pb(c))} → <b>${fmt(pbN)}</b>`);
@@ -1546,7 +1682,9 @@ function renderLevelUp() {
   if (casterOf(T) !== 'none' || T.cls === 'Колдун') changes.push('Подготовьте новые заклинания, если положено по таблице класса');
   const cap = CN === 20 && CAPSTONE[T.cls];
   if (cap) changes.push(`${cap[0]}: ${cap[1].map((k) => `${ABILITIES.find((a) => a.k === k).s} ${score(c, k)} → <b>${Math.min(25, score(c, k) + 4)}</b>`).join(', ')}`);
-  const picksOk = S.slots.every((k) => pickValid(S.picks[k]));
+  const newSp = S.sub ? Object.entries(subclassOf(T.cls, S.sub)?.sp || {}).filter(([Lv]) => CN >= +Lv).flatMap(([, l]) => l) : [];
+  if (newSp.length) changes.push(`Заклинания подкласса (всегда подготовлены): ${newSp.map((e) => spellByE(e)?.n || e).join(', ')}`);
+  const picksOk = S.slots.every((k) => pickValid(S.picks[k])) && (!needSub || !!S.sub);
 
   // Выбор класса: существующие классы или новый (мультикласс)
   const others = Object.keys(CLASSES).filter((n) => !classList(c).some((e) => e.cls === n));
@@ -1560,6 +1698,8 @@ function renderLevelUp() {
     ${S.target === 'new' ? `<p class="muted small">Требования мультикласса: ${esc(S.newCls)} — ${mcReqText(S.newCls)}; для текущих классов — их основные характеристики 13+.
       Новый класс даёт лишь часть владений (см. правила мультикласса), спасброски не добавляются.</p>` : ''}
     ${reqWarn.length ? `<p class="small gen-warn">⚠ Не выполнены требования мультикласса: ${reqWarn.map((n) => `${esc(n)} (${mcReqText(n)})`).join(', ')}. По правилам такой мультикласс недоступен — только с разрешения Мастера.</p>` : ''}
+    ${needSub ? `<h3>Подкласс</h3><select id="lvlSub"><option value="">— выберите подкласс —</option>${SUBCLASSES[T.cls].map((s) => `<option ${S.sub === s.n ? 'selected' : ''}>${s.n}</option>`).join('')}</select>
+      ${S.sub ? `<ul class="lvl-list">${Object.entries(subclassOf(T.cls, S.sub).f).map(([Lv, list]) => `<li><b>${Lv} ур.:</b> ${list.map(([n]) => esc(n)).join(', ')}</li>`).join('')}</ul>` : '<p class="muted small">Подкласс определяет умения на этом и следующих уровнях.</p>'}` : ''}
     <h3>Хиты</h3>
     <div class="row gap wrap">
       <label class="check"><input type="radio" name="hpMode" value="avg" ${S.hpMode === 'avg' ? 'checked' : ''}> Среднее (${hd / 2 + 1})</label>
@@ -1633,8 +1773,33 @@ function weaponAttack(w) {
     id: uid(), n: w.n, ability: w.props.includes('Фехтовальное') ? 'fin' : ranged ? 'dex' : 'str', prof: true, hit: 0, dmg: w.dmg,
     addMod: true, dmgBonus: 0, type: w.type, mastery: w.m,
     range: ammo ? `${ammo[1]} фт` : thrown ? `${reach} · бросок ${thrown[1]} фт` : reach, x: w.props === '—' ? '' : w.props,
-    ammo: AMMO_FOR[w.n] || '',
+    ammo: AMMO_FOR[w.n] || '', wkind: w.n,
   };
+}
+// Приёмы оружия (Weapon Mastery): сколько видов оружия известно (лучший из классов + черта «Мастер оружия»)
+function masteryLimit(c) {
+  const base = Math.max(0, ...classList(c).map((e) => (MASTERY_COUNT[e.cls] ? MASTERY_COUNT[e.cls](e.lvl) : 0)));
+  return base + c.feats.filter((f) => f.key === 'weaponMaster').length;
+}
+const weaponKind = (a) => a.wkind || (WEAPONS.some((w) => w.n === a.n) ? a.n : '');
+// Приём работает, если вид оружия изучен; у своего оружия (не из каталога) — как указано
+const masteryActive = (c, a) => !!a.mastery && (!weaponKind(a) || c.masteries.includes(weaponKind(a)));
+function openMasteryPick() {
+  openModal('<h2>⚔ Приёмы оружия</h2><div id="mstBody"></div>');
+  modalRefresh = renderMasteryPick;
+  renderMasteryPick();
+}
+function renderMasteryPick() {
+  const box = $('#mstBody');
+  if (!box) return;
+  const c = ch(), lim = masteryLimit(c), full = c.masteries.length >= lim;
+  box.innerHTML = `<p class="muted small">Выбрано <b>${c.masteries.length} из ${lim}</b>. Приём работает, только если этот вид оружия выбран здесь. По правилам выбор можно менять после долгого отдыха.</p>
+    <div class="mst-list">${Object.entries(WEAPON_CATS).map(([cat, title]) => `<h3>${title}</h3>${WEAPONS.filter((w) => w.cat === cat).map((w) => {
+      const on = c.masteries.includes(w.n);
+      return `<div class="db-row ${on ? 'on' : ''}"><span class="li-title">${esc(w.n)} <span class="muted small">⚔ ${MASTERY[w.m].n} — ${esc(MASTERY[w.m].d)}</span></span>
+        ${on ? `<button data-act="masteryDel" data-w="${esc(w.n)}">✓ Убрать</button>` : `<button data-act="masteryAdd" data-w="${esc(w.n)}" ${full ? 'disabled' : ''}>＋ Выбрать</button>`}</div>`;
+    }).join('')}`).join('')}</div>
+    <div class="modal-actions"><button data-act="closeModal">Готово</button></div>`;
 }
 // Боеприпасы атаки — предмет инвентаря, название которого начинается с a.ammo (например, «Стрелы (20)»)
 const ammoItem = (c, a) => (a.ammo ? c.items.find((i) => i.n.toLowerCase().startsWith(a.ammo.toLowerCase().trim()) && +i.qty > 0)
@@ -1725,6 +1890,7 @@ const ATTACK_FIELDS = () => [
   { k: 'range', label: 'Дистанция', ph: '5 фт / 80/320 фт' },
   { k: 'ammo', label: 'Боеприпасы (начало названия предмета)', ph: 'Стрелы' },
   { k: 'mastery', label: 'Приём оружия (Mastery)', type: 'select', options: Object.entries(MASTERY).map(([k, m]) => [k, m.n]) },
+  { k: 'wkind', label: 'Вид оружия (для приёма)', type: 'select', options: [['', '— своё, не из каталога —'], ...WEAPONS.map((w) => [w.n, w.n])] },
   { k: 'prof', label: 'Владение (+БМ к попаданию)', type: 'check' },
   { k: 'addMod', label: 'Модификатор к урону', type: 'check' },
   { k: 'ma', label: 'Боевые искусства монаха (кость урона по уровню)', type: 'check', full: true },
@@ -1939,7 +2105,7 @@ const ACT = {
       it.qty = +it.qty - 1;
       c.combat.ammoSpent = { ...(c.combat.ammoSpent || {}), [it.id]: ((c.combat.ammoSpent || {})[it.id] || 0) + 1 };
     }
-    rollD20(`Атака: ${a.n}`, attackBonus(c, a), { attack: true, kind: 'attack' });
+    rollD20(`Атака: ${a.n}`, attackBonus(c, a), { attack: true, kind: 'attack', weapon: a.ability !== 'spell' });
     if (a.ammo) { const left = ammoLeft(c, a); if (left <= 5) toast(`🏹 ${esc(a.ammo)}: осталось ${left}`); }
   },
   // После боя можно найти половину потраченных боеприпасов (округление вниз)
@@ -2054,6 +2220,22 @@ const ACT = {
   bardDie(el) { rollDice('Кость вдохновения барда', `1d${el.dataset.d}`); },
   radiantStrike() { rollDice('Сияющие удары (излучение)', '1d8'); },
   addFeat() { openFeatAdd(); },
+  featSpells(el) { openFeatSpells(findById(ch().feats, el.dataset.id)); },
+  featSpellsSave() {
+    const c = ch(), f = findById(c.feats, featSp.featId);
+    f.spells = [...featSp.chosen];
+    if (FEAT_SPELLS[f.key].lists) f.list = featSp.list;
+    closeModal();
+    toast(`✨ Заклинания черты «${esc(FEATS_BY[f.key].n)}» выбраны — они всегда подготовлены`);
+  },
+  masteryPick() { openMasteryPick(); },
+  masteryAdd(el) {
+    const c = ch(), w = el.dataset.w;
+    if (c.masteries.includes(w) || c.masteries.length >= masteryLimit(c)) return;
+    c.masteries.push(w);
+    renderMasteryPick();
+  },
+  masteryDel(el) { const c = ch(); c.masteries = c.masteries.filter((x) => x !== el.dataset.w); if ($('#mstBody')) renderMasteryPick(); },
   featAddApply() {
     const c = ch(), S = featAdd, p = S.picks[S.slot];
     if (!pickValid(p) || featFree(c, S.slot) <= 0) return;
@@ -2083,7 +2265,8 @@ const ACT = {
   lvlApply() {
     const c = ch(), S = lvlState, N = lvl(c) + 1, gain = lvlGain(c), T = lvlTarget(c, S), CN = T.lvl + 1;
     if (gain == null || N > 20 || !T.cls && S.target === 'new') return;
-    const feats = T.cls ? featuresAt(T.cls, T.sub, CN) : [];
+    if (lvlNeedsSub(T) && !S.sub) { toast('Выберите подкласс'); return; }
+    const feats = T.cls ? featuresAt(T.cls, S.sub || T.sub, CN) : [];
     if (!S.slots.every((k) => pickValid(S.picks[k]))) return;
     // Одна и та же неповторяемая черта не может быть выбрана в двух ячейках
     const keys = S.slots.map((k) => S.picks[k].key);
@@ -2103,8 +2286,12 @@ const ACT = {
       notes.push(`${FEATS_BY[p.key].n}${eff ? ` (${eff})` : ''}`);
     });
     const src = `${T.cls} ${CN}`;
+    const scNow = subclassOf(T.cls, S.sub || T.sub);
+    const subNames = new Set(scNow ? (scNow.f[CN] || []).map(([n]) => n) : []);
     feats.forEach((f, i) => {
       if (S.skip.has(i)) return;
+      // Умения подкласса добавляет autoSubclassFeatures (с привязкой к подклассу)
+      if (subNames.has(f)) return;
       if (!c.features.some((x) => x.n === f && x.src === src)) c.features.push({ id: uid(), n: f, src, x: featureDesc(T.cls, f) });
     });
     if (T.cls === 'Бард' && CN >= 2) c.combat.jack = true;
@@ -2117,7 +2304,13 @@ const ACT = {
   catTab(el) { catTab = el.dataset.t; renderCatalog(); },
   catWeapon(el) {
     const c = ch(), w = WEAPONS[+el.dataset.i];
-    if (el.dataset.to === 'atk') { c.attacks.push(weaponAttack(w)); toast(`⚔ ${esc(w.n)} добавлен в атаки`); }
+    if (el.dataset.to === 'atk') {
+      c.attacks.push(weaponAttack(w));
+      // Есть свободный приём оружия — изучить приём этого вида сразу
+      const learn = !c.masteries.includes(w.n) && c.masteries.length < masteryLimit(c);
+      if (learn) c.masteries.push(w.n);
+      toast(`⚔ ${esc(w.n)} добавлен в атаки${learn ? ` · изучен приём «${MASTERY[w.m].n}»` : ''}`);
+    }
     else { addInvItem(c, { n: w.n, cat: 'Оружие', w: w.w, cost: w.cost, x: `${w.dmg} ${w.type}. ${w.props}. Приём: ${MASTERY[w.m].n}.` }); toast(`🎒 ${esc(w.n)} в инвентаре`); }
     renderCatalog();
   },
@@ -2215,7 +2408,7 @@ const ACT = {
   goTab(el) { switchTab(el.dataset.tabGo); },
 };
 // Действия, которые не меняют персонажа (не нужно сохранять/перерисовывать)
-const NO_RENDER = new Set(['exportChar', 'importChar', 'toggleDice', 'clearLog', 'closeModal', 'skillInfo', 'condInfo', 'masteryInfo', 'addSpellDb', 'shortRest','addAttack', 'editAttack', 'addSpellCustom', 'editSpell', 'addItem', 'editItem', 'addResource', 'editRes', 'addFeature', 'editFeature', 'goTab', 'abilGen', 'genMode', 'genPb', 'genRoll', 'genReset', 'levelUp', 'lvlRoll', 'openCatalog', 'catTab', 'addEffect', 'sneak', 'bardDie', 'radiantStrike', 'addFeat', 'undo', 'newChar', 'originWizard', 'wizNext', 'wizPrev', 'wizGo']);
+const NO_RENDER = new Set(['exportChar', 'importChar', 'toggleDice', 'clearLog', 'closeModal', 'skillInfo', 'condInfo', 'masteryInfo', 'addSpellDb', 'shortRest','addAttack', 'editAttack', 'addSpellCustom', 'editSpell', 'addItem', 'editItem', 'addResource', 'editRes', 'addFeature', 'editFeature', 'goTab', 'abilGen', 'genMode', 'genPb', 'genRoll', 'genReset', 'levelUp', 'lvlRoll', 'openCatalog', 'catTab', 'addEffect', 'sneak', 'bardDie', 'radiantStrike', 'addFeat', 'featSpells', 'masteryPick', 'undo', 'newChar', 'originWizard', 'wizNext', 'wizPrev', 'wizGo']);
 
 // Высота закреплённой шапки — под ней закрепляется панель вкладок (на телефоне шапка не закреплена)
 function syncStickyOffset() {
