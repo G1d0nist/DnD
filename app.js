@@ -2178,7 +2178,9 @@ function spellArea(s) {
   if (!shape) return null;
   const self = /^на себя/i.test(r);
   return { shape, size, width, save, half: /половин\S* при успехе/i.test(s.x || ''), self, range: self ? 0 : /касан/i.test(r) ? 5 : parseInt(r) || 0,
-    heal: /восстанавлива\S* .*хит|лечит/i.test(s.x || '') && !save, dtype: dmgWord(s.x), act: /бонусн/i.test(s.t || '') ? 'bonus' : /реакц/i.test(s.t || '') ? 'reaction' : 'action' };
+    heal: /восстанавлива\S* .*хит|лечит/i.test(s.x || '') && !save, dtype: dmgWord(s.x), act: /бонусн/i.test(s.t || '') ? 'bonus' : /реакц/i.test(s.t || '') ? 'reaction' : 'action',
+    // Цели на выбор заклинателя («враги», «существа по вашему выбору») — только для таких заклинаний можно исключать существ
+    pick: /враг|(по|на) ваш(ему)? выбор/i.test(s.x || '') };
 }
 const hasEvasion = (c) => clsLvl(c, 'Плут') >= 7 || clsLvl(c, 'Монах') >= 7;
 const ATTACK_FIELDS = () => [

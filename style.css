@@ -471,3 +471,10 @@ button.stat:hover { border-color: var(--gold); }
 .sv-grid { display: grid; grid-template-columns: repeat(6, 1fr); gap: 4px; margin-top: 4px; }
 .sv-grid label { display: grid; gap: 2px; font-size: 11px; text-align: center; color: var(--muted); }
 .sv-grid input { width: 100%; padding: 3px 2px; text-align: center; }
+.mon-list { display: grid; grid-template-columns: repeat(auto-fill, minmax(170px, 1fr)); gap: 4px; max-height: 210px; overflow-y: auto; margin-top: 6px; }
+.mon-list button { display: grid; gap: 1px; text-align: left; padding: 5px 8px; }
+.mon-list button.on { border-color: var(--gold); background: #3b2e17; }
+.statblock { display: grid; gap: 3px; padding: 6px 8px; border-radius: 7px; background: var(--bg2); border: 1px solid var(--line); }
+.sb-ab { display: grid; grid-template-columns: repeat(6, 1fr); gap: 2px; font-size: 11px; text-align: center; }
+.sb-ab span { display: grid; }
+.sb-ab b { color: var(--gold2); font-size: 10px; }

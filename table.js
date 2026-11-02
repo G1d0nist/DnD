@@ -90,7 +90,7 @@ function subscribe(gid, code) {
   on('members', (v) => { game.members = v || {}; });
   on('tokens', (v) => { game.tokens = v || {}; });
   on('map', (v) => { game.map = v || {}; drawTerrain(); });
-  on('init', (v) => { game.init = v; checkMyTurn(); });
+  on('init', (v) => { game.init = v; checkMyTurn(); checkNpcTurn(); });
   on('econ', (v) => { game.econ = v || {}; });
   on('log', (v) => { game.log = v || {}; applyLog(); notifyLog(); });
   on('areas', (v) => { game.areas = v || {}; drawAreas(); notifyAreas(); autoNpcSaves(); });
@@ -437,28 +437,163 @@ function paintAt(p) {
   drawTerrain();
 }
 
-/* ---------- Враги ---------- */
+/* ---------- Враги и бестиарий ---------- */
+const ABK = ['str', 'dex', 'con', 'int', 'wis', 'cha'];
+const ABS = { str: 'СИЛ', dex: 'ЛОВ', con: 'ТЕЛ', int: 'ИНТ', wis: 'МДР', cha: 'ХАР' };
+const abMod = (v) => Math.floor(((+v || 10) - 10) / 2);
+const fmtMod = (v) => (v >= 0 ? `+${v}` : `−${-v}`);
+const DICE_RE = /([+-]?)(\d*)d(\d+)|([+-]?)(\d+)/g;
+// Бросок по формуле «2d6+3+1d6» (крит удваивает кости) — для существ мастера, без листа персонажа
+function rollExpr(expr, crit) {
+  const s = String(expr || '').replace(/\s+/g, '').toLowerCase().replace(/к/g, 'd');
+  let total = 0;
+  const parts = [];
+  s.replace(DICE_RE, (m, sg, n, sd, sg2, num) => {
+    if (sd) {
+      const k = Math.min(100, +(n || 1)) * (crit ? 2 : 1), rs = Array.from({ length: k }, () => die(+sd)), sum = rs.reduce((a, b) => a + b, 0);
+      total += sg === '-' ? -sum : sum;
+      parts.push(`${sg === '-' ? '− ' : parts.length ? '+ ' : ''}${k}d${sd} [${rs.join(', ')}]`);
+    } else if (num) { total += sg2 === '-' ? -num : +num; parts.push(`${sg2 === '-' ? '−' : '+'} ${num}`); }
+    return '';
+  });
+  return { total: Math.max(0, total), detail: parts.join(' ') };
+}
+// Среднее по формуле хитов: 3d6 → 10, 2d8+2 → 11
+function avgExpr(expr) {
+  let t = 0;
+  String(expr || '').replace(/\s+/g, '').toLowerCase().replace(/к/g, 'd').replace(DICE_RE, (m, sg, n, sd, sg2, num) => {
+    if (sd) t += (sg === '-' ? -1 : 1) * ((+(n || 1) * (+sd + 1)) / 2);
+    else if (num) t += sg2 === '-' ? -num : +num;
+    return '';
+  });
+  return Math.max(1, Math.floor(t));
+}
+const BEST = () => (typeof BESTIARY !== 'undefined' ? BESTIARY : []);
+// Атаки существа → формат стола (досягаемость и дальность)
+function npcAttacks(t) {
+  return (t.atk || []).map((a, i) => {
+    const m = String(a.range || '').match(/(\d+)\s*\/\s*(\d+)/), reach = a.reach === 0 || a.reach === '0' ? 0 : +a.reach || (m ? 0 : 5);
+    return { id: 'n' + i, n: a.n, bonus: +a.hit || 0, dmg: a.dmg || '', type: a.type || '', rng: { reach, ...(m ? { near: +m[1], far: +m[2], thrown: !!reach } : {}) }, npc: true };
+  });
+}
 function newEnemyDialog(x, y, base) {
-  const b = base || { name: 'Гоблин', hpMax: 7, ac: 15, size: 1, speed: 30, init: 2 };
+  let mon = base && base.mon ? BEST().find((m) => m.e === base.mon) : null;
+  const b = base || { name: 'Существо', hpMax: 10, ac: 12, size: 1, speed: 30, init: 0 };
+  const sizes = [[1, 'Крошечный–Средний'], [2, 'Большой'], [3, 'Огромный'], [4, 'Громадный']];
   app.openModal(`<h2>${base ? 'Копия существа' : '＋ Существо'}</h2>
-    <div class="form-grid"><label style="grid-column:1/-1">Название<input id="nN" value="${esc(b.name)}"></label>
+    ${base ? '' : `<label>Бестиарий<input id="nFind" placeholder="Поиск: гоблин, дракон, 1/4…" autocomplete="off"></label><div id="nList" class="mon-list"></div>`}
+    <div class="form-grid mt"><label style="grid-column:1/-1">Название<input id="nN" value="${esc(b.name)}"></label>
     <label>Хиты<input id="nH" type="number" value="${b.hpMax}"></label><label>КД<input id="nA" type="number" value="${b.ac}"></label>
     <label>Скорость, фт<input id="nS" type="number" step="5" value="${b.speed}"></label><label>Бонус инициативы<input id="nI" type="number" value="${b.init}"></label>
-    <label>Размер<select id="nZ">${[[1, 'Средний/маленький'], [2, 'Большой'], [3, 'Огромный'], [4, 'Громадный']].map(([v, n]) => `<option value="${v}" ${b.size === v ? 'selected' : ''}>${n}</option>`).join('')}</select></label>
+    <label>Размер<select id="nZ">${sizes.map(([v, n]) => `<option value="${v}" ${b.size === v ? 'selected' : ''}>${n}</option>`).join('')}</select></label>
     <label>Количество<input id="nC" type="number" min="1" max="12" value="1"></label>
+    <label class="check" id="nRollBox" ${mon ? '' : 'hidden'}><input type="checkbox" id="nRoll"> Бросить хиты <span class="muted small" id="nHpF">${mon ? esc(mon.hp) : ''}</span></label>
     <label class="check"><input type="checkbox" id="nHid"> Скрыт от игроков</label></div>
+    <div id="nCustom" ${mon || (base && (base.atk || []).length) ? 'hidden' : ''}><div class="muted small mt">Атака существа (необязательно):</div>
+      <div class="form-grid"><label>Название<input id="nAn" placeholder="Скимитар"></label><label>Бонус<input id="nAh" type="number" value="4"></label>
+      <label>Урон<input id="nAd" placeholder="1d6+2"></label><label>Тип<input id="nAt" placeholder="рубящий"></label>
+      <label>Дальность<input id="nAr" placeholder="пусто — ближний бой, 80/320 — лук"></label></div></div>
     <div class="modal-actions"><button data-act="closeModal">Отмена</button><button class="primary" id="nOk">Поставить</button></div>`);
+  const pick = (m) => {
+    mon = m;
+    Object.assign($('#nN'), { value: m.n });
+    $('#nH').value = avgExpr(m.hp); $('#nA').value = m.ac; $('#nS').value = parseInt(m.speed) || 30; $('#nI').value = abMod(m.ab[1]);
+    $('#nZ').value = String(SIZE_N[m.size] || 1);
+    $('#nRollBox').hidden = false; $('#nHpF').textContent = m.hp; $('#nCustom').hidden = true;
+    $$('#nList [data-mon]').forEach((x) => x.classList.toggle('on', x.dataset.mon === m.e));
+  };
+  const list = () => {
+    const q = ($('#nFind').value || '').trim().toLowerCase();
+    $('#nList').innerHTML = BEST().filter((m) => !q || m.n.toLowerCase().includes(q) || m.e.toLowerCase().includes(q) || m.cr === q)
+      .map((m) => `<button data-mon="${esc(m.e)}" class="${mon && mon.e === m.e ? 'on' : ''}"><b>${esc(m.n)}</b><span class="muted small">ПО ${m.cr} · КД ${m.ac} · ${avgExpr(m.hp)} хитов</span></button>`).join('')
+      || '<p class="muted small">Ничего не найдено — заполните поля вручную.</p>';
+    $$('#nList [data-mon]').forEach((x) => x.addEventListener('click', () => pick(BEST().find((m) => m.e === x.dataset.mon))));
+  };
+  if (!base) { list(); $('#nFind').addEventListener('input', list); }
   $('#nOk').onclick = () => {
-    const n = Math.max(1, Math.min(12, +$('#nC').value || 1)), size = +$('#nZ').value || 1, upd = {};
+    const n = Math.max(1, Math.min(12, +$('#nC').value || 1)), size = +$('#nZ').value || 1, upd = {}, name = $('#nN').value.trim() || 'Существо';
+    // Статблок: из бестиария, из копируемого существа или одна своя атака
+    let stats;
+    if (mon) stats = { mon: mon.e, cr: mon.cr, ab: mon.ab, atk: mon.atk, acts: mon.acts || [], multi: mon.multi || 1, tr: mon.x || '', spd: mon.speed,
+      sv: Object.fromEntries(ABK.map((k, i) => [k, mon.sv[k] != null ? mon.sv[k] : abMod(mon.ab[i])])) };
+    else if (base) stats = { ...['mon', 'cr', 'ab', 'atk', 'acts', 'multi', 'tr', 'spd', 'sv'].reduce((o, k) => (base[k] != null ? { ...o, [k]: base[k] } : o), {}) };
+    else {
+      const an = $('#nAn').value.trim();
+      stats = { multi: 1, atk: an ? [{ n: an, hit: +$('#nAh').value || 0, dmg: $('#nAd').value.trim(), type: $('#nAt').value.trim(), reach: $('#nAr').value.trim() ? 0 : 5, range: $('#nAr').value.trim() }] : [] };
+    }
     for (let i = 0; i < n; i++) {
-      const id = R.push(ref(gpath('tokens'))).key, name = $('#nN').value.trim() || 'Существо';
+      const id = R.push(ref(gpath('tokens'))).key, hp = mon && $('#nRoll').checked ? Math.max(1, rollExpr(mon.hp).total) : +$('#nH').value || 1;
       upd[id] = { kind: 'npc', owner: user.uid, name: n > 1 ? `${name} ${i + 1}` : name, x: Math.min(W() - size, x + i * size), y, size, color: '#c94a3d',
-        hp: +$('#nH').value || 1, hpMax: +$('#nH').value || 1, ac: +$('#nA').value || 10, speed: +$('#nS').value || 30, init: +$('#nI').value || 0, hidden: $('#nHid').checked, cond: [] };
+        hp, hpMax: hp, ac: +$('#nA').value || 10, speed: +$('#nS').value || 30, init: +$('#nI').value || 0, hidden: $('#nHid').checked, cond: [], ...stats };
     }
     R.update(ref(gpath('tokens')), upd);
     app.closeModal();
     tool = 'move'; renderTools();
   };
+}
+// Действия существа (мастер): атаки и способности-области; вне своего хода — реакцией
+function openNpcAttack(id) {
+  const t = game.tokens[id];
+  if (!t || !isDM()) return;
+  const e = econ(id), fight = inFight(), turn = !fight || isTurnOf(id), per = +t.multi || 1;
+  const atks = npcAttacks(t), acts = t.acts || [], rech = t.rech || {};
+  const ways = [];
+  if (turn && (!fight || e.atk > 0 || !e.a)) ways.push(['action', e.atk > 0 ? `Действие «Атака» — осталось атак: ${e.atk}` : `Действие «Атака»${per > 1 ? ` (${per} атаки)` : ''}`]);
+  if (turn && fight && !e.b) ways.push(['bonus', 'Бонусное действие']);
+  if (fight && !e.r) ways.push(['reaction', 'Реакция (атака по возможности)']);
+  if (!ways.length) { app.toast('Нет доступных действий для атаки'); return; }
+  const rng = (r) => (r.near ? `${r.reach ? `${r.reach} фт / бросок ` : ''}${r.near}/${r.far} фт` : `досягаемость ${r.reach} фт`);
+  const actOk = turn && (!fight || (!e.a && !(e.atk > 0)));
+  app.openModal(`<h2>⚔ ${esc(t.name)}</h2>
+    <div class="atk-ways">${ways.map(([k, n], i) => `<label class="check"><input type="radio" name="atkWay" value="${k}" ${i ? '' : 'checked'}> ${esc(n)}</label>`).join('')}</div>
+    <div class="list mt">${atks.map((a) => `<button class="atk-pick" data-atk="${a.id}"><b>${esc(a.n)}</b><span class="muted small">${fmtMod(a.bonus)} к попаданию${a.dmg ? ` · ${esc(a.dmg)} ${esc(a.type)}` : ''} · ${rng(a.rng)}</span></button>`).join('')}
+      ${acts.map((a, i) => `<button class="atk-pick" data-act-i="${i}" ${actOk && !rech[i] ? '' : 'disabled'}><b>${esc(a.n)}</b><span class="muted small">${SHAPE_N[a.shape]} ${a.size} фт · спасбросок ${AB_N[a.save]} СЛ ${a.dc} · ${esc(a.f)} ${esc(a.dtype)}${a.rech ? ` · перезарядка ${a.rech}–6${rech[i] ? ' — не перезарядилось' : ''}` : ''} · действие</span></button>`).join('')}
+      ${!atks.length && !acts.length ? '<p class="muted">У существа нет атак — добавьте их, поставив существо из бестиария или указав атаку при создании.</p>' : ''}</div>
+    <div class="modal-actions"><button data-act="closeModal">Отмена</button></div>`);
+  $$('[data-atk]').forEach((b) => b.addEventListener('click', () => {
+    const A = atks.find((x) => x.id === b.dataset.atk), way = ($('input[name="atkWay"]:checked') || {}).value;
+    app.closeModal();
+    aim = { from: id, npc: true, atk: A, way, left: way === 'action' ? (e.atk > 0 ? e.atk : per) : 1 };
+    renderAll();
+  }));
+  $$('[data-act-i]').forEach((b) => b.addEventListener('click', () => {
+    const i = +b.dataset.actI, a = acts[i], self = a.shape === 'cone' || a.shape === 'line' || a.shape === 'aura' || a.shape === 'cube';
+    app.closeModal();
+    startCast({ dm: true, caster: id, npcAct: i, info: { n: a.n, shape: a.shape, size: a.size, width: a.width || 5, save: a.save, dc: a.dc, f: a.f, dtype: a.dtype, half: a.half !== false, self, act: 'action' } });
+  }));
+}
+// Бросок атаки существа: преимущество/помеха от обстановки и его состояний, крит на 20
+function npcAttackRoll(t, A, o) {
+  const cond = t.cond || [], adv = [...o.adv], dis = [...o.dis];
+  ['blinded', 'frightened', 'poisoned', 'prone', 'restrained'].forEach((k) => { if (cond.includes(k)) dis.push(condName(k).toLowerCase()); });
+  if (cond.includes('invisible')) adv.push('невидим');
+  const mode = adv.length && !dis.length ? 1 : dis.length && !adv.length ? -1 : 0;
+  const r1 = die(20), r2 = die(20), nat = mode > 0 ? Math.max(r1, r2) : mode < 0 ? Math.min(r1, r2) : r1, total = nat + A.bonus;
+  const hit = nat !== 1 && (nat === 20 || total >= o.ac), crit = hit && (nat === 20 || !!o.autoCrit);
+  let detail = mode ? `${mode > 0 ? 'преимущество' : 'помеха'} (${(mode > 0 ? adv : dis).join(', ')}) [${r1}, ${r2}]` : `к20 [${r1}]`;
+  detail += ` ${fmtMod(A.bonus)}`;
+  if (!mode && adv.length && dis.length) detail += ' · преимущество и помеха взаимно отменились';
+  const d = hit && A.dmg ? rollExpr(A.dmg, crit) : null;
+  return { total, nat, detail, hit, crit, dmg: d ? d.total : 0, dmgDetail: d ? d.detail : '', type: A.type };
+}
+// Начало хода существа (браузер мастера): перезарядка способностей — к6
+function checkNpcTurn() {
+  const cur = currentEntry();
+  if (!cur || !isDM()) return;
+  const t = game.tokens[cur.tokenId];
+  if (!t || t.kind !== 'npc' || !t.rech) return;
+  const key = `${game.id}:${game.init.round}:${game.init.turn}`;
+  if (ls.get('dnd55-npcturn') === key) return;
+  ls.set('dnd55-npcturn', key);
+  const upd = {};
+  Object.entries(t.rech).forEach(([i, used]) => {
+    const a = (t.acts || [])[i];
+    if (!used || !a) return;
+    const r = die(6), ok = r >= (+a.rech || 5);
+    if (ok) upd[`tokens/${cur.tokenId}/rech/${i}`] = null;
+    addLog({ kind: 'sys', txt: `${t.name}: «${a.n}» ${ok ? 'перезарядилось' : 'не перезарядилось'} (к6: ${r})` });
+  });
+  if (Object.keys(upd).length) R.update(ref(gpath()), upd).catch(() => {});
 }
 
 /* ---------- Инициатива ---------- */
@@ -640,7 +775,8 @@ function attackTarget(tid) {
   if (tc.includes('invisible')) dis.push('цель невидима');
   if (ranged && d > r.near) dis.push('большая дистанция');
   if (ranged && foesNear(me_, a.from).length) dis.push('враг рядом');
-  const res = app.attack(a.charId, A.id, { target: T.name, ac: +T.ac || 10, adv, dis, autoCrit: d <= 5 && (tc.includes('paralyzed') || tc.includes('unconscious')) });
+  const ro = { target: T.name, ac: +T.ac || 10, adv, dis, autoCrit: d <= 5 && (tc.includes('paralyzed') || tc.includes('unconscious')) };
+  const res = a.npc ? npcAttackRoll(me_, A, ro) : app.attack(a.charId, A.id, ro);
   if (!res) { aim = null; renderAll(); return; }
   addLog({ kind: 'atk', who: me_.name, txt: A.n, tgt: tid, tgtName: T.name, total: res.total, nat: res.nat, ac: +T.ac || 10, hit: res.hit, crit: res.crit,
     dmg: res.dmg, dtype: res.type, detail: res.detail, dmgDetail: res.dmgDetail, way: WAYS[a.way] });
@@ -840,16 +976,26 @@ function confirmCast() {
   if (!castInRange()) { app.toast(`Слишком далеко: дистанция ${cast.range} фт`); return; }
   const ids = areaTokens(A);
   if (A.shape === 'target' && !ids.length) return;
-  // Область задевает всех, кто в ней, включая союзников — выбирать цели нельзя
+  // Область задевает всех, кто в ней, включая союзников. Исключение — заклинания, где цели выбирает заклинатель
+  // («враги», «существа по вашему выбору»): для них галочки, по умолчанию отмечены только враги.
   const tok = (id) => game.tokens[id], src = cast.caster && tok(cast.caster);
   const allies = src ? ids.filter((id) => tok(id).kind === src.kind) : [];
+  const pick = !!I.pick && A.shape !== 'target';
+  const nameHtml = (id) => `${esc(tok(id).name)}${allies.includes(id) ? ' (союзник)' : ''}`;
   app.openModal(`<h2>✨ ${esc(I.n)}</h2>
     <p class="small">${I.save ? `Спасбросок <b>${AB_N[I.save]}</b>, СЛ <b>${I.dc}</b>` : 'Без спасброска'}${I.f ? ` · ${esc(I.f)} ${esc(I.dtype || '')}${I.save ? (I.half ? ', половина при успехе' : ', при успехе — без урона') : ''}` : ''}</p>
-    ${ids.length ? `<p>Задевает: ${ids.map((id) => `<b class="${allies.includes(id) ? 'warn-text' : ''}">${esc(tok(id).name)}${allies.includes(id) ? ' (союзник!)' : ''}</b>`).join(', ')}</p>
-      ${allies.length ? '<p class="small warn-text">⚠ В области союзники — они тоже получат урон.</p>' : ''}` : '<p class="muted">В области никого нет.</p>'}
+    ${!ids.length ? '<p class="muted">В области никого нет.</p>'
+      : pick ? `<div class="atk-ways">${ids.map((id) => `<label class="check"><input type="checkbox" data-tg="${id}" ${allies.includes(id) ? '' : 'checked'}> ${nameHtml(id)}</label>`).join('')}</div>
+        <p class="muted small">Это заклинание затрагивает только выбранных вами существ.</p>`
+      : `<p>Задевает: ${ids.map((id) => `<b class="${allies.includes(id) ? 'warn-text' : ''}">${esc(tok(id).name)}${allies.includes(id) ? ' (союзник!)' : ''}</b>`).join(', ')}</p>
+        ${allies.length ? '<p class="small warn-text">⚠ В области союзники — они тоже получат урон.</p>' : ''}`}
     <div class="modal-actions"><button id="cBack">Назад</button><button class="primary" id="cOk">✨ Сотворить</button></div>`);
   $('#cBack').onclick = () => { app.closeModal(); if (A.shape === 'aura') cancelCast(); };
-  $('#cOk').onclick = () => { app.closeModal(); doCastArea(ids); };
+  $('#cOk').onclick = () => {
+    const chosen = pick ? $$('[data-tg]').filter((x) => x.checked).map((x) => x.dataset.tg) : ids;
+    app.closeModal();
+    doCastArea(chosen);
+  };
 }
 function doCastArea(chosen) {
   const A = cast.area, I = cast.info, c = cast;
@@ -860,11 +1006,14 @@ function doCastArea(chosen) {
   const keep = c.dm ? !!I.keepAlways : !!I.cn || !/мгновен/i.test(I.dur || '');
   const lvlTxt = roll && roll.castLvl > I.l ? ` (${roll.castLvl} ур.)` : '';
   const entry = { ...A, by: user.uid, who: src ? src.name : 'Мастер', n: I.n + lvlTxt, abil: I.save || '', dc: I.dc || 0, half: !!I.half,
-    expr: (roll && roll.expr) || I.f || '', dmg: roll ? roll.dmg || roll.total || 0 : 0, dmgDetail: roll ? roll.dmgDetail || roll.detail || '' : '', dtype: I.dtype || '', keep, t: Date.now() };
+    expr: (roll && roll.expr) || I.f || '', dmg: roll ? roll.dmg || roll.total || 0 : 0, dmgDetail: roll ? roll.dmgDetail || roll.detail || '' : '', dtype: I.dtype || '', keep, t: Date.now(),
+    pick: !!I.pick, ck: src ? src.kind : '' };
   if (I.save && chosen.length) entry.tg = Object.fromEntries(chosen.map((id) => [id, { done: false }]));
   const k = R.push(ref(gpath('areas'))).key;
   R.set(ref(gpath(`areas/${k}`)), entry).catch((err) => app.toast(`Не удалось создать область: ${esc(err.code || err.message)}`));
-  if (c.charId && inFight()) R.update(ref(gpath(`econ/${c.caster}`)), { [I.act === 'bonus' ? 'b' : I.act === 'reaction' ? 'r' : 'a']: 1 }).catch(() => {});
+  if ((c.charId || c.npcAct != null) && inFight()) R.update(ref(gpath(`econ/${c.caster}`)), { [I.act === 'bonus' ? 'b' : I.act === 'reaction' ? 'r' : 'a']: 1 }).catch(() => {});
+  // Способность существа с перезарядкой (дыхание) — до броска к6 в начале его хода
+  if (c.npcAct != null && src && ((src.acts || [])[c.npcAct] || {}).rech) R.update(ref(gpath(`tokens/${c.caster}/rech`)), { [c.npcAct]: 1 }).catch(() => {});
   addLog({ kind: 'area', who: entry.who, txt: `✨ ${entry.n}${entry.dmg ? ` — ${entry.dmg} ${entry.dtype || ''}` : ''}${I.save ? ` · спасбросок ${AB_N[I.save]} СЛ ${entry.dc}` : ''}${chosen.length ? ` · цели: ${chosen.map((id) => game.tokens[id].name).join(', ')}` : ''}`,
     detail: entry.dmgDetail });
   if (!keep && !entry.tg) setTimeout(() => R.remove(ref(gpath(`areas/${k}`))).catch(() => {}), 8000);
@@ -936,7 +1085,8 @@ function saveNpcs(k) {
 function areaAgain(k) {
   const A = game.areas[k];
   if (!A) return;
-  const r = A.expr ? app.rollFormula(A.expr, A.n) : null, ids = areaTokens(A);
+  // Для заклинаний с выбором целей снова срабатывает только по врагам заклинателя
+  const r = A.expr ? app.rollFormula(A.expr, A.n) : null, ids = areaTokens(A).filter((id) => !A.pick || !A.ck || game.tokens[id].kind !== A.ck);
   if (!ids.length) { app.toast('В области никого нет'); return; }
   R.update(ref(gpath(`areas/${k}`)), { dmg: r ? r.total : 0, dmgDetail: r ? r.detail : '', tg: Object.fromEntries(ids.map((id) => [id, { done: false }])) });
   addLog({ kind: 'area', who: A.who, txt: `⟳ ${A.n}${r ? ` — ${r.total} ${A.dtype || ''}` : ''} · цели: ${ids.map((id) => game.tokens[id].name).join(', ')}`, detail: r ? r.detail : '' });
@@ -1097,9 +1247,10 @@ function renderTurn() {
     <div class="pips">${pip('a', 'Действие', 'Атака, заклинание, Рывок и т. п. — нажмите, когда потратите')}${pip('b', 'Бонусное', 'Нажмите, когда потратите бонусное действие')}${pip('r', 'Реакция', 'Атака по возможности, «Щит» и т. п.; восстанавливается в начале вашего хода')}</div>
     ${mv.incap ? '<p class="small warn-text">Недееспособен — не может совершать действия, бонусные действия и реакции.</p>' : ''}
     ${e.atk > 0 ? `<div class="small mt">Дополнительная атака: осталось атак — <b>${e.atk}</b></div>` : ''}
-    ${aim && aim.from === id ? `<div class="aim-bar mt">🎯 Выберите цель для «${esc(aim.atk.n)}»${aim.left > 1 ? ` · атак: ${aim.left}` : ''}<button data-tbl="aimOff">${aim.way === 'action' && aim.left < ((app.summary(aim.charId) || {}).atks || 1) ? 'Готово' : 'Отмена'}</button></div>`
+    ${aim && aim.from === id ? `<div class="aim-bar mt">🎯 Выберите цель для «${esc(aim.atk.n)}»${aim.left > 1 ? ` · атак: ${aim.left}` : ''}<button data-tbl="aimOff">${aim.way === 'action' && aim.left < (aim.npc ? +t.multi || 1 : (app.summary(aim.charId) || {}).atks || 1) ? 'Готово' : 'Отмена'}</button></div>`
       : !dm && !mv.incap && ((turn && (e.atk > 0 || !e.a || !e.b)) || !e.r) ? `<div class="row gap wrap mt"><button class="primary" data-tbl="attack" data-id="${id}">⚔ Атака${e.atk > 0 ? ` (ещё ${e.atk})` : !turn ? ' реакцией' : ''}</button>
-        ${!(e.atk > 0) ? `<button class="primary" data-tbl="spell" data-id="${id}">✨ Заклинание</button>` : ''}</div>` : ''}
+        ${!(e.atk > 0) ? `<button class="primary" data-tbl="spell" data-id="${id}">✨ Заклинание</button>` : ''}</div>`
+      : dm && t.kind === 'npc' && !mv.incap && (e.atk > 0 || !e.a || !e.b) ? `<div class="mt"><button class="primary" data-tbl="npcAttack" data-id="${id}">⚔ Атака${e.atk > 0 ? ` (ещё ${e.atk})` : ''}</button></div>` : ''}
     ${canAct && turn ? `<div class="row gap wrap mt">
       ${btn('dash', '🏃 Рывок', 'Действие: ещё одна скорость перемещения на этот ход', !e.a && mv.speed > 0)}
       ${btn('dis', '↩ Отход', 'Действие: до конца хода ваше перемещение не провоцирует атаки по возможности', !e.a && !e.dis)}
@@ -1123,6 +1274,17 @@ function renderInit() {
         ${active ? '<button class="primary" data-tbl="next">▶ Следующий ход</button><button class="ghost" data-tbl="endFight">Закончить бой</button>'
           : `<button class="primary" data-tbl="startFight" ${l.length ? '' : 'disabled'}>⚔ Начать бой</button>`}` : ''}</div>`;
 }
+// Статблок существа для мастера: характеристики, атаки, особенности
+function npcStatHtml(t) {
+  if (!t.ab && !(t.atk || []).length) return '';
+  const atks = npcAttacks(t);
+  return `<div class="statblock mt">${t.cr != null ? `<div class="muted small">ПО ${esc(t.cr)}${t.spd ? ` · скорость ${esc(t.spd)}` : ''}</div>` : ''}
+    ${t.ab ? `<div class="sb-ab">${ABK.map((k, i) => `<span><b>${ABS[k]}</b>${t.ab[i]} (${fmtMod(abMod(t.ab[i]))})</span>`).join('')}</div>` : ''}
+    ${(+t.multi || 1) > 1 ? `<div class="small">Мультиатака: ${t.multi} атаки за действие</div>` : ''}
+    ${atks.map((a) => `<div class="small">⚔ <b>${esc(a.n)}</b> ${fmtMod(a.bonus)}${a.dmg ? `, ${esc(a.dmg)} ${esc(a.type)}` : ''}${a.rng.near ? ` · ${a.rng.near}/${a.rng.far} фт` : a.rng.reach > 5 ? ` · досягаемость ${a.rng.reach} фт` : ''}</div>`).join('')}
+    ${(t.acts || []).map((a, i) => `<div class="small">🔥 <b>${esc(a.n)}</b>: ${SHAPE_N[a.shape]} ${a.size} фт, ${AB_N[a.save]} СЛ ${a.dc}, ${esc(a.f)} ${esc(a.dtype)}${a.rech ? ` · ${(t.rech || {})[i] ? '<span class="warn-text">ждёт перезарядки</span>' : 'готово'}` : ''}</div>`).join('')}
+    ${t.tr ? `<div class="muted small">${esc(t.tr)}</div>` : ''}</div>`;
+}
 function renderSide() {
   const box = $('#tblSel'), t = selId && game.tokens[selId];
   if (!t) { box.hidden = true; return; }
@@ -1131,8 +1293,10 @@ function renderSide() {
   box.innerHTML = `<div class="row between"><h3>${esc(t.name)}</h3><button class="ghost" data-tbl="unsel">✕</button></div>
     ${t.hpMax ? `<div>${nums ? `Хиты <b>${t.hp}</b> / ${t.hpMax}${t.temp ? ` (+${t.temp})` : ''}${t.ac ? ` · КД <b>${t.ac}</b>` : ''}` : `<span class="muted">${(t.hp || 0) <= 0 ? 'повержен' : t.hp / t.hpMax > .5 ? 'бодр' : t.hp / t.hpMax > .25 ? 'ранен' : 'тяжело ранен'}</span>`}</div>` : ''}
     ${t.speed ? `<div class="muted small">Скорость ${t.speed} фт${t.init != null ? ` · инициатива ${t.init >= 0 ? '+' : ''}${t.init}` : ''}</div>` : ''}
-    ${(t.cond || []).length ? `<div class="chips mt">${t.cond.map((c) => `<span class="chip on"><span>${esc(c)}</span></span>`).join('')}</div>` : ''}
-    ${dm && t.kind === 'npc' ? `<div class="row gap wrap mt"><input type="number" id="tblDmg" min="0" placeholder="0" style="width:70px"><button data-tbl="npcDmg">− Урон</button><button data-tbl="npcHeal">＋ Лечение</button></div>
+    ${(t.cond || []).length ? `<div class="chips mt">${t.cond.map((c) => `<span class="chip on"><span>${esc(condName(c))}</span></span>`).join('')}</div>` : ''}
+    ${dm && t.kind === 'npc' ? `${npcStatHtml(t)}
+      ${aim && aim.from === selId ? '' : `<div class="mt"><button class="primary" data-tbl="npcAttack" data-id="${selId}" title="${inFight() && !isTurnOf(selId) ? 'Не его ход — атака реакцией (по возможности)' : ''}">⚔ Атака${inFight() && !isTurnOf(selId) ? ' реакцией' : ''}</button></div>`}
+      <div class="row gap wrap mt"><input type="number" id="tblDmg" min="0" placeholder="0" style="width:70px"><button data-tbl="npcDmg">− Урон</button><button data-tbl="npcHeal">＋ Лечение</button></div>
       <div class="row gap wrap mt"><label class="check"><input type="checkbox" data-tbl-hidden ${t.hidden ? 'checked' : ''}> Скрыт от игроков</label>
       <button data-tbl="npcCopy">⧉ Копия</button><button data-tbl="npcInit">🎲 В инициативу</button></div>
       <div class="muted small mt">Бонусы спасбросков (бросаются автоматически):</div>
@@ -1189,6 +1353,7 @@ async function onClick(e) {
     else if (a === 'attack') openAttack(b.dataset.id);
     else if (a === 'aimOff') { aim = null; hint(''); renderAll(); }
     else if (a === 'spell') openCast(b.dataset.id);
+    else if (a === 'npcAttack') openNpcAttack(b.dataset.id);
     else if (a === 'castOff') cancelCast();
     else if (a === 'saveMine') saveMine(b.dataset.k, b.dataset.id);
     else if (a === 'areaAgain') areaAgain(b.dataset.k);
