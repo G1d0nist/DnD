@@ -19,6 +19,7 @@ let FB = null, R = null, db = null, user = null;
 let game = null; // { id, code, meta, members, tokens, map, init }
 let unsubs = [];
 let tool = 'move', zoom = 1, selId = null;
+let freeMove = false; // мастер: двигать без ограничений (толчок, перенос тела)
 let aim = null; // выбор цели атаки: { from, charId, atk, way, left }
 const openedAt = Date.now(); // уведомления — только о событиях после открытия страницы
 let drag = null; // перетаскивание токена / панорама / рисование
@@ -88,9 +89,9 @@ function subscribe(gid, code) {
   const on = (p, fn) => unsubs.push(R.onValue(ref(gpath(p)), (s) => { if (game && game.id === gid) { fn(s.val()); renderAll(); } }, lost));
   on('meta', (v) => { if (!v) { app.toast('Игра завершена мастером'); leaveLocal(); } else game.meta = v; });
   on('members', (v) => { game.members = v || {}; });
-  on('tokens', (v) => { game.tokens = v || {}; });
+  on('tokens', (v) => { game.tokens = v || {}; cleanupInit(); });
   on('map', (v) => { game.map = v || {}; drawTerrain(); });
-  on('init', (v) => { game.init = v; checkMyTurn(); checkNpcTurn(); });
+  on('init', (v) => { game.init = v; checkMyTurn(); checkNpcTurn(); cleanupInit(); });
   on('econ', (v) => { game.econ = v || {}; });
   on('log', (v) => { game.log = v || {}; applyLog(); notifyLog(); fxLog(); });
   on('areas', (v) => { game.areas = v || {}; drawAreas(); notifyAreas(); autoNpcSaves(); });
@@ -148,7 +149,8 @@ function pushMyChar() {
     if (game.tokens[`pc_${user.uid}`]) {
       Object.assign(upd, { [`tokens/pc_${user.uid}/name`]: s.name, [`tokens/pc_${user.uid}/hp`]: s.hp, [`tokens/pc_${user.uid}/hpMax`]: s.hpMax,
         [`tokens/pc_${user.uid}/temp`]: s.temp, [`tokens/pc_${user.uid}/ac`]: s.ac, [`tokens/pc_${user.uid}/cond`]: s.cond, [`tokens/pc_${user.uid}/speed`]: s.speed,
-        [`tokens/pc_${user.uid}/size`]: SIZE_N[s.size] || 1, [`tokens/pc_${user.uid}/init`]: s.init });
+        [`tokens/pc_${user.uid}/size`]: SIZE_N[s.size] || 1, [`tokens/pc_${user.uid}/init`]: s.init,
+        [`tokens/pc_${user.uid}/dsS`]: s.dsS || 0, [`tokens/pc_${user.uid}/dsF`]: s.dsF || 0 });
     }
     R.update(ref(gpath()), upd).catch(() => {});
   }, 300);
@@ -206,7 +208,7 @@ function occupancy(moverId) {
   Object.entries(game.tokens || {}).forEach(([id, t]) => {
     if (id === moverId || (t.hidden && !isDM())) return;
     const s = t.size || 1, incap = (t.hpMax && (t.hp || 0) <= 0) || (t.cond || []).some((k) => INCAP.includes(k));
-    const pass = t.kind === mv.kind || incap || Math.abs(s - (mv.size || 1)) >= 2;
+    const pass = !hostile(t, mv) || incap || Math.abs(s - (mv.size || 1)) >= 2;
     for (let dx = 0; dx < s; dx++) for (let dy = 0; dy < s; dy++) occ.set(`${t.x + dx}_${t.y + dy}`, pass ? 'pass' : 'block');
   });
   return occ;
@@ -255,13 +257,14 @@ function renderTokens() {
     const showNums = t.kind === 'pc' || isDM();
     if (!(drag && drag.kind === 'token' && drag.id === id)) { el.style.left = t.x * CELL + 'px'; el.style.top = t.y * CELL + 'px'; }
     el.style.width = el.style.height = s * CELL + 'px';
-    el.style.setProperty('--tc', t.color || (t.kind === 'npc' ? '#c94a3d' : '#d4a64a'));
-    el.className = `tok ${t.kind} ${canMove(t) ? 'mine' : ''} ${selId === id ? 'sel' : ''} ${cur && cur.tokenId === id ? 'turn' : ''} ${t.hidden ? 'hid' : ''} ${(t.hp || 0) <= 0 && t.hpMax ? 'down' : ''}`;
+    el.style.setProperty('--tc', t.kind === 'npc' ? SIDE_COLOR[t.side || 'enemy'] : t.color || '#d4a64a');
+    const down = isDown(t), dead = down && isDead(t), label = down ? downLabel(t) : t.name;
+    el.className = `tok ${t.kind} side-${team(t)} ${canMove(t) ? 'mine' : ''} ${selId === id ? 'sel' : ''} ${cur && cur.tokenId === id ? 'turn' : ''} ${t.hidden ? 'hid' : ''} ${down ? 'down' : ''} ${dead ? 'dead' : ''}`;
     const ec = inFight() ? econ(id) : {};
-    el.title = `${t.name}${showNums ? ` · ${t.hp}/${t.hpMax} хитов${t.ac ? ` · КД ${t.ac}` : ''}` : ''}${(t.cond || []).length ? ` · ${t.cond.map(condName).join(', ')}` : ''}${ec.dodge ? ' · уклоняется' : ''}${ec.dis ? ' · отходит' : ''}`;
-    const html = `<div class="tok-face">${esc((t.name || '?').trim().slice(0, 2))}</div>
+    el.title = `${label}${showNums ? ` · ${t.hp}/${t.hpMax} хитов${t.ac ? ` · КД ${t.ac}` : ''}` : ''}${(t.cond || []).length ? ` · ${t.cond.map(condName).join(', ')}` : ''}${ec.dodge ? ' · уклоняется' : ''}${ec.dis ? ' · отходит' : ''}`;
+    const html = `<div class="tok-face">${dead ? '☠' : esc((t.name || '?').trim().slice(0, 2))}</div>
       ${t.hpMax ? `<div class="tok-hp"><div style="width:${pct * 100}%;background:${pct > .5 ? '#5a9e5a' : pct > .25 ? '#d4a64a' : '#c94a3d'}"></div></div>` : ''}
-      <div class="tok-name">${esc(t.name || '')}${(t.cond || []).length ? ` <span class="tok-cond">●${t.cond.length}</span>` : ''}</div>`;
+      <div class="tok-name">${esc(label || '')}${(t.cond || []).length ? ` <span class="tok-cond">●${t.cond.length}</span>` : ''}</div>`;
     // Пересоздавать содержимое только при изменении — иначе касание пальцем «теряет» токен посреди перетаскивания
     if (el._html !== html) { el.innerHTML = html; el._html = html; }
   });
@@ -314,17 +317,19 @@ function onDown(e) {
     const id = tokEl.dataset.tok, t = game.tokens[id];
     selId = id; renderSide(); renderTokens();
     if (!t || !canMove(t)) return;
-    const speed = speedOf(t), dm = isDM();
-    const dg = { kind: 'token', id, sx: t.x, sy: t.y, offX: p.px - t.x * CELL, offY: p.py - t.y * CELL, speed, moved: false };
+    // Принудительное перемещение (толчок, перенос тела) — только мастер: с Shift или в режиме «Свободно»
+    const speed = speedOf(t), dm = isDM(), forced = dm && (e.shiftKey || freeMove);
+    if (isDown(t) && !forced) { app.toast(isDead(t) ? 'Это труп. Мастер может сдвинуть его с Shift или в режиме «🔓 Свободно»' : 'Без сознания — не может двигаться'); return; }
+    const dg = { kind: 'token', id, sx: t.x, sy: t.y, offX: p.px - t.x * CELL, offY: p.py - t.y * CELL, speed, moved: false, forced };
     if (inFight()) {
-      // В бою: игрок ходит только в свой ход и не дальше оставшейся скорости; мастер — без ограничений
+      // В бою каждый, и существа мастера тоже, ходит только в свой ход и не дальше оставшейся скорости
       const turn = isTurnOf(id);
-      if (!dm && !turn) { app.toast('Сейчас не ваш ход — дождитесь своей очереди в инициативе'); return; }
-      const mv = moveInfo(id), occ = occupancy(id);
-      if (!dm && !mv.left) { app.toast(mv.speed ? `Скорость на этот ход потрачена${mv.canDash ? ' — можно сделать Рывок' : ''}` : 'Скорость 0 — персонаж не может перемещаться'); return; }
-      Object.assign(dg, { fight: true, counted: turn, occ, left: turn ? mv.left : Infinity,
-        dist: reachMap(t.x, t.y, dm ? 9999 : mv.left + (mv.canDash ? mv.speed : 0), occ, mv.prone) });
-      drawRange(dg.dist, turn ? mv.left : speed * 2, occ);
+      if (!forced && !turn) { app.toast(dm ? 'Сейчас не его ход. Сдвинуть принудительно — с Shift или в режиме «🔓 Свободно»' : 'Сейчас не ваш ход — дождитесь своей очереди в инициативе'); return; }
+      const mv = moveInfo(id), occ = occupancy(id), counted = turn && !forced;
+      if (!forced && !mv.left) { app.toast(mv.speed ? `Скорость на этот ход потрачена${mv.canDash ? ' — можно сделать Рывок' : ''}` : 'Скорость 0 — не может перемещаться'); return; }
+      Object.assign(dg, { fight: true, counted, occ, left: counted ? mv.left : Infinity,
+        dist: reachMap(t.x, t.y, forced ? 9999 : mv.left + (mv.canDash ? mv.speed : 0), occ, mv.prone) });
+      drawRange(dg.dist, counted ? mv.left : speed * 2, occ);
     } else {
       dg.dist = reachMap(t.x, t.y, speed * 2);
       drawRange(dg.dist, speed);
@@ -377,9 +382,9 @@ function onMove(e) {
     if (tx === drag.sx && ty === drag.sy) txt = '';
     else if (!drag.fight) txt = d == null ? 'дальше двойной скорости' : `${d} фт${d > drag.speed ? ' — с Рывком' : ''}`;
     else if (drag.occ.has(`${tx}_${ty}`)) txt = 'клетка занята';
-    else if (d == null) txt = isDM() ? 'путь закрыт' : 'не хватает скорости';
+    else if (d == null) txt = drag.forced ? 'путь закрыт' : 'не хватает скорости';
     else if (!drag.counted) txt = `${d} фт`;
-    else txt = d <= drag.left ? `${d} фт · останется ${drag.left - d}` : `${d} фт — не хватает ${d - drag.left} фт${isDM() ? '' : ', нужен Рывок'}`;
+    else txt = d <= drag.left ? `${d} фт · останется ${drag.left - d}` : `${d} фт — не хватает ${d - drag.left} фт, нужен Рывок`;
     // Предупреждение заранее: уход из досягаемости врага без Отхода
     if (drag.counted && d != null && txt && !drag.occ.has(`${tx}_${ty}`) && !econ(drag.id).dis) {
       const t = game.tokens[drag.id], oa = foesNear({ ...t, x: drag.sx, y: drag.sy }, drag.id).filter(([, o]) => distFt({ ...t, x: tx, y: ty }, o) > 5);
@@ -412,7 +417,7 @@ function onUp(e) {
       let busy = false;
       for (let dx = 0; dx < s; dx++) for (let dy = 0; dy < s; dy++) if (d.occ.has(`${x + dx}_${y + dy}`)) busy = true;
       if (busy) { app.toast('Клетка занята другим существом'); renderTokens(); return; }
-      if (!isDM() && (cost == null || cost > d.left)) {
+      if (!d.forced && (cost == null || cost > d.left)) {
         app.toast(cost == null ? 'Туда не дойти' : `Не хватает скорости: нужно ${cost} фт, осталось ${d.left} фт`);
         renderTokens();
         return;
@@ -488,7 +493,9 @@ function newEnemyDialog(x, y, base) {
     <label>Размер<select id="nZ">${sizes.map(([v, n]) => `<option value="${v}" ${b.size === v ? 'selected' : ''}>${n}</option>`).join('')}</select></label>
     <label>Количество<input id="nC" type="number" min="1" max="12" value="1"></label>
     <label class="check" id="nRollBox" ${mon ? '' : 'hidden'}><input type="checkbox" id="nRoll"> Бросить хиты <span class="muted small" id="nHpF">${mon ? esc(mon.hp) : ''}</span></label>
-    <label class="check"><input type="checkbox" id="nHid"> Скрыт от игроков</label></div>
+    <label class="check"><input type="checkbox" id="nHid"> Скрыт от игроков</label>
+    <label>Сторона<select id="nSide">${[['enemy', 'враг'], ['neutral', 'нейтральный'], ['ally', 'союзник игроков']].map(([v, n]) => `<option value="${v}" ${(b.side || 'enemy') === v ? 'selected' : ''}>${n}</option>`).join('')}</select></label>
+    <label class="check" title="На нуле хитов не умирает сразу, а делает спасброски от смерти, как персонажи"><input type="checkbox" id="nDs" ${b.dsOn ? 'checked' : ''}> Спасброски от смерти (босс, важный NPC)</label></div>
     <div id="nCustom" ${mon || (base && (base.atk || []).length) ? 'hidden' : ''}><div class="muted small mt">Атака существа (необязательно):</div>
       <div class="form-grid"><label>Название<input id="nAn" placeholder="Скимитар"></label><label>Бонус<input id="nAh" type="number" value="4"></label>
       <label>Урон<input id="nAd" placeholder="1d6+2"></label><label>Тип<input id="nAt" placeholder="рубящий"></label>
@@ -500,12 +507,16 @@ function newEnemyDialog(x, y, base) {
     $('#nH').value = avgExpr(m.hp); $('#nA').value = m.ac; $('#nS').value = parseInt(m.speed) || 30; $('#nI').value = abMod(m.ab[1]);
     $('#nZ').value = String(SIZE_N[m.size] || 1);
     $('#nRollBox').hidden = false; $('#nHpF').textContent = m.hp; $('#nCustom').hidden = true;
+    // NPC по умолчанию нейтральны и не умирают сразу; монстры — враги
+    $('#nSide').value = m.cat === 'npc' ? 'neutral' : 'enemy'; $('#nDs').checked = m.cat === 'npc';
     $$('#nList [data-mon]').forEach((x) => x.classList.toggle('on', x.dataset.mon === m.e));
   };
   const list = () => {
     const q = ($('#nFind').value || '').trim().toLowerCase();
-    $('#nList').innerHTML = BEST().filter((m) => !q || m.n.toLowerCase().includes(q) || m.e.toLowerCase().includes(q) || m.cr === q)
-      .map((m) => `<button data-mon="${esc(m.e)}" class="${mon && mon.e === m.e ? 'on' : ''}"><b>${esc(m.n)}</b><span class="muted small">ПО ${m.cr} · КД ${m.ac} · ${avgExpr(m.hp)} хитов</span></button>`).join('')
+    const found = BEST().filter((m) => !q || m.n.toLowerCase().includes(q) || m.e.toLowerCase().includes(q) || m.cr === q);
+    const btn = (m) => `<button data-mon="${esc(m.e)}" class="${mon && mon.e === m.e ? 'on' : ''}"><b>${esc(m.n)}</b><span class="muted small">ПО ${m.cr} · КД ${m.ac} · ${avgExpr(m.hp)} хитов</span></button>`;
+    const group = (title, list) => (list.length ? `<div class="mon-head">${title}</div>${list.map(btn).join('')}` : '');
+    $('#nList').innerHTML = group('Враги и чудовища', found.filter((m) => m.cat !== 'npc')) + group('NPC — жители мира', found.filter((m) => m.cat === 'npc'))
       || '<p class="muted small">Ничего не найдено — заполните поля вручную.</p>';
     $$('#nList [data-mon]').forEach((x) => x.addEventListener('click', () => pick(BEST().find((m) => m.e === x.dataset.mon))));
   };
@@ -524,7 +535,7 @@ function newEnemyDialog(x, y, base) {
     for (let i = 0; i < n; i++) {
       const id = R.push(ref(gpath('tokens'))).key, hp = mon && $('#nRoll').checked ? Math.max(1, rollExpr(mon.hp).total) : +$('#nH').value || 1;
       upd[id] = { kind: 'npc', owner: user.uid, name: n > 1 ? `${name} ${i + 1}` : name, x: Math.min(W() - size, x + i * size), y, size, color: '#c94a3d',
-        hp, hpMax: hp, ac: +$('#nA').value || 10, speed: +$('#nS').value || 30, init: +$('#nI').value || 0, hidden: $('#nHid').checked, cond: [], ...stats };
+        hp, hpMax: hp, ac: +$('#nA').value || 10, speed: +$('#nS').value || 30, init: +$('#nI').value || 0, hidden: $('#nHid').checked, cond: [], side: $('#nSide').value, dsOn: $('#nDs').checked, ...stats };
     }
     R.update(ref(gpath('tokens')), upd);
     app.closeModal();
@@ -535,6 +546,7 @@ function newEnemyDialog(x, y, base) {
 function openNpcAttack(id) {
   const t = game.tokens[id];
   if (!t || !isDM()) return;
+  if (incapTok(t)) { app.toast(isDead(t) ? 'Мёртвые не атакуют' : 'Существо недееспособно — не может действовать'); return; }
   const e = econ(id), fight = inFight(), turn = !fight || isTurnOf(id), per = +t.multi || 1;
   const atks = npcAttacks(t), acts = t.acts || [], rech = t.rech || {};
   const ways = [];
@@ -581,11 +593,28 @@ function checkNpcTurn() {
   const cur = currentEntry();
   if (!cur || !isDM()) return;
   const t = game.tokens[cur.tokenId];
-  if (!t || t.kind !== 'npc' || !t.rech) return;
+  if (!t || t.kind !== 'npc' || !(t.rech || isDown(t))) return;
   const key = `${game.id}:${game.init.round}:${game.init.turn}`;
   if (ls.get('dnd55-npcturn') === key) return;
   ls.set('dnd55-npcturn', key);
-  const upd = {};
+  const upd = {}, p = `tokens/${cur.tokenId}/`, pass = () => setTimeout(() => { const c = currentEntry(); if (c && c.id === cur.id) nextTurn(); }, 1600);
+  // Без сознания (босс, важный NPC): спасбросок от смерти за него и пропуск хода
+  if (isDown(t)) {
+    if (isDead(t)) return;
+    if (isStable(t)) { addLog({ kind: 'sys', txt: `${t.name} стабилизирован и пропускает ход` }); pass(); return; }
+    const r = die(20);
+    let s = +t.dsS || 0, f = +t.dsF || 0, txt;
+    if (r === 20) { upd[`${p}hp`] = 1; upd[`${p}dsS`] = null; upd[`${p}dsF`] = null; txt = '20 — приходит в себя с 1 хитом!'; }
+    else {
+      if (r === 1) { f = Math.min(3, f + 2); txt = '1 — два провала'; } else if (r >= 10) { s += 1; txt = `${r} — успех`; } else { f += 1; txt = `${r} — провал`; }
+      upd[`${p}dsS`] = s; upd[`${p}dsF`] = f;
+      txt += ` (успехи ${s}/3, провалы ${f}/3)${s >= 3 ? ' — стабилизирован' : ''}${f >= 3 ? ' — погибает' : ''}`;
+    }
+    R.update(ref(gpath()), upd).catch(() => {});
+    addLog({ kind: 'death', who: t.name, txt: `спасбросок от смерти ${txt}` });
+    if (r !== 20) pass();
+    return;
+  }
   Object.entries(t.rech).forEach(([i, used]) => {
     const a = (t.acts || [])[i];
     if (!used || !a) return;
@@ -614,6 +643,34 @@ function nextTurn() {
   R.update(ref(gpath()), { 'init/turn': turn, 'init/round': round, [`econ/${l[turn].tokenId || l[turn].id}`]: null });
 }
 
+// Убрать участника из инициативы, не сбив очередь: если ушёл тот, чей ход, ход переходит к следующему
+function removeFromInit(entryId) {
+  const l = initList(), idx = l.findIndex((x) => x.id === entryId);
+  if (idx < 0) return Promise.resolve();
+  const upd = { [`init/list/${entryId}`]: null };
+  if (game.init && game.init.active && l.length > 1) {
+    let turn = game.init.turn || 0;
+    if (idx < turn) turn -= 1;
+    else if (idx === turn) {
+      if (turn >= l.length - 1) { turn = 0; upd['init/round'] = (game.init.round || 1) + 1; }
+      const nx = l.filter((x) => x.id !== entryId)[turn];
+      if (nx) upd[`econ/${nx.tokenId || nx.id}`] = null;
+    }
+    upd['init/turn'] = turn;
+  }
+  return R.update(ref(gpath()), upd);
+}
+// Браузер мастера: погибшие (труп, три провала) выбывают из инициативы сами
+const leaving = new Set();
+function cleanupInit() {
+  if (!game || !isDM() || !game.init || !game.init.list) return;
+  const dead = initList().find((en) => { const t = game.tokens[en.tokenId]; return t && isDead(t) && !leaving.has(en.id); });
+  if (!dead) return;
+  leaving.add(dead.id);
+  addLog({ kind: 'sys', txt: `☠ ${dead.name} погибает и выбывает из боя` });
+  removeFromInit(dead.id).finally(() => setTimeout(() => leaving.delete(dead.id), 1500));
+}
+
 /* ---------- Действия и перемещение в бою ---------- */
 // games/{id}/econ/{tokenId}: move — потрачено футов; dash — сколько раз Рывок; a, b, r — потрачены действие, бонусное действие, реакция;
 // dis, dodge — совершены Отход, Уклонение. Запись сбрасывается в начале хода этого существа.
@@ -629,7 +686,7 @@ function charOf(t) {
 }
 function moveInfo(id) {
   const t = game.tokens[id], e = econ(id), speed = speedOf(t), cond = t.cond || [];
-  const incap = cond.some((k) => INCAP.includes(k)), bonus = (charOf(t) || {}).bonus || [];
+  const incap = isDown(t) || cond.some((k) => INCAP.includes(k)), bonus = (charOf(t) || {}).bonus || [];
   const total = speed * (1 + (e.dash || 0));
   return { speed, total, used: e.move || 0, left: Math.max(0, total - (e.move || 0)), prone: cond.includes('prone'), incap, bonus,
     canDash: !incap && speed > 0 && (!e.a || (bonus.includes('dash') && !e.b)) };
@@ -677,15 +734,25 @@ function applyLog() {
     applying.add(e.k);
     const upd = { [`log/${e.k}/applied`]: true };
     if (t.kind === 'npc') {
-      const hp = Math.max(0, (+t.hp || 0) - e.dmg);
-      upd[`tokens/${e.tgt}/hp`] = hp;
-      if (hp === 0 && (+t.hp || 0) > 0) upd[`log/${e.k}/down`] = true;
+      Object.assign(upd, npcDamageUpd(e.tgt, t, e.dmg, e.crit));
+      if (isDead({ ...t, hp: upd[`tokens/${e.tgt}/hp`], dsF: upd[`tokens/${e.tgt}/dsF`] ?? t.dsF }) && !isDead(t)) upd[`log/${e.k}/down`] = true;
     } else {
       const m = me();
-      if (m && m.charId) app.takeDamage(m.charId, e.dmg);
+      if (m && m.charId) app.takeDamage(m.charId, e.dmg, e.crit);
     }
     R.update(ref(gpath()), upd).catch(() => applying.delete(e.k));
   });
+}
+// Урон существу (браузер мастера). У существ со спасбросками от смерти — правила 2024, как у персонажей:
+// урон на нуле хитов — провал (крит — два), урон не меньше максимума хитов — смерть, стабилизация теряется
+function npcDamageUpd(id, t, dmg, crit) {
+  const hp0 = +t.hp || 0, hp = Math.max(0, hp0 - dmg), p = `tokens/${id}/`, upd = { [`${p}hp`]: hp };
+  if (!t.dsOn || dmg <= 0) return upd;
+  if (hp0 <= 0) {
+    upd[`${p}dsS`] = (+t.dsS || 0) >= 3 ? 0 : +t.dsS || 0;
+    upd[`${p}dsF`] = dmg >= (+t.hpMax || 1) ? 3 : Math.min(3, (+t.dsF || 0) + (crit ? 2 : 1));
+  } else if (hp === 0) { upd[`${p}dsS`] = 0; upd[`${p}dsF`] = dmg - hp0 >= (+t.hpMax || 1) ? 3 : 0; }
+  return upd;
 }
 // Всплывающие уведомления о том, что касается меня: атаки по моему персонажу, возможность атаки по возможности
 const notified = new Set();
@@ -725,14 +792,25 @@ function distFt(a, b) {
   const dx = Math.max(0, a.x - (b.x + bs - 1), b.x - (a.x + as - 1)), dy = Math.max(0, a.y - (b.y + bs - 1), b.y - (a.y + as - 1));
   return 5 * Math.max(dx, dy);
 }
-const incapTok = (t) => (t.hpMax && (+t.hp || 0) <= 0) || (t.cond || []).some((k) => INCAP.includes(k));
-const hostile = (a, b) => a.kind !== b.kind;
+// На нуле хитов: обычный монстр — сразу труп; персонажи и отмеченные мастером существа (боссы, важные NPC) —
+// без сознания со спасбросками от смерти, пока не стабилизируются или не наберут три провала
+const isDown = (t) => !!t.hpMax && (+t.hp || 0) <= 0;
+const usesDS = (t) => t.kind === 'pc' || !!t.dsOn;
+const isDead = (t) => isDown(t) && (!usesDS(t) || (+t.dsF || 0) >= 3);
+const isStable = (t) => isDown(t) && !isDead(t) && (+t.dsS || 0) >= 3;
+const downLabel = (t) => (isDead(t) ? `труп: ${t.name}` : isStable(t) ? `${t.name} (стабилен)` : `${t.name} (без сознания)`);
+const incapTok = (t) => isDown(t) || (t.cond || []).some((k) => INCAP.includes(k));
+// Стороны: персонажи и союзные NPC — одна, враги — другая; нейтральные ни с кем не враждуют
+const team = (t) => (t.kind === 'pc' || t.side === 'ally' ? 'pc' : t.side === 'neutral' ? 'neutral' : 'npc');
+const hostile = (a, b) => { const x = team(a), y = team(b); return x !== y && x !== 'neutral' && y !== 'neutral'; };
+const SIDE_COLOR = { enemy: '#c94a3d', neutral: '#7f8a99', ally: '#5a9e5a' };
 // Враги рядом (5 фт), способные действовать
 const foesNear = (t, id) => Object.entries(game.tokens).filter(([k, o]) => k !== id && hostile(t, o) && !incapTok(o) && !(o.hidden && !isDM()) && distFt(t, o) <= 5);
 const WAYS = { action: 'действие «Атака»', magic: 'действие «Магия»', bonus: 'бонусное действие', reaction: 'реакция' };
 function openAttack(id) {
   const t = game.tokens[id], m = me(), e = econ(id), turn = isTurnOf(id);
   if (!t || !m || !m.charId) return;
+  if (incapTok(t)) { app.toast('Вы недееспособны и не можете атаковать'); return; }
   const atks = app.attacks(m.charId), per = (app.summary(m.charId) || {}).atks || 1;
   const ways = [];
   if (turn && (e.atk > 0 || !e.a)) ways.push(['action', e.atk > 0 ? `Действие «Атака» — осталось атак: ${e.atk}` : `Действие «Атака»${per > 1 ? ` (${per} атаки)` : ''}`]);
@@ -980,7 +1058,7 @@ function confirmCast() {
   // Область задевает всех, кто в ней, включая союзников. Исключение — заклинания, где цели выбирает заклинатель
   // («враги», «существа по вашему выбору»): для них галочки, по умолчанию отмечены только враги.
   const tok = (id) => game.tokens[id], src = cast.caster && tok(cast.caster);
-  const allies = src ? ids.filter((id) => tok(id).kind === src.kind) : [];
+  const allies = src ? ids.filter((id) => team(tok(id)) === team(src)) : [];
   const pick = !!I.pick && A.shape !== 'target';
   const nameHtml = (id) => `${esc(tok(id).name)}${allies.includes(id) ? ' (союзник)' : ''}`;
   app.openModal(`<h2>✨ ${esc(I.n)}</h2>
@@ -1008,7 +1086,7 @@ function doCastArea(chosen) {
   const lvlTxt = roll && roll.castLvl > I.l ? ` (${roll.castLvl} ур.)` : '';
   const entry = { ...A, by: user.uid, who: src ? src.name : 'Мастер', n: I.n + lvlTxt, abil: I.save || '', dc: I.dc || 0, half: !!I.half,
     expr: (roll && roll.expr) || I.f || '', dmg: roll ? roll.dmg || roll.total || 0 : 0, dmgDetail: roll ? roll.dmgDetail || roll.detail || '' : '', dtype: I.dtype || '', keep, t: Date.now(),
-    pick: !!I.pick, ck: src ? src.kind : '' };
+    pick: !!I.pick, ck: src ? team(src) : '' };
   if (I.save && chosen.length) entry.tg = Object.fromEntries(chosen.map((id) => [id, { done: false }]));
   const k = R.push(ref(gpath('areas'))).key;
   R.set(ref(gpath(`areas/${k}`)), entry).catch((err) => app.toast(`Не удалось создать область: ${esc(err.code || err.message)}`));
@@ -1074,11 +1152,12 @@ function saveNpcs(k) {
       total = nat + bonus; ok = total >= A.dc;
       if (mode) note = mode > 0 ? ` (преим. ${d1}, ${d2})` : ` (помеха ${d1}, ${d2})`;
     }
-    const dmg = saveDmg(A, ok, false), hp = Math.max(0, (+t.hp || 0) - dmg);
+    const dmg = saveDmg(A, ok, false), du = dmg ? npcDamageUpd(id, t, dmg, false) : {};
+    const after = { ...t, hp: du[`tokens/${id}/hp`] ?? t.hp, dsF: du[`tokens/${id}/dsF`] ?? t.dsF }, died = !!dmg && isDead(after) && !isDead(t);
     upd[`areas/${k}/tg/${id}`] = { done: true, ok, roll: total, dmg };
-    if (dmg) upd[`tokens/${id}/hp`] = hp;
-    res.push({ id, dmg, ok, down: !!dmg && hp === 0 });
-    parts.push(`${t.name} ${total}${note} ${ok ? '✔' : '✘'}${dmg ? ` −${dmg}` : ''}${dmg && hp === 0 ? ' ☠' : ''}`);
+    Object.assign(upd, du);
+    res.push({ id, dmg, ok, down: died });
+    parts.push(`${t.name} ${total}${note} ${ok ? '✔' : '✘'}${dmg ? ` −${dmg}` : ''}${died ? ' ☠' : dmg && isDown(after) ? ' (без сознания)' : ''}`);
   });
   R.update(ref(gpath()), upd).catch((err) => app.toast(`Ошибка: ${esc(err.code || err.message)}`));
   addLog({ kind: 'save', who: '', txt: `${A.n} — спасброски ${AB_N[A.abil]} (СЛ ${A.dc}): ${parts.join('; ')}`, res });
@@ -1089,7 +1168,7 @@ function areaAgain(k) {
   const A = game.areas[k];
   if (!A) return;
   // Для заклинаний с выбором целей снова срабатывает только по врагам заклинателя
-  const r = A.expr ? app.rollFormula(A.expr, A.n) : null, ids = areaTokens(A).filter((id) => !A.pick || !A.ck || game.tokens[id].kind !== A.ck);
+  const r = A.expr ? app.rollFormula(A.expr, A.n) : null, ids = areaTokens(A).filter((id) => !A.pick || !A.ck || team(game.tokens[id]) !== A.ck);
   if (!ids.length) { app.toast('В области никого нет'); return; }
   R.update(ref(gpath(`areas/${k}`)), { dmg: r ? r.total : 0, dmgDetail: r ? r.detail : '', tg: Object.fromEntries(ids.map((id) => [id, { done: false }])) });
   addLog({ kind: 'area', who: A.who, txt: `⟳ ${A.n}${r ? ` — ${r.total} ${A.dtype || ''}` : ''} · цели: ${ids.map((id) => game.tokens[id].name).join(', ')}`, detail: r ? r.detail : '', fx: fxShape(A) });
@@ -1150,7 +1229,8 @@ function checkMyTurn() {
   const key = `${game.id}:${game.init.round}:${game.init.turn}`;
   if (ls.get('dnd55-turn') === key) return;
   ls.set('dnd55-turn', key);
-  app.toast('⚔ Ваш ход!', 'crit');
+  const mine = game.tokens[`pc_${user.uid}`];
+  app.toast(mine && isDown(mine) && !isStable(mine) && !isDead(mine) ? '💀 Ваш ход: вы без сознания — бросьте спасбросок от смерти' : '⚔ Ваш ход!', 'crit');
   // С начала 2-го раунда каждый ваш ход сдвигает эффекты в листе на раунд
   if (game.init.round > 1) app.tickRound(m.charId);
 }
@@ -1348,8 +1428,9 @@ function renderTools() {
   const hasMine = user && game.tokens[`pc_${user.uid}`];
   $('#tblBoard').dataset.tool = tool; // курсор поля соответствует инструменту
   $('#tblTools').innerHTML = `<div class="seg">${t('move', '✋ Двигать', 'Перетаскивайте токены, по пустому месту — прокрутка')}${t('ruler', '📏 Линейка', 'Протяните, чтобы измерить расстояние')}
-    ${isDM() ? t('wall', '▮ Стена') + t('difficult', '▦ Трудная') + t('water', '≈ Вода') + t('erase', '⌫ Ластик') + t('enemy', '＋ Враг', 'Нажмите на клетку, чтобы поставить существо')
-      + t('area', '◯ Область', 'Область со спасброском: дыхание, ловушка… Конус и линия — от выделенного существа') : ''}
+    ${isDM() ? t('wall', '▮ Стена') + t('difficult', '▦ Трудная') + t('water', '≈ Вода') + t('erase', '⌫ Ластик') + t('enemy', '＋ Существо', 'Нажмите на клетку, чтобы поставить врага или NPC из бестиария')
+      + t('area', '◯ Область', 'Область со спасброском: дыхание, ловушка… Конус и линия — от выделенного существа')
+      + `<button class="${freeMove ? 'on' : ''}" data-tbl="freeMove" title="Двигать любые токены без учёта хода и скорости (толчок, перенос тела). То же — перетаскивание с Shift">🔓 Свободно</button>` : ''}
     ${!isDM() && !(hasMine && inFight()) ? t('place', hasMine ? '📍 Переставить меня' : '📍 Поставить персонажа', 'Нажмите на клетку') : ''}</div>`;
 }
 // Карточка хода: игроку — свой персонаж, мастеру — существо, чей сейчас ход
@@ -1368,6 +1449,19 @@ function renderTurn() {
     ${!dm && (k === 'r' ? mv.incap : !canAct || !turn) ? 'disabled' : ''} title="${e[k] ? 'Потрачено — нажмите, чтобы вернуть' : hintOk}">${e[k] ? '✕' : '●'} ${n}</button>`;
   const btn = (a, label, title, ok) => (ok ? `<button data-tbl="${a}" data-id="${id}" title="${title}">${label}</button>` : '');
   const half = Math.ceil(mv.speed / 2);
+  // На нуле хитов (персонаж или существо со спасбросками): вместо действий — спасбросок от смерти
+  if (isDown(t) && usesDS(t)) {
+    const pips = (n, cls) => [0, 1, 2].map((i) => `<span class="dpip ${i < n ? cls : ''}"></span>`).join('');
+    box.innerHTML = `<div class="row between"><h3>${dm ? `Ход: ${esc(t.name)}` : turn ? 'Ваш ход' : 'Без сознания'}</h3>${turn && !dm ? '<span class="badge">сейчас</span>' : ''}</div>
+      <div class="death-row"><span>Успехи ${pips(+t.dsS || 0, 'ok')}</span><span>Провалы ${pips(+t.dsF || 0, 'bad')}</span></div>
+      ${isDead(t) ? '<p class="warn-text">☠ Погиб.</p>' : isStable(t) ? '<p class="muted small">Стабилизирован: спасбросков больше нет, через 1к4 часа — 1 хит.</p>'
+        : `<p class="muted small">0 хитов — без сознания. В начале своего хода — спасбросок от смерти: 10+ успех, иначе провал; 1 — два провала; 20 — приходит в себя с 1 хитом.
+          Урон в этом состоянии — провал (от крита — два), урон не меньше максимума хитов — смерть. Три успеха — стабилизирован, три провала — смерть.</p>`}
+      ${!dm && turn && !isDead(t) && !isStable(t) && !e.ds ? `<button class="primary" data-tbl="deathSave" data-id="${id}">💀 Спасбросок от смерти</button>` : ''}
+      ${!dm && turn && (isStable(t) || e.ds) ? '<button class="primary" data-tbl="endTurn">✓ Закончить ход</button>' : ''}
+      ${dm && turn ? '<p class="muted small">Спасбросок за существо бросается автоматически, ход передаётся дальше.</p>' : ''}`;
+    return;
+  }
   box.innerHTML = `<div class="row between"><h3>${dm ? `Ход: ${esc(t.name)}` : turn ? 'Ваш ход' : 'Ваши ресурсы хода'}</h3>${turn && !dm ? '<span class="badge">сейчас</span>' : ''}</div>
     ${turn || dm ? `<div class="small">Перемещение: <b>${mv.left}</b> из ${mv.total} фт${e.dash ? ` · Рывок ×${e.dash}` : ''}${mv.prone ? ' · ползком (×2)' : ''}</div>
     <div class="mvbar"><div style="width:${mv.total ? Math.min(100, (mv.left / mv.total) * 100) : 0}%"></div></div>`
@@ -1418,12 +1512,17 @@ function renderSide() {
   if (!t) { box.hidden = true; return; }
   box.hidden = false;
   const dm = isDM(), mine = user && t.owner === user.uid, nums = t.kind === 'pc' || dm;
-  box.innerHTML = `<div class="row between"><h3>${esc(t.name)}</h3><button class="ghost" data-tbl="unsel">✕</button></div>
-    ${t.hpMax ? `<div>${nums ? `Хиты <b>${t.hp}</b> / ${t.hpMax}${t.temp ? ` (+${t.temp})` : ''}${t.ac ? ` · КД <b>${t.ac}</b>` : ''}` : `<span class="muted">${(t.hp || 0) <= 0 ? 'повержен' : t.hp / t.hpMax > .5 ? 'бодр' : t.hp / t.hpMax > .25 ? 'ранен' : 'тяжело ранен'}</span>`}</div>` : ''}
+  const pips = (n, cls) => [0, 1, 2].map((i) => `<span class="dpip ${i < n ? cls : ''}"></span>`).join('');
+  box.innerHTML = `<div class="row between"><h3>${esc(isDown(t) ? downLabel(t) : t.name)}</h3><button class="ghost" data-tbl="unsel">✕</button></div>
+    ${t.hpMax ? `<div>${nums ? `Хиты <b>${t.hp}</b> / ${t.hpMax}${t.temp ? ` (+${t.temp})` : ''}${t.ac ? ` · КД <b>${t.ac}</b>` : ''}` : `<span class="muted">${isDown(t) ? (isDead(t) ? 'мёртв' : 'без сознания') : t.hp / t.hpMax > .5 ? 'бодр' : t.hp / t.hpMax > .25 ? 'ранен' : 'тяжело ранен'}</span>`}</div>` : ''}
+    ${isDown(t) && usesDS(t) && nums ? `<div class="death-row"><span>Успехи ${pips(+t.dsS || 0, 'ok')}</span><span>Провалы ${pips(+t.dsF || 0, 'bad')}</span></div>` : ''}
     ${t.speed ? `<div class="muted small">Скорость ${t.speed} фт${t.init != null ? ` · инициатива ${t.init >= 0 ? '+' : ''}${t.init}` : ''}</div>` : ''}
     ${(t.cond || []).length ? `<div class="chips mt">${t.cond.map((c) => `<span class="chip on"><span>${esc(condName(c))}</span></span>`).join('')}</div>` : ''}
     ${dm && t.kind === 'npc' ? `${npcStatHtml(t)}
-      ${aim && aim.from === selId ? '' : `<div class="mt"><button class="primary" data-tbl="npcAttack" data-id="${selId}" title="${inFight() && !isTurnOf(selId) ? 'Не его ход — атака реакцией (по возможности)' : ''}">⚔ Атака${inFight() && !isTurnOf(selId) ? ' реакцией' : ''}</button></div>`}
+      ${isDead(t) ? '<p class="muted small">Тело остаётся на поле: его можно оживить лечением (например, для второй фазы боя) и вернуть в инициативу.</p>' : ''}
+      <div class="row gap wrap mt"><label>Сторона <select data-tbl-side>${[['enemy', 'враг'], ['neutral', 'нейтральный'], ['ally', 'союзник игроков']].map(([v, n]) => `<option value="${v}" ${(t.side || 'enemy') === v ? 'selected' : ''}>${n}</option>`).join('')}</select></label>
+        <label class="check" title="На нуле хитов не умирает сразу, а делает спасброски от смерти, как персонажи"><input type="checkbox" data-tbl-ds ${t.dsOn ? 'checked' : ''}> Спасброски от смерти (босс, важный NPC)</label></div>
+      ${aim && aim.from === selId || incapTok(t) ? '' : `<div class="mt"><button class="primary" data-tbl="npcAttack" data-id="${selId}" title="${inFight() && !isTurnOf(selId) ? 'Не его ход — атака реакцией (по возможности)' : ''}">⚔ Атака${inFight() && !isTurnOf(selId) ? ' реакцией' : ''}</button></div>`}
       <div class="row gap wrap mt"><input type="number" id="tblDmg" min="0" placeholder="0" style="width:70px"><button data-tbl="npcDmg">− Урон</button><button data-tbl="npcHeal">＋ Лечение</button></div>
       <div class="row gap wrap mt"><label class="check"><input type="checkbox" data-tbl-hidden ${t.hidden ? 'checked' : ''}> Скрыт от игроков</label>
       <button data-tbl="npcCopy">⧉ Копия</button><button data-tbl="npcInit">🎲 В инициативу</button></div>
@@ -1467,7 +1566,7 @@ async function onClick(e) {
     } else if (a === 'rollNpc') {
       const upd = {};
       Object.entries(game.tokens).forEach(([id, t]) => {
-        if (t.kind !== 'npc' || (game.init && game.init.list && game.init.list[id])) return;
+        if (t.kind !== 'npc' || isDead(t) || (game.init && game.init.list && game.init.list[id])) return;
         upd[`list/${id}`] = { name: t.name, roll: die(20) + (+t.init || 0), owner: user.uid, kind: 'npc', tokenId: id };
       });
       if (!Object.keys(upd).length) { app.toast('Нет существ без инициативы'); return; }
@@ -1482,21 +1581,35 @@ async function onClick(e) {
     else if (a === 'aimOff') { aim = null; hint(''); renderAll(); }
     else if (a === 'spell') openCast(b.dataset.id);
     else if (a === 'npcAttack') openNpcAttack(b.dataset.id);
+    else if (a === 'deathSave') {
+      // Спасбросок от смерти из листа; после него ход заканчивается (при 20 — персонаж в сознании и ходит дальше)
+      const m = me(), id = b.dataset.id, t = game.tokens[id];
+      if (!m || !m.charId || !t) return;
+      const r = app.deathSave(m.charId);
+      if (!r) return;
+      await R.update(ref(gpath(`econ/${id}`)), { ds: 1 });
+      const RES = { revive: 'натуральная 20 — приходит в себя с 1 хитом!', fail2: 'натуральная 1 — два провала', ok: 'успех', fail: 'провал' };
+      addLog({ kind: 'death', who: t.name, txt: `спасбросок от смерти ${r.total} — ${RES[r.res]} (успехи ${r.s}/3, провалы ${r.f}/3)${r.s >= 3 ? ' — стабилизирован' : ''}${r.f >= 3 ? ' — погибает' : ''}` });
+      if (r.res !== 'revive') setTimeout(() => { if (isTurnOf(id)) nextTurn(); }, 1500);
+    }
+    else if (a === 'freeMove') { freeMove = !freeMove; renderTools(); app.toast(freeMove ? '🔓 Свободное перемещение: токены двигаются без учёта хода и скорости' : 'Свободное перемещение выключено'); }
     else if (a === 'castOff') cancelCast();
     else if (a === 'saveMine') saveMine(b.dataset.k, b.dataset.id);
     else if (a === 'areaAgain') areaAgain(b.dataset.k);
     else if (a === 'areaDel') await R.remove(ref(gpath(`areas/${b.dataset.k}`)));
     else if (a === 'logClear') { if (app.confirm('Очистить журнал для всех?')) await R.remove(ref(gpath('log'))); }
     else if (['eco', 'dash', 'dashB', 'dis', 'disB', 'dodge', 'stand'].includes(a)) await econAct(a, b.dataset.id, b.dataset.k);
-    else if (a === 'initDel') await R.remove(ref(gpath(`init/list/${b.dataset.id}`)));
+    else if (a === 'initDel') await removeFromInit(b.dataset.id);
     else if (a === 'unsel') { selId = null; renderSide(); renderTokens(); }
     else if (a === 'tokDel') { if (app.confirm('Убрать токен с поля?')) { await R.remove(ref(gpath(`tokens/${selId}`))); selId = null; } }
     else if (a === 'npcDmg' || a === 'npcHeal') {
       const t = game.tokens[selId], n = Math.max(0, +$('#tblDmg').value || 0);
       if (!n) return;
-      const hp = a === 'npcDmg' ? Math.max(0, t.hp - n) : Math.min(t.hpMax, t.hp + n);
-      await R.update(ref(gpath(`tokens/${selId}`)), { hp });
-      if (hp === 0 && a === 'npcDmg') app.toast(`☠ ${esc(t.name)} повержен`);
+      // Лечение существа на нуле хитов возвращает его в сознание и сбрасывает спасброски от смерти
+      const upd = a === 'npcDmg' ? npcDamageUpd(selId, t, n, false)
+        : { [`tokens/${selId}/hp`]: Math.min(t.hpMax, (+t.hp || 0) + n), ...(isDown(t) ? { [`tokens/${selId}/dsS`]: null, [`tokens/${selId}/dsF`]: null } : {}) };
+      await R.update(ref(gpath()), upd);
+      if (a === 'npcHeal' && isDown(t)) app.toast(`${esc(t.name)} приходит в себя${isDead(t) ? ' — не забудьте вернуть его в инициативу' : ''}`);
     } else if (a === 'npcCopy') { const t = game.tokens[selId]; newEnemyDialog(Math.min(W() - 1, t.x + (t.size || 1)), t.y, t); }
     else if (a === 'kick') {
       const uid = b.dataset.id;
@@ -1510,6 +1623,8 @@ async function onClick(e) {
 document.addEventListener('click', (e) => { if (e.target.closest('#tab-table')) onClick(e); });
 document.addEventListener('change', (e) => {
   if (e.target.matches('[data-tbl-hidden]') && game && selId) R.update(ref(gpath(`tokens/${selId}`)), { hidden: e.target.checked });
+  if (e.target.matches('[data-tbl-side]') && game && selId) R.update(ref(gpath(`tokens/${selId}`)), { side: e.target.value });
+  if (e.target.matches('[data-tbl-ds]') && game && selId) R.update(ref(gpath(`tokens/${selId}`)), { dsOn: e.target.checked });
   if (e.target.matches('[data-tbl-sv]') && game && selId) R.update(ref(gpath(`tokens/${selId}/sv`)), { [e.target.dataset.tblSv]: +e.target.value || 0 });
 });
 document.addEventListener('keydown', (e) => {

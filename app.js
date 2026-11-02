@@ -213,7 +213,7 @@ window.dndApp = {
     return { name: c.info.name || 'Без имени', cls: classLabel(c), hp: +cb.hp || 0, hpMax: +cb.hpMax || 1, temp: +cb.temp || 0, ac: +cb.ac || 10,
       cond: [...cb.conditions, ...(cb.exhaustion ? [`истощение ${cb.exhaustion}`] : [])], conc: cb.conc || '', speed: curSpeed(c), init: initBonus(c), size: c.info.size || 'Средний',
       // Рывок и Отход бонусным действием: Хитрое действие плута, Шаг ветра / Терпеливая оборона монаха
-      bonus: clsLvl(c, 'Плут') >= 2 || clsLvl(c, 'Монах') >= 2 ? ['dash', 'dis'] : [], atks: attacksPerAction(c), evasion: hasEvasion(c) };
+      bonus: clsLvl(c, 'Плут') >= 2 || clsLvl(c, 'Монах') >= 2 ? ['dash', 'dis'] : [], atks: attacksPerAction(c), evasion: hasEvasion(c), dsS: +cb.deathS || 0, dsF: +cb.deathF || 0 };
   },
   // Заклинания с областью или спасброском: подготовленные, всегда подготовленные и заговоры
   areaSpells(id) {
@@ -267,11 +267,20 @@ window.dndApp = {
     save(); render();
     return res;
   },
-  takeDamage(id, n) {
+  takeDamage(id, n, crit) {
     if (!state.chars[id] || !(n > 0)) return;
     if (state.current !== id) state.current = id;
-    tracked('урон', () => applyDamage(n));
+    tracked('урон', () => applyDamage(n, crit));
     save(); render();
+  },
+  // Спасбросок от смерти со стола (в начале хода персонажа без сознания)
+  deathSave(id) {
+    if (!state.chars[id]) return null;
+    if (state.current !== id) state.current = id;
+    let r = null;
+    tracked('спасбросок от смерти', () => { r = doDeathSave(ch()); });
+    save(); render();
+    return r;
   },
   setCond(id, k, on) {
     const c = state.chars[id];
@@ -2070,7 +2079,9 @@ let pendingConc = 0;
 const findById = (arr, id) => arr.find((x) => x.id === id);
 const hpAmount = () => { const v = parseInt($('#hpAmount').value); return isNaN(v) || v < 0 ? 0 : v; };
 
-function applyDamage(n) {
+// Урон по правилам 2024: при 0 хитов — провал спасброска от смерти (крит — два), урон ≥ максимума хитов — смерть;
+// стабилизированный, получив урон, снова начинает умирать
+function applyDamage(n, crit) {
   const c = ch(), cb = c.combat;
   let rest = n;
   const absorbed = Math.min(+cb.temp || 0, rest);
@@ -2081,16 +2092,38 @@ function applyDamage(n) {
   if (cb.hp <= 0) {
     const over = -cb.hp;
     cb.hp = 0;
-    if (wasZero && rest > 0) { cb.deathF = Math.min(3, cb.deathF + 1); msg += '. Провал спасброска от смерти'; }
-    else if (over >= (+cb.hpMax || 0) && rest > 0) msg += '. ☠ Мгновенная смерть: остаток урона ≥ максимума хитов!';
+    if (wasZero && rest > 0) {
+      if (rest >= (+cb.hpMax || 0)) { cb.deathF = 3; msg += '. ☠ Урон не меньше максимума хитов — персонаж погиб'; }
+      else {
+        if (cb.deathS >= 3) { cb.deathS = 0; msg += '. Стабилизация потеряна'; }
+        cb.deathF = Math.min(3, cb.deathF + (crit ? 2 : 1));
+        msg += crit ? '. Критический удар — два провала спасброска от смерти' : '. Провал спасброска от смерти';
+        if (cb.deathF >= 3) msg += '. ☠ Персонаж погиб';
+      }
+    } else if (over >= (+cb.hpMax || 0) && rest > 0) { cb.deathF = 3; cb.deathS = 0; msg += '. ☠ Мгновенная смерть: остаток урона ≥ максимума хитов!'; }
     else if (!wasZero) {
       msg += '. 0 хитов — без сознания';
+      cb.deathS = 0; cb.deathF = 0;
       if (!cb.conditions.includes('unconscious')) cb.conditions.push('unconscious');
       if (cb.conc) { msg += `, концентрация на «${cb.conc}» прервана`; endConc(c); }
     }
   }
   if (cb.conc && n > 0) { pendingConc = Math.min(30, Math.max(10, Math.floor(n / 2))); msg += `. Спасбросок концентрации: СЛ ${pendingConc}`; }
   toast(esc(msg), 'fumble');
+}
+// Спасбросок от смерти (2024): к20 без модификаторов; 10+ — успех, иначе провал; 1 — два провала; 20 — 1 хит и в сознании.
+// Три успеха — стабилизирован, три провала — смерть
+function doDeathSave(c) {
+  const cb = c.combat;
+  const { nat, total } = rollD20('Спасбросок от смерти', 0, { kind: 'death' });
+  let res;
+  if (nat === 20) { cb.hp = 1; cb.deathS = 0; cb.deathF = 0; cb.conditions = cb.conditions.filter((k) => k !== 'unconscious'); res = 'revive'; toast('🌟 Натуральная 20 — вы приходите в себя с 1 хитом!', 'crit'); }
+  else if (nat === 1) { cb.deathF = Math.min(3, cb.deathF + 2); res = 'fail2'; }
+  else if (total >= 10) { cb.deathS = Math.min(3, cb.deathS + 1); res = 'ok'; }
+  else { cb.deathF = Math.min(3, cb.deathF + 1); res = 'fail'; }
+  if (cb.deathS >= 3) toast('Стабилизирован: 0 хитов, но без спасбросков. Через 1к4 часа — 1 хит.');
+  if (cb.deathF >= 3) toast('☠ Три провала — персонаж погиб', 'fumble');
+  return { nat, total, res, s: cb.deathS, f: cb.deathF };
 }
 function applyHeal(n) {
   const cb = ch().combat;
@@ -2367,16 +2400,7 @@ const ACT = {
     openModal(`<h2>${s.n}</h2><p class="muted">Характеристика: ${a.n}</p><p>${esc(s.d)}</p><div class="modal-actions"><button data-act="rollSkill" data-k="${s.k}">🎲 Бросить ${fmt(skillBonus(ch(), s))}</button><button data-act="closeModal">Закрыть</button></div>`);
   },
   spendHd(el) { spendHitDie(el.dataset.die); },
-  deathSave() {
-    const cb = ch().combat;
-    const { nat, total } = rollD20('Спасбросок от смерти', 0, { kind: 'death' });
-    if (nat === 20) { cb.hp = 1; cb.deathS = 0; cb.deathF = 0; cb.conditions = cb.conditions.filter((k) => k !== 'unconscious'); toast('🌟 Натуральная 20 — вы приходите в себя с 1 хитом!', 'crit'); }
-    else if (nat === 1) cb.deathF = Math.min(3, cb.deathF + 2);
-    else if (total >= 10) cb.deathS = Math.min(3, cb.deathS + 1);
-    else cb.deathF = Math.min(3, cb.deathF + 1);
-    if (cb.deathS >= 3) toast('Стабилизирован: 0 хитов, но без спасбросков. Через 1к4 часа — 1 хит.');
-    if (cb.deathF >= 3) toast('☠ Три провала — персонаж погиб', 'fumble');
-  },
+  deathSave() { doDeathSave(ch()); },
   deathPip(el) { const cb = ch().combat, key = el.dataset.type === 'S' ? 'deathS' : 'deathF', i = +el.dataset.i; cb[key] = cb[key] === i + 1 ? i : i + 1; },
   deathReset() { const cb = ch().combat; cb.deathS = 0; cb.deathF = 0; },
   exh(el) { ch().combat.exhaustion = +el.dataset.v; },
