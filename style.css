@@ -505,3 +505,7 @@ button.stat:hover { border-color: var(--gold); }
 .fx-heal { color: #7ddc7d; }
 .lg.heal { border-left-color: var(--green); }
 .lg-heal { color: #7ddc7d; }
+.badge.over { border-color: var(--red); color: #f3b1a8; }
+.cp-row { display: flex; gap: 8px; align-items: flex-start; padding: 6px 8px; border-radius: 7px; border: 1px solid var(--line); background: var(--bg2); }
+.cp-row input { margin-top: 3px; }
+.cp-row.off { opacity: .5; }

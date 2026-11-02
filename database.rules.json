@@ -48,6 +48,14 @@
         "lights": {
           ".write": false
         },
+        "xp": {
+          ".write": false
+        },
+        "xpAward": {
+          "$uid": {
+            ".write": "auth != null && auth.uid === $uid"
+          }
+        },
         "doors": {
           "$cell": {
             "o": {

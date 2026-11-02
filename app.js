@@ -210,7 +210,7 @@ window.dndApp = {
     const c = state.chars[id];
     if (!c) return null;
     const cb = c.combat;
-    return { name: c.info.name || 'Без имени', cls: classLabel(c), hp: +cb.hp || 0, hpMax: +cb.hpMax || 1, temp: +cb.temp || 0, ac: +cb.ac || 10,
+    return { name: (c.info.name || 'Без имени') + (c.shape ? ` (${c.shape.n})` : ''), cls: classLabel(c), hp: +cb.hp || 0, hpMax: +cb.hpMax || 1, temp: +cb.temp || 0, ac: +cb.ac || 10,
       cond: [...cb.conditions, ...(cb.exhaustion ? [`истощение ${cb.exhaustion}`] : [])], conc: cb.conc || '', speed: curSpeed(c), init: initBonus(c), size: c.info.size || 'Средний',
       // Рывок и Отход бонусным действием: Хитрое действие плута, Шаг ветра / Терпеливая оборона монаха
       bonus: clsLvl(c, 'Плут') >= 2 || clsLvl(c, 'Монах') >= 2 ? ['dash', 'dis'] : [], atks: attacksPerAction(c), evasion: hasEvasion(c), dsS: +cb.deathS || 0, dsF: +cb.deathF || 0,
@@ -224,7 +224,22 @@ window.dndApp = {
     const plain = (s) => ({ shape: 'target', size: 0, width: 5, save: '', half: false, self: false, range: /касан/i.test(s.r || '') ? 5 : parseInt(s.r) || 0,
       dtype: dmgWord(s.x), act: /бонусн/i.test(s.t || '') ? 'bonus' : /реакц/i.test(s.t || '') ? 'reaction' : 'action', pick: false });
     return c.spells.filter((s) => +s.l === 0 || s.prep || s.always).map((s) => ({ s, a: spellArea(s) || (extra.includes(s.e) ? plain(s) : null) })).filter((x) => x.a)
-      .map(({ s, a }) => ({ id: s.id, e: s.e || '', n: s.n, l: +s.l, f: s.f || '', u: s.u || '', addMod: !!s.addMod, cn: !!s.cn, dur: s.d || '', dc: spellDC(c), slots: slotOptions(c, s), ...a }));
+      .map(({ s, a }) => ({ id: s.id, e: s.e || '', n: s.n, l: +s.l, f: s.f || '', u: s.u || '', addMod: !!s.addMod, cn: !!s.cn, dur: s.d || '', dc: spellDCFor(c, s), slots: slotOptions(c, s), ...a }));
+  },
+  // Опыт со стола; canLevel — хватает на следующий уровень
+  addXp(id, n) {
+    const c = state.chars[id];
+    if (!c || !(n > 0)) return null;
+    if (state.current !== id) state.current = id;
+    tracked('опыт', () => { c.info.xp = (+c.info.xp || 0) + n; });
+    save(); render();
+    const L = lvl(c);
+    return { xp: c.info.xp, canLevel: L < 20 && c.info.xp >= XP_TABLE[L] };
+  },
+  openLevelUp(id) {
+    if (!state.chars[id]) return;
+    if (state.current !== id) { state.current = id; render(); }
+    openLevelUp();
   },
   heal(id, n) {
     if (!state.chars[id] || !(n > 0)) return;
@@ -270,7 +285,8 @@ window.dndApp = {
       const hit = r.nat !== 1 && (r.crit || r.total >= o.ac);
       const crit = hit && (r.crit || !!o.autoCrit);
       let d = null;
-      if (hit) d = rollDice(`${crit ? 'КРИТ ' : ''}Урон: ${A.n}${A.type ? ` (${A.type})` : ''}`, A.cantrip ? withMod(crit ? scaleDice(A.dice, 2) : A.dice, A.mod) : dmgExpr(c, a, crit));
+      if (hit && A.dmg) d = rollDice(`${crit ? 'КРИТ ' : ''}Урон: ${A.n}${A.type ? ` (${A.type})` : ''}`, A.beast ? (crit ? scaleDice(A.dmg, 2) : A.dmg)
+        : A.cantrip ? withMod(crit ? scaleDice(A.dice, 2) : A.dice, A.mod) : dmgExpr(c, a, crit));
       ammoWarn(c, a);
       // Приём оружия: ключ, СЛ спасброска (8 + модификатор атаки + БМ) и модификатор (урон «Задевания»)
       const mk = a && masteryActive(c, a) ? a.mastery : '';
@@ -384,10 +400,14 @@ function featAbilBonus(c, k) {
 }
 // Итоговое значение характеристики: базовое (введённое) + предыстория + черты + умение 20 уровня
 function score(c, k) {
+  // Дикий облик: Сила, Ловкость и Телосложение — зверя
+  if (c.shape && SHAPE_AB[k] != null) return +c.shape.ab[SHAPE_AB[k]] || 10;
   const base = +c.abil[k] || 0, fb = featAbilBonus(c, k), epic = fb.epic, gen = fb.gen + (+(c.bgAbil || {})[k] || 0);
   let v = base + gen > 20 ? Math.max(base, 20) : base + gen;
   if (Object.entries(CAPSTONE).some(([n, cap]) => clsLvl(c, n) >= 20 && cap[1].includes(k))) v = Math.max(v, Math.min(25, v + 4));
   if (epic) v = Math.max(v, Math.min(30, v + epic));
+  // Предметы, задающие характеристику (Амулет здоровья — ТЕЛ 19): действует, если она выше
+  activeItems(c).forEach((i) => { if (i.mSetK === k && +i.mSetV > v) v = +i.mSetV; });
   return v;
 }
 const am = (c, k) => mod(score(c, k));
@@ -402,13 +422,122 @@ const skillBonus = (c, s) => {
 const auraBonus = (c) => (clsLvl(c, 'Паладин') >= 6 && (+c.combat.hp || 0) > 0 ? Math.max(1, am(c, 'cha')) : 0);
 // Владение спасброском: отмечено в листе или дано чертой «Устойчивый»
 const saveProf = (c, k) => !!c.saves[k] || c.feats.some((f) => f.key === 'resilient' && f.a === k);
-const saveBonus = (c, k) => am(c, k) + (saveProf(c, k) ? pb(c) : 0) + auraBonus(c);
+const saveBonus = (c, k) => am(c, k) + (saveProf(c, k) ? pb(c) : 0) + auraBonus(c) + magicSum(c, 'mSave');
 const initBonus = (c) => am(c, 'dex') + (+c.combat.initBonus || 0) + (hasFeat(c, 'alert') ? pb(c) : 0);
 const spellMod = (c) => am(c, c.spellcasting.ability);
 const spellDC = (c) => 8 + pb(c) + spellMod(c) + (+c.spellcasting.bonus || 0);
 const spellAtk = (c) => pb(c) + spellMod(c) + (+c.spellcasting.bonus || 0);
+// Мультикласс: у каждого класса-заклинателя своя характеристика (паладин — Харизма, волшебник — Интеллект)
+const CASTER_ABIL = { 'Бард': 'cha', 'Жрец': 'wis', 'Друид': 'wis', 'Паладин': 'cha', 'Следопыт': 'wis', 'Чародей': 'cha', 'Колдун': 'cha', 'Волшебник': 'int' };
+const SUB_CASTER = { 'Мистический рыцарь': 'int', 'Мистический ловкач': 'int' };
+const casterClasses = (c) => classList(c).filter((e) => CASTER_ABIL[e.cls] || SUB_CASTER[e.sub]).map((e) => ({ cls: e.cls, sub: e.sub, ab: CASTER_ABIL[e.cls] || SUB_CASTER[e.sub] }));
+// Чьё это заклинание: подкласс, давший его, или первый свой класс, в списке которого оно есть
+function spellClassOf(c, s) {
+  const cc = casterClasses(c);
+  if (cc.length < 2) return null;
+  return cc.find((x) => s.auto && (s.auto === x.sub || String(s.auto).includes(x.cls))) || cc.find((x) => String(s.k || '').includes(x.cls) || (x.sub && x.cls === 'Воин' && /Волшебник/.test(s.k || '')) || (x.sub && x.cls === 'Плут' && /Волшебник/.test(s.k || ''))) || null;
+}
+const spellModFor = (c, s) => { const x = s && spellClassOf(c, s); return x ? am(c, x.ab) : spellMod(c); };
+const spellDCFor = (c, s) => 8 + pb(c) + spellModFor(c, s) + (+c.spellcasting.bonus || 0);
+const spellAtkFor = (c, s) => pb(c) + spellModFor(c, s) + (+c.spellcasting.bonus || 0);
+// Владения при взятии нового класса мультиклассом (PHB 2024) — меньше, чем при старте этим классом
+const MC_PROFS = {
+  'Варвар': { armor: ['Щиты'], weapons: ['Воинское оружие'] },
+  'Бард': { armor: ['Лёгкие доспехи'], skill: 'любой', tool: 'music' },
+  'Жрец': { armor: ['Лёгкие доспехи', 'Средние доспехи', 'Щиты'] },
+  'Друид': { armor: ['Лёгкие доспехи', 'Щиты'] },
+  'Воин': { armor: ['Лёгкие доспехи', 'Средние доспехи', 'Щиты'], weapons: ['Воинское оружие'] },
+  'Паладин': { armor: ['Лёгкие доспехи', 'Средние доспехи', 'Щиты'], weapons: ['Воинское оружие'] },
+  'Следопыт': { armor: ['Лёгкие доспехи', 'Средние доспехи', 'Щиты'], weapons: ['Воинское оружие'], skill: 'из списка следопыта' },
+  'Плут': { armor: ['Лёгкие доспехи'], tools: ['Воровские инструменты'], skill: 'из списка плута' },
+  'Колдун': { armor: ['Лёгкие доспехи'] },
+};
+function applyMcProfs(c, cls) {
+  const P = MC_PROFS[cls];
+  if (!P) return '';
+  (P.armor || []).forEach((v) => addProf(c, 'armor', v));
+  (P.weapons || []).forEach((v) => addProf(c, 'weapons', v));
+  (P.tools || []).forEach((v) => addProf(c, 'tools', v, true));
+  if (P.tool) addPick(c, 'tool', [P.tool], 1, `${cls} (мультикласс)`);
+  return [...(P.armor || []), ...(P.weapons || []), ...(P.tools || [])].join(', ') + (P.skill ? `; отметьте 1 навык (${P.skill})` : '');
+}
 const SPEED_ZERO = ['grappled', 'paralyzed', 'petrified', 'restrained', 'unconscious'];
 // Расчёт КД по доспеху/щиту/защите без доспехов; notes — предупреждения для отображения
+/* ---------- Дикий облик и спутники ---------- */
+// Дикий облик (PHB 2024): хиты остаются свои + временные хиты = уровень друида (Круг луны — ×3); КД, скорость,
+// Сила, Ловкость и Телосложение и атаки — зверя. Друид 2 — ПО до 1/4 без полёта, 4 — 1/2 без полёта, 8 — 1 с полётом;
+// Круг луны — ПО до уровня друида / 3 (не ниже 1), КД не ниже 13 + мод. Мудрости
+const crNum = (cr) => (String(cr).includes('/') ? 1 / +String(cr).split('/')[1] : +cr);
+const BEASTS = () => (typeof BESTIARY !== 'undefined' ? BESTIARY.filter((m) => m.beast) : []);
+const isMoon = (c) => classList(c).some((e) => e.cls === 'Друид' && e.sub === 'Круг луны');
+function wildLimit(c) {
+  const D = clsLvl(c, 'Друид');
+  if (D < 2) return null;
+  let cr = D >= 8 ? 1 : D >= 4 ? 0.5 : 0.25;
+  if (isMoon(c)) cr = Math.max(cr, Math.max(1, Math.floor(D / 3)));
+  return { cr, fly: D >= 8, temp: isMoon(c) ? 3 * D : D };
+}
+const SHAPE_AB = { str: 0, dex: 1, con: 2 };
+const shapeAC = (c) => (isMoon(c) ? Math.max(c.shape.ac, 13 + am(c, 'wis')) : c.shape.ac);
+const beastAtk = (m) => (m.atk || []).map((a, i) => ({ id: `b${i}`, n: a.n, hit: +a.hit || 0, dmg: a.dmg || '', type: a.type || '', range: a.range ? `${a.range} фт` : `${a.reach || 5} фт` }));
+function startShape(c, m) {
+  const L = wildLimit(c);
+  const res = c.resources.find((r) => /Дикий облик/.test(r.n));
+  if (res && res.used >= res.max) { toast('Использования Дикого облика закончились'); return; }
+  if (res) res.used += 1;
+  c.shape = { n: m.n, e: m.e, ac: m.ac, speed: m.speed, ab: m.ab.slice(0, 3), atk: beastAtk(m), x: m.x || '', prevAc: c.combat.ac };
+  c.combat.temp = Math.max(+c.combat.temp || 0, L ? L.temp : 0);
+  toast(`🐾 Облик: ${esc(m.n)} · +${L ? L.temp : 0} временных хитов`, 'crit');
+}
+function endShape(c) {
+  if (!c.shape) return;
+  if (c.armor.mode !== 'auto') c.combat.ac = c.shape.prevAc;
+  toast(`Вы вернулись в свой облик (${esc(c.shape.n)})`);
+  c.shape = null;
+}
+function renderShape() {
+  const c = ch(), L = wildLimit(c), S = c.shape;
+  $('#shapeBtns').innerHTML = `${L && !S ? '<button class="primary" data-act="shapePick">🐾 Дикий облик</button>' : ''}${S ? '<button data-act="shapeEnd">Вернуться в свой облик</button>' : ''}
+    <button data-act="compAdd" title="Фамильяр, зверь-спутник следопыта, ездовое животное">＋ Спутник</button>`;
+  const AB = ['СИЛ', 'ЛОВ', 'ТЕЛ'];
+  $('#shapeBox').innerHTML = S ? `<div class="li equipped"><div class="li-head"><span class="li-title">Облик: ${esc(S.n)}</span>
+      <span class="li-sub">КД ${shapeAC(c)} · скорость ${esc(S.speed)} · ${S.ab.map((v, i) => `${AB[i]} ${v}`).join(' · ')} · врем. хиты ${c.combat.temp}</span></div>
+      ${S.atk.map((a, i) => `<div class="row gap wrap mt"><b>${esc(a.n)}</b> <span class="muted small">${fmt(a.hit)} · ${esc(a.dmg)} ${esc(a.type)}</span>
+        <button data-act="beastRoll" data-i="${i}">🎯 Атака</button>${a.dmg ? `<button data-act="beastDmg" data-i="${i}">Урон</button><button data-act="beastDmg" data-i="${i}" data-crit="1">Крит</button>` : ''}</div>`).join('')}
+      <div class="muted small mt">Хиты — ваши; в облике заклинания не накладываются. ${esc(S.x)}</div></div>`
+    : L ? `<p class="muted small">Дикий облик: звери с ПО до ${L.cr < 1 ? `1/${Math.round(1 / L.cr)}` : L.cr}${L.fly ? '' : ', без полёта'}; временные хиты ${L.temp}.</p>` : '';
+  $('#compList').innerHTML = (c.companions || []).map((p) => `<div class="li"><div class="li-head"><span class="li-title">${esc(p.n)}</span>
+      <span class="li-sub">${esc(p.kind)} · КД ${p.ac} · скорость ${esc(p.speed)}</span>
+      <span class="qty"><button data-act="compHp" data-id="${p.id}" data-d="-1">−</button><b>${p.hp}/${p.hpMax}</b><button data-act="compHp" data-id="${p.id}" data-d="1">+</button></span>
+      <span class="btns">${p.atk.map((a, i) => `<button data-act="compRoll" data-id="${p.id}" data-i="${i}" title="${fmt(a.hit)} · ${esc(a.dmg)} ${esc(a.type)}">🎯 ${esc(a.n)}</button>`).join('')}
+      <button class="ghost" data-act="compDel" data-id="${p.id}" title="Убрать">✕</button></span></div></div>`).join('')
+    || (S || L ? '' : '<p class="muted small">Фамильяр («Поиск фамильяра»), зверь-спутник, ездовое животное — карточка с хитами и атаками.</p>');
+}
+function beastPicker(title, list, onPick, withName) {
+  openModal(`<h2>${esc(title)}</h2>${withName ? '<label>Имя<input id="bpName" placeholder="Например, Уголёк"></label>' : ''}
+    <div class="list mt">${list.map((m) => `<button class="atk-pick" data-beast="${esc(m.e)}"><b>${esc(m.n)}</b><span class="muted small">ПО ${m.cr} · КД ${m.ac} · ${esc(m.speed)} · ${(m.atk || []).map((a) => `${a.n} ${fmt(+a.hit)} ${a.dmg}`).join(', ') || 'без атак'}</span></button>`).join('') || '<p class="muted">Нет подходящих зверей.</p>'}</div>
+    <div class="modal-actions"><button data-act="closeModal">Отмена</button></div>`);
+  $$('[data-beast]').forEach((b) => b.addEventListener('click', () => {
+    const m = list.find((x) => x.e === b.dataset.beast), nm = withName ? $('#bpName').value.trim() : '';
+    closeModal();
+    tracked(title.toLowerCase(), () => onPick(m, nm));
+    save(); render();
+  }));
+}
+/* ---------- Магические предметы ---------- */
+// Предмет действует, если экипирован и (если требует) настроен. Поля: mAtk — бонус оружия к попаданию и урону,
+// mAc — к КД, mSave — к спасброскам, mSetK/mSetV — характеристика не ниже значения (Амулет здоровья: ТЕЛ 19), heal — зелье
+const itemActive = (i) => !!i.eq && (!i.att || !!i.attuned);
+const activeItems = (c) => (c.items || []).filter(itemActive);
+const magicSum = (c, f) => activeItems(c).reduce((s, i) => s + (+i[f] || 0), 0);
+// Магическое оружие атаки: связано полем «Магический предмет» или по названию («Длинный меч +1» → атака «Длинный меч»)
+const atkItem = (c, a) => activeItems(c).find((i) => +i.mAtk && (a.item ? i.id === a.item : i.n.toLowerCase().startsWith(String(a.n || '').toLowerCase())));
+const itemAtk = (c, a) => { const i = a && a.ability !== 'spell' && atkItem(c, a); return i ? +i.mAtk : 0; };
+function magicTags(i) {
+  const AB = (k) => (ABILITIES.find((a) => a.k === k) || {}).s || k;
+  return [+i.mAtk ? `+${i.mAtk} атака и урон` : '', +i.mAc ? `+${i.mAc} КД` : '', +i.mSave ? `+${i.mSave} спасброски` : '', i.mSetK && +i.mSetV ? `${AB(i.mSetK)} ${i.mSetV}` : '', i.heal ? `лечение ${i.heal}` : '']
+    .filter(Boolean).join(', ');
+}
 function computeAC(c) {
   const A = c.armor, dex = am(c, 'dex'), notes = [];
   const arm = ARMOR.find((x) => x.id === A.id);
@@ -430,6 +559,8 @@ function computeAC(c) {
   }
   if (A.shield) { ac += 2; src += ' + щит 2'; }
   if (+A.bonus) { ac += +A.bonus; src += ` ${fmt(+A.bonus)} прочее`; }
+  const mac = magicSum(c, 'mAc');
+  if (mac) { ac += mac; src += ` ${fmt(mac)} магия (${activeItems(c).filter((i) => +i.mAc).map((i) => i.n).join(', ')})`; }
   return { ac, src, notes, arm };
 }
 const armorStealthDis = (c) => c.armor.mode === 'auto' && !!ARMOR.find((x) => x.id === c.armor.id && x.stealth && !(x.type === 'medium' && hasFeat(c, 'mediumArmorMaster')));
@@ -447,6 +578,7 @@ function speedBonuses(c) {
   return out;
 }
 const curSpeed = (c) => (c.combat.conditions.some((k) => SPEED_ZERO.includes(k)) ? 0
+  : c.shape ? Math.max(0, (parseInt(c.shape.speed) || 30) - 5 * (c.combat.exhaustion || 0))
   : Math.max(0, (+c.combat.speed || 0) + speedBonuses(c).reduce((s, [, v]) => s + v, 0) - 5 * (c.combat.exhaustion || 0) - armorSlow(c)));
 // Ярость варвара — активна, пока в эффектах есть «Ярость»
 const raging = (c) => c.effects.some((e) => e.n === 'Ярость');
@@ -455,6 +587,20 @@ const rageDmg = (c) => { const B = clsLvl(c, 'Варвар'); return B >= 16 ? 4
 // В ярости урон Силой получает бонус ярости — поэтому Сила может оказаться выгоднее даже при меньшем модификаторе.
 const finUsesStr = (c) => am(c, 'str') + (raging(c) ? rageDmg(c) : 0) >= am(c, 'dex');
 const usesStr = (c, a) => a.ability === 'str' || (a.ability === 'fin' && finUsesStr(c));
+// Максимум хитов = кости хитов без модификаторов (hpRolled) + за каждый уровень мод. Телосложения и бонусы
+// (дварф, «Крепкий») + «Дар стойкости». Растёт Телосложение — растёт и максимум, на 1 за каждый уровень
+const hpPerLvl = (c) => am(c, 'con') + hpPerLevelBonus(c);
+const hpExtra = (c) => (hasFeat(c, 'boonFortitude') ? 40 : 0);
+const hpPart = (c) => lvl(c) * hpPerLvl(c) + hpExtra(c);
+function syncHpMax(c) {
+  const cb = c.combat;
+  if (c.shape) return; // в диком облике Телосложение зверя не меняет ваши хиты
+  if (cb.hpRolled == null) { cb.hpRolled = (+cb.hpMax || 0) - hpPart(c); return; } // персонаж из старой версии — запомнить как есть
+  const want = Math.max(1, cb.hpRolled + hpPart(c)), d = want - (+cb.hpMax || 0);
+  if (!d) return;
+  cb.hpMax = want;
+  cb.hp = clamp((+cb.hp || 0) + Math.max(0, d), 0, want);
+}
 const isLucky = (c) => /полурослик|halfling/i.test(c.info.species);
 const hpPerLevelBonus = (c) => (/дварф|dwarf/i.test(c.info.species) ? 1 : 0) + (hasFeat(c, 'tough') || c.features.some((f) => /крепкий|tough/i.test(f.n)) ? 2 : 0);
 // Дальнобойное оружие — дистанция вида «80/320 фт» (метательное записано как «5 фт · бросок …»)
@@ -462,8 +608,8 @@ const isRangedWeapon = (a) => a.ability !== 'spell' && /^\d+\/\d+/.test(a.range 
 // ability: характеристика, 'spell' — заклинательная, 'fin' — лучшая из Силы и Ловкости (фехтовальное оружие)
 const abilFor = (c, a) => (a.ability === 'spell' ? spellMod(c) : a.ability === 'fin' ? am(c, finUsesStr(c) ? 'str' : 'dex') : am(c, a.ability));
 const atkAbilMod = (c, a) => abilFor(c, a) + (a.ability === 'spell' ? (+c.spellcasting.bonus || 0) : 0);
-const attackBonus = (c, a) => atkAbilMod(c, a) + (a.prof ? pb(c) : 0) + (+a.hit || 0) + (hasFeat(c, 'archery') && isRangedWeapon(a) ? 2 : 0);
-const dmgMod = (c, a) => (a.addMod ? abilFor(c, a) : 0) + (+a.dmgBonus || 0) + (raging(c) && a.ability !== 'spell' && usesStr(c, a) ? rageDmg(c) : 0);
+const attackBonus = (c, a) => atkAbilMod(c, a) + (a.prof ? pb(c) : 0) + (+a.hit || 0) + (hasFeat(c, 'archery') && isRangedWeapon(a) ? 2 : 0) + itemAtk(c, a);
+const dmgMod = (c, a) => (a.addMod ? abilFor(c, a) : 0) + (+a.dmgBonus || 0) + (raging(c) && a.ability !== 'spell' && usesStr(c, a) ? rageDmg(c) : 0) + itemAtk(c, a);
 // Боевые искусства монаха (2024): кость урона безоружного удара по уровню
 const martialDie = (L) => (L >= 17 ? '1d12' : L >= 11 ? '1d10' : L >= 5 ? '1d8' : '1d6');
 function autoMartialArts(c) {
@@ -773,7 +919,9 @@ function render() {
   }
   autoSlots(c);
   autoResources(c);
-  if (c.armor.mode === 'auto') c.combat.ac = computeAC(c).ac;
+  syncHpMax(c);
+  if (c.shape) c.combat.ac = shapeAC(c);
+  else if (c.armor.mode === 'auto') c.combat.ac = computeAC(c).ac;
   autoMartialArts(c);
   autoSubclassFeatures(c);
   autoSpells(c);
@@ -945,6 +1093,7 @@ function renderCombat() {
   const spent = Object.values(cb.ammoSpent || {}).reduce((s, n) => s + n, 0);
   $('#recoverAmmo').hidden = !spent;
   $('#recoverAmmo').textContent = `🏹 Собрать боеприпасы (${Math.floor(spent / 2)} из ${spent})`;
+  renderShape();
 
   if (c.armor.mode === 'auto') {
     const r = computeAC(c);
@@ -981,7 +1130,11 @@ function spellLimits(c) {
 const spellCounts = (c) => ({ prep: c.spells.filter((s) => s.l > 0 && s.prep && !s.always).length, cantrips: c.spells.filter((s) => +s.l === 0 && !s.always).length });
 function renderSpells() {
   const c = ch(), sc = c.spellcasting, t = sc.casterType;
-  $('#spellStats').innerHTML = `<div class="stat"><b>${spellDC(c)}</b><span>СЛ спасброска</span></div>
+  const cc = casterClasses(c), AB = (k) => ABILITIES.find((a) => a.k === k).s;
+  $('#spellStats').innerHTML = cc.length > 1
+    // Мультикласс: у каждого класса свои СЛ и атака
+    ? cc.map((x) => { const m = am(c, x.ab), b = +c.spellcasting.bonus || 0; return `<div class="stat" title="${esc(x.sub || x.cls)}: ${AB(x.ab)}"><b>${8 + pb(c) + m + b} · ${fmt(pb(c) + m + b)}</b><span>${esc(x.cls)} (${AB(x.ab)}): СЛ · атака</span></div>`; }).join('')
+    : `<div class="stat"><b>${spellDC(c)}</b><span>СЛ спасброска</span></div>
     <button class="stat" data-act="spellAttack"><b>${fmt(spellAtk(c))}</b><span>Атака заклинанием</span></button>
     <div class="stat"><b>${fmt(spellMod(c))}</b><span>Модификатор</span></div>`;
   const manual = t === 'manual';
@@ -1039,6 +1192,8 @@ function renderInventory() {
   $('#itemList').innerHTML = items.map((i) => `<div class="li ${i.eq ? 'equipped' : ''}"><div class="li-head">
       <span class="li-title" data-act="toggleOpen" data-id="${i.id}">${esc(i.n)}</span>
       <span class="tag">${esc(i.cat)}</span>${i.eq ? '<span class="tag g">экипировано</span>' : ''}${i.att ? `<span class="tag ${i.attuned ? 'e' : ''}">${i.attuned ? 'настроен' : 'требует настройки'}</span>` : ''}
+      ${magicTags(i) ? `<span class="tag ${itemActive(i) ? 'g' : 'off'}" title="${itemActive(i) ? 'Действует' : 'Не действует: экипируйте' + (i.att ? ' и настройтесь' : '')}">✨ ${esc(magicTags(i))}</span>` : ''}
+      ${i.heal && +i.qty > 0 ? `<button data-act="drink" data-id="${i.id}" title="Выпить: ${esc(i.heal)} хитов">🧪 Выпить</button>` : ''}
       ${+i.chMax ? `<span class="qty" title="Заряды"><span class="muted small">заряды</span><button data-act="charge" data-id="${i.id}" data-d="-1">−</button><b>${i.ch}/${i.chMax}</b><button data-act="charge" data-id="${i.id}" data-d="1">+</button></span>` : ''}
       <span class="qty"><button data-act="qty" data-id="${i.id}" data-d="-1">−</button><b>${i.qty}</b><button data-act="qty" data-id="${i.id}" data-d="1">+</button></span>
       <span class="li-sub">${+i.w ? +(i.w * i.qty).toFixed(2) + ' фнт' : ''}</span>
@@ -1087,7 +1242,65 @@ function receivedHtml(c) {
       <div class="rctl">${b ? `<button class="primary" data-act="bardicUse">🎲 Бросить к${b.die}</button><span class="muted small">ещё ${fmtRounds(b.left)}</span><button class="ghost" data-act="bardicDrop" title="Убрать">✕</button>`
         : `<span class="muted small">Получить:</span>${[6, 8, 10, 12].map((d) => `<button data-act="bardicGet" data-d="${d}">к${d}</button>`).join('')}`}</div></div>`;
 }
+/* ---------- Выборы класса с лимитами ---------- */
+// Компетентность (PHB 2024): плут 1 — 2, 6 — ещё 2; бард 2 — 2, 9 — ещё 2; следопыт 2 — 1, 9 — ещё 2;
+// волшебник 2 («Учёный») — 1; черты «Эксперт навыков» и «Дар мастерства навыков» — по 1
+function expertiseLimit(c) {
+  const R = clsLvl(c, 'Плут'), B = clsLvl(c, 'Бард'), S = clsLvl(c, 'Следопыт'), Wz = clsLvl(c, 'Волшебник');
+  return (R >= 6 ? 4 : R >= 1 ? 2 : 0) + (B >= 9 ? 4 : B >= 2 ? 2 : 0) + (S >= 9 ? 3 : S >= 2 ? 1 : 0) + (Wz >= 2 ? 1 : 0)
+    + c.feats.filter((f) => f.key === 'skillExpert' || f.key === 'boonSkill').length;
+}
+const expertiseCount = (c) => SKILLS.filter((s) => (c.skills[s.k] || 0) === 2).length;
+// Уровень класса для выбора (приёмы — только у Мастера боевых искусств)
+const pickLevel = (c, P) => classList(c).filter((x) => x.cls === P.cls && (!P.sub || x.sub === P.sub)).reduce((s, x) => s + x.lvl, 0);
+const isLandDruid = (c) => classList(c).some((e) => e.cls === 'Друид' && e.sub === 'Круг земли');
+function renderClassPicks() {
+  const c = ch(), rows = [], picks = c.cpicks || {};
+  Object.entries(CLASS_PICKS).forEach(([k, P]) => {
+    const L = pickLevel(c, P), lim = L ? P.limit(L) : 0, have = picks[k] || [];
+    if (!lim && !have.length) return;
+    rows.push(`<div class="li"><div class="li-head"><span class="li-title">${P.n}</span>
+      <span class="badge${have.length > lim ? ' over' : ''}" title="Выбрано / положено на этом уровне">${have.length}/${lim}</span>
+      <span class="btns"><button data-act="cpick" data-k="${k}" class="${have.length < lim ? 'primary' : ''}">${have.length < lim ? '＋ Выбрать' : 'Изменить'}</button></span></div>
+      ${have.length ? `<div class="chips">${have.map((n) => `<span class="chip on" title="${esc((P.list.find((x) => x[0] === n) || [])[2] || '')}"><span>${esc(n)}</span></span>`).join('')}</div>` : ''}</div>`);
+  });
+  const el = expertiseLimit(c), ec = expertiseCount(c);
+  if (el || ec) rows.push(`<div class="li"><div class="li-head"><span class="li-title">Компетентность</span><span class="badge${ec > el ? ' over' : ''}">${ec}/${el}</span></div>
+    <div class="muted small">Навыки с удвоенным бонусом мастерства: на вкладке «Персонаж» нажмите кружок у навыка второй раз.</div></div>`);
+  if (clsLvl(c, 'Бард') >= 10) rows.push(`<div class="li"><div class="li-head"><span class="li-title">Магические тайны</span><span class="btns"><button data-act="addSpellDb">📖 Заклинания</button></span></div>
+    <div class="muted small">Заклинания жреца, друида и волшебника считаются заклинаниями барда — в списке «Бард» они тоже есть.</div></div>`);
+  if (isLandDruid(c)) rows.push(`<div class="li"><div class="li-head"><span class="li-title">Круг земли — местность</span>
+    <select data-bind="info.land" style="width:auto">${['', ...Object.keys(LAND_SPELLS)].map((n) => `<option value="${n}">${n || '— выберите —'}</option>`).join('')}</select></div>
+    <div class="muted small">Заклинания местности всегда подготовлены и добавляются сами. Сменить местность можно после долгого отдыха.</div></div>`);
+  $('#cpickCard').hidden = !rows.length;
+  $('#cpickBox').innerHTML = rows.join('');
+}
+function openClassPick(k) {
+  const c = ch(), P = CLASS_PICKS[k], L = pickLevel(c, P), lim = P.limit(L);
+  const draw = () => {
+    const have = (c.cpicks || {})[k] || [];
+    $('#modalBody').innerHTML = `<h2>${P.n}</h2><p class="muted small">Выбрано ${have.length} из ${lim} · ${P.sub || P.cls} ${L} уровня. Новые варианты открываются с уровнем.</p>
+      <div class="list">${P.list.map(([n, ml, d]) => {
+        const on = have.includes(n), off = !on && (ml > L || have.length >= lim);
+        return `<label class="check cp-row ${off ? 'off' : ''}"><input type="checkbox" data-cp="${esc(n)}" ${on ? 'checked' : ''} ${off ? 'disabled' : ''}>
+          <span><b>${esc(n)}</b>${ml > 1 ? ` <span class="muted small">с ${ml} ур.</span>` : ''}<span class="muted small" style="display:block">${esc(d)}</span></span></label>`;
+      }).join('')}</div>
+      <div class="modal-actions"><button class="primary" data-act="closeModal">Готово</button></div>`;
+    $$('[data-cp]').forEach((x) => x.addEventListener('change', () => {
+      if (x.checked && ((c.cpicks || {})[k] || []).length >= lim) { x.checked = false; toast(`Не больше ${lim} на этом уровне`); return; }
+      tracked(P.n.toLowerCase(), () => {
+        const h = new Set((c.cpicks = c.cpicks || {})[k] || []);
+        if (x.checked) h.add(x.dataset.cp); else h.delete(x.dataset.cp);
+        c.cpicks[k] = [...h];
+      });
+      save(); render(); draw();
+    }));
+  };
+  openModal('');
+  draw();
+}
 function renderFeatures() {
+  renderClassPicks();
   const c = ch();
   $('#resList').innerHTML = receivedHtml(c) + c.resources.map((r) => resCardHtml(c, r, false)).join('');
 
@@ -1193,7 +1406,7 @@ function renderRef() {
   if (isSp) {
     const lv = $('#refLevel').value, cl = $('#refClass').value;
     const have = new Set(ch().spells.map((s) => s.n));
-    html = SPELLS.map((s, i) => [s, i]).filter(([s]) => match(s.n, s.e, s.s) && (lv === '' || s.l === +lv) && (!cl || s.k.includes(cl)))
+    html = SPELLS.map((s, i) => [s, i]).filter(([s]) => match(s.n, s.e, s.s) && (lv === '' || s.l === +lv) && (!cl || s.k.includes(cl) || (cl === 'Бард' && clsLvl(ch(), 'Бард') >= 10 && /Жрец|Друид|Волшебник/.test(s.k))))
       .map(([s, i]) => det(`${esc(s.n)} <span class="muted small">${esc(s.e)} · ${s.l ? s.l + ' ур.' : 'заговор'} · ${esc(s.s)}</span>${s.cn ? ' <span class="tag c">К</span>' : ''}${s.rt ? ' <span class="tag r">Р</span>' : ''}`,
         `${spellMetaHtml(s)}<p>${esc(s.x)}</p><div class="mt"><button data-act="addSpellFromDb" data-i="${i}" ${have.has(s.n) ? 'disabled' : ''}>${have.has(s.n) ? '✓ В листе' : '＋ Добавить в лист'}</button></div>`)).join('');
   } else if (refMode === 'skills') {
@@ -1363,7 +1576,7 @@ function wizTaken(except) {
   return s;
 }
 function openWizard(mode) {
-  W = { mode, step: 0, name: '', sp: '', size: '', lin: '', spSkills: [], bg: '', bgMode: '21', a1: '', a2: '', cls: '', clsSkills: [], gold: true };
+  W = { mode, step: 0, name: '', sp: '', size: '', lin: '', spSkills: [], bg: '', bgMode: '21', a1: '', a2: '', cls: '', clsSkills: [], gold: 'kit' };
   if (mode === 'origin') {
     const c = ch();
     W.sp = speciesOf(c)?.n || ''; W.size = c.info.size; W.lin = c.info.lineage || '';
@@ -1393,7 +1606,7 @@ function wizChange(e) {
   } else if (el.dataset.wsk) {
     const key = el.dataset.wsk;
     W[key] = el.checked ? [...new Set([...W[key], el.value])] : W[key].filter((k) => k !== el.value);
-  } else if (el.name === 'wgold') W.gold = el.value === '1';
+  } else if (el.name === 'wgold') W.gold = el.value === 'kit' ? 'kit' : el.value === '1';
   else return;
   renderWizard();
 }
@@ -1497,8 +1710,9 @@ function renderWizard() {
       <li>Навыки: ${[...new Set([...W.spSkills, ...(wizBg()?.sk || []), ...W.clsSkills])].map(skillName).join(', ')}</li>
       <li>Черта происхождения: ${FEATS_BY[wizBg().feat].n}</li></ul>
       <h3>Снаряжение</h3>
-      <label class="check"><input type="radio" name="wgold" value="1" ${W.gold ? 'checked' : ''}> Стартовые деньги: ${P.gold} зм (класс) + 50 зм (предыстория) — купить в каталоге</label>
-      <label class="check"><input type="radio" name="wgold" value="0" ${W.gold ? '' : 'checked'}> Набор снаряжения из Книги игрока — добавлю сам</label>`;
+      <label class="check"><input type="radio" name="wgold" value="kit" ${W.gold === 'kit' ? 'checked' : ''}> Комплект снаряжения (вариант A): класса и предыстории — оружие, доспех и золото сразу в листе</label>
+      <label class="check"><input type="radio" name="wgold" value="1" ${W.gold === true ? 'checked' : ''}> Стартовые деньги: ${P.gold} зм (класс) + 50 зм (предыстория) — купить в каталоге</label>
+      <label class="check"><input type="radio" name="wgold" value="0" ${!W.gold ? 'checked' : ''}> Добавлю снаряжение сам</label>`;
   }
   box.innerHTML = h;
   if (W.step === 3) renderGen(); // сам обновит кнопки мастера
@@ -1513,6 +1727,61 @@ function renderWizNav() {
     ${W.step > 0 ? '<button data-act="wizPrev">← Назад</button>' : '<button data-act="closeModal">Отмена</button>'}
     ${W.step < last ? `<button class="primary" data-act="wizNext" ${err ? 'disabled' : ''}>Далее →</button>`
       : `<button class="primary" data-act="wizFinish" ${err ? 'disabled' : ''}>${W.mode === 'new' ? 'Создать персонажа' : 'Применить'}</button>`}`;
+}
+// Стартовое снаряжение, вариант A (PHB 2024). w — оружие [название, кол-во] (в атаки и инвентарь), armor/shield — надеть,
+// i — предметы [название, кол-во], gp — золото. Инструменты, которые выдаёт владение (выбор в «Владениях»), не дублируются
+const KIT_CLASS = {
+  'Варвар': { w: [['Секира', 1], ['Ручной топор', 4]], i: [['Набор путешественника', 1]], gp: 15 },
+  'Бард': { armor: 'leather', w: [['Кинжал', 2]], i: [['Набор артиста', 1]], gp: 19 },
+  'Жрец': { armor: 'chainshirt', shield: 1, w: [['Булава', 1]], i: [['Священный символ', 1], ['Набор священника', 1]], gp: 7 },
+  'Друид': { armor: 'leather', shield: 1, w: [['Серп', 1], ['Боевой посох', 1]], i: [['Набор путешественника', 1], ['Набор травника', 1]], gp: 9 },
+  'Воин': { armor: 'chain', w: [['Двуручный меч', 1], ['Цеп', 1], ['Метательное копьё', 8]], i: [['Набор исследователя подземелий', 1]], gp: 4 },
+  'Монах': { w: [['Копьё', 1], ['Кинжал', 5]], i: [['Набор путешественника', 1]], gp: 11 },
+  'Паладин': { armor: 'chain', shield: 1, w: [['Длинный меч', 1], ['Метательное копьё', 6]], i: [['Священный символ', 1], ['Набор священника', 1]], gp: 9 },
+  'Следопыт': { armor: 'studded', w: [['Скимитар', 1], ['Короткий меч', 1], ['Длинный лук', 1]], i: [['Стрелы (20)', 1], ['Колчан', 1], ['Друидическая фокусировка', 1], ['Набор путешественника', 1]], gp: 7 },
+  'Плут': { armor: 'leather', w: [['Кинжал', 2], ['Короткий меч', 1], ['Короткий лук', 1]], i: [['Стрелы (20)', 1], ['Колчан', 1], ['Воровские инструменты', 1], ['Набор взломщика', 1]], gp: 8 },
+  'Чародей': { w: [['Копьё', 1], ['Кинжал', 2]], i: [['Магическая фокусировка (кристалл)', 1], ['Набор исследователя подземелий', 1]], gp: 28 },
+  'Колдун': { armor: 'leather', w: [['Серп', 1], ['Кинжал', 2]], i: [['Магическая фокусировка (сфера)', 1], ['Книга (тайное знание)', 1], ['Набор учёного', 1]], gp: 15 },
+  'Волшебник': { w: [['Кинжал', 2], ['Боевой посох', 1]], i: [['Мантия', 1], ['Книга заклинаний', 1], ['Набор учёного', 1]], gp: 5 },
+};
+const KIT_BG = {
+  'Аколит': { i: [['Книга (молитвы)', 1], ['Священный символ', 1], ['Пергамент (лист)', 10], ['Мантия', 1]], gp: 8 },
+  'Артист': { i: [['Костюм', 2], ['Зеркало', 1], ['Духи', 1], ['Дорожная одежда', 1]], gp: 11 },
+  'Благородный': { i: [['Изысканная одежда', 1], ['Духи', 1]], gp: 29 },
+  'Мудрец': { w: [['Боевой посох', 1]], i: [['Книга (история)', 1], ['Пергамент (лист)', 8], ['Мантия', 1]], gp: 8 },
+  'Моряк': { w: [['Кинжал', 1]], i: [['Верёвка (50 фт)', 1], ['Дорожная одежда', 1]], gp: 20 },
+  'Отшельник': { w: [['Боевой посох', 1]], i: [['Спальный мешок', 1], ['Книга (философия)', 1], ['Лампа', 1], ['Масло (фляга)', 3], ['Дорожная одежда', 1]], gp: 16 },
+  'Писарь': { i: [['Изысканная одежда', 1], ['Лампа', 1], ['Масло (фляга)', 3], ['Пергамент (лист)', 12]], gp: 23 },
+  'Преступник': { w: [['Кинжал', 2]], i: [['Ломик', 1], ['Мешочек', 2], ['Дорожная одежда', 1]], gp: 16 },
+  'Проводник': { w: [['Короткий лук', 1]], i: [['Стрелы (20)', 1], ['Спальный мешок', 1], ['Колчан', 1], ['Палатка (на двоих)', 1], ['Дорожная одежда', 1]], gp: 3 },
+  'Путешественник': { w: [['Кинжал', 2]], i: [['Спальный мешок', 1], ['Мешочек', 2], ['Дорожная одежда', 1]], gp: 16 },
+  'Ремесленник': { i: [['Мешочек', 2], ['Дорожная одежда', 1]], gp: 32 },
+  'Солдат': { w: [['Копьё', 1], ['Короткий лук', 1]], i: [['Стрелы (20)', 1], ['Набор целителя', 1], ['Колчан', 1], ['Дорожная одежда', 1]], gp: 14 },
+  'Стражник': { w: [['Копьё', 1], ['Лёгкий арбалет', 1]], i: [['Болты (20)', 1], ['Фонарь закрытый', 1], ['Кандалы', 1], ['Колчан', 1], ['Дорожная одежда', 1]], gp: 12 },
+  'Торговец': { i: [['Мешочек', 2], ['Дорожная одежда', 1]], gp: 22 },
+  'Фермер': { w: [['Серп', 1]], i: [['Набор целителя', 1], ['Железный котелок', 1], ['Лопата', 1], ['Дорожная одежда', 1]], gp: 30 },
+  'Шарлатан': { i: [['Костюм', 1], ['Изысканная одежда', 1]], gp: 15 },
+};
+function applyKit(c, K) {
+  if (!K) return;
+  (K.w || []).forEach(([n, q]) => {
+    const w = WEAPONS.find((x) => x.n === n);
+    if (!w) return;
+    addInvItem(c, { n: w.n, cat: 'Оружие', w: w.w, cost: w.cost, qty: q, eq: true, x: `${w.dmg} ${w.type}. ${w.props}. Приём: ${MASTERY[w.m].n}.` });
+    if (!c.attacks.some((a) => a.n === w.n)) c.attacks.push(weaponAttack(w));
+  });
+  if (K.armor) {
+    const a = ARMOR.find((x) => x.id === K.armor);
+    addInvItem(c, { n: a.n, cat: 'Доспех', w: a.w, cost: a.cost, eq: true });
+    Object.assign(c.armor, { mode: 'auto', id: a.id, unarmored: '' });
+  }
+  if (K.shield) { addInvItem(c, { n: SHIELD.n, cat: 'Доспех', w: SHIELD.w, cost: SHIELD.cost, eq: true }); c.armor.shield = true; }
+  (K.i || []).forEach(([n, q]) => {
+    const g = GEAR.find((x) => x.n === n);
+    if (!g && c.items.some((x) => x.n === n)) return; // инструмент уже выдан владением
+    addInvItem(c, g ? { n: g.n, cat: g.cat, w: g.w, cost: g.cost, x: g.x, qty: q * (g.qty || 1), chMax: g.ch || 0, ch: g.ch || 0 } : { n, cat: 'Снаряжение', qty: q });
+  });
+  c.coins.gp = (+c.coins.gp || 0) + (K.gp || 0);
 }
 function wizFinish() {
   const sp = wizSp(), bg = wizBg();
@@ -1538,8 +1807,9 @@ function wizFinish() {
   addPick(c, 'lang', ['standard'], 2, 'создание персонажа');
   featuresAt(W.cls, '', 1).forEach((n) => c.features.push({ id: uid(), n, src: `${W.cls} 1`, x: featureDesc(W.cls, n) }));
   const hp = Math.max(1, +c.combat.hdDie + am(c, 'con') + hpPerLevelBonus(c));
-  c.combat.hpMax = hp; c.combat.hp = hp;
-  if (W.gold) c.coins.gp = P.gold + 50;
+  c.combat.hpMax = hp; c.combat.hp = hp; c.combat.hpRolled = +c.combat.hdDie;
+  if (W.gold === 'kit') { applyKit(c, KIT_CLASS[W.cls]); applyKit(c, KIT_BG[bg.n]); }
+  else if (W.gold) c.coins.gp = P.gold + 50;
   state.chars[c.id] = c; state.current = c.id;
   openSet.clear(); multiSig = null;
   closeModal();
@@ -1683,13 +1953,8 @@ function pickChange(picks, el) {
   normPick(p);
   return true;
 }
-// Черты, меняющие максимум хитов при добавлении/удалении
-function featHp(c, key, sign) {
-  const d = key === 'tough' ? 2 * lvl(c) : key === 'boonFortitude' ? 40 : 0;
-  if (!d) return;
-  c.combat.hpMax = Math.max(1, (+c.combat.hpMax || 0) + sign * d);
-  c.combat.hp = clamp((+c.combat.hp || 0) + sign * d, 0, c.combat.hpMax);
-}
+// Черты, меняющие максимум хитов («Крепкий», «Дар стойкости»), учитывает syncHpMax при отрисовке
+function featHp() {}
 function addFeat(c, slot, p, L) {
   c.feats.push({ id: uid(), key: p.key, slot, a: p.a, a1: p.a1, a2: p.a2, mode: p.mode, lvl: L });
   featHp(c, p.key, 1);
@@ -1753,6 +2018,9 @@ function wantedSpells(c) {
   classList(c).forEach((e) => {
     const sc = subclassOf(e.cls, e.sub);
     if (sc) Object.entries(sc.sp).forEach(([L, list]) => { if (e.lvl >= +L) list.forEach((n) => out.push({ e: n, src: sc.n })); });
+    // Круг земли: заклинания выбранной местности
+    if (e.cls === 'Друид' && e.sub === 'Круг земли' && LAND_SPELLS[c.info.land])
+      Object.entries(LAND_SPELLS[c.info.land]).forEach(([L, list]) => { if (e.lvl >= +L) list.forEach((n) => out.push({ e: n, src: `Круг земли: ${c.info.land}` })); });
   });
   const sp = speciesOf(c), lin = c.info.lineage || '';
   if (sp) {
@@ -1869,7 +2137,11 @@ function lvlTarget(c, S) {
 // S.sub — подкласс, выбранный на уровне подкласса
 function applyAdvance(c, S) {
   if (S.target === 'p') { c.info.level = pLvl(c) + 1; if (S.sub) c.info.subclass = S.sub; }
-  else if (S.target === 'new') c.multi.push({ id: uid(), cls: S.newCls, sub: '', lvl: 1 });
+  else if (S.target === 'new') {
+    c.multi.push({ id: uid(), cls: S.newCls, sub: '', lvl: 1 });
+    const got = applyMcProfs(c, S.newCls);
+    if (got) toast(`Владения мультикласса «${esc(S.newCls)}»: ${esc(got)}`);
+  }
   else { const m = c.multi.find((x) => x.id === S.target); m.lvl = (parseInt(m.lvl) || 1) + 1; if (S.sub) m.sub = S.sub; }
 }
 // Нужно ли выбрать подкласс: достигнут уровень подкласса, а подкласс ещё не выбран (или не из списка)
@@ -1982,7 +2254,7 @@ function renderCatalog() {
   if (!$('#catList')) return;
   const c = ch(), q = $('#catQ').value.trim().toLowerCase();
   const match = (...t) => !q || t.join(' ').toLowerCase().includes(q);
-  $('#catSeg').innerHTML = [['weapons', 'Оружие'], ['armor', 'Доспехи'], ['gear', 'Снаряжение']]
+  $('#catSeg').innerHTML = [['weapons', 'Оружие'], ['armor', 'Доспехи'], ['gear', 'Снаряжение'], ['magic', 'Магия']]
     .map(([k, t]) => `<button data-act="catTab" data-t="${k}" class="${catTab === k ? 'on' : ''}">${t}</button>`).join('');
   let html = '';
   if (catTab === 'weapons') {
@@ -2003,6 +2275,11 @@ function renderCatalog() {
     });
     if (match(SHIELD.n)) html += `<h3>Щит</h3><div class="db-row"><span class="li-title">${SHIELD.n} <span class="muted small">+2 КД · ${SHIELD.w} фнт · ${SHIELD.cost}</span></span>
       ${c.armor.shield ? '<span class="tag g">в руке</span>' : '<button data-act="catShield">Взять</button>'}</div>`;
+  } else if (catTab === 'magic') {
+    html = MAGIC_ITEMS.map((m, i) => [m, i]).filter(([m]) => match(m.n, m.x || '')).map(([m, i]) => `<div class="db-row"><span class="li-title">${esc(m.n)}
+      <span class="muted small">${esc(m.cost || '')}${magicTags(m) ? ` · ${esc(magicTags(m))}` : ''}${m.att ? ' · настройка' : ''}${m.chMax ? ` · ${m.chMax} зарядов` : ''}${m.x ? ` · ${esc(m.x)}` : ''}</span></span>
+      ${m.pick ? `<select data-mpick="${i}" style="width:auto"><option value="">— ${m.pick === 'w' ? 'оружие' : 'доспех'} —</option>${(m.pick === 'w' ? WEAPONS : ARMOR).map((x, j) => `<option value="${m.pick === 'w' ? j : x.id}">${esc(x.n)}</option>`).join('')}</select>` : ''}
+      <button data-act="catMagic" data-i="${i}">🎒 Добавить</button></div>`).join('');
   } else {
     html = GEAR.map((g, i) => [g, i]).filter(([g]) => match(g.n, g.x)).map(([g, i]) => `<div class="db-row"><span class="li-title">${esc(g.n)}
       <span class="muted small">${g.cost} · ${g.w} фнт${g.x ? ' · ' + esc(g.x) : ''}</span></span><button data-act="catGear" data-i="${i}">🎒 Добавить</button></div>`).join('');
@@ -2085,12 +2362,14 @@ const dmgWord = (x) => (String(x || '').match(/урона\s+([а-яё]+(?:\s+п�
 const attacksPerAction = (c) => Math.max(1, ...classList(c).map((e) => (e.cls === 'Воин' ? (e.lvl >= 20 ? 4 : e.lvl >= 11 ? 3 : e.lvl >= 5 ? 2 : 1)
   : ['Варвар', 'Монах', 'Паладин', 'Следопыт'].includes(e.cls) && e.lvl >= 5 ? 2 : 1)));
 function tableAttacks(c) {
+  // В диком облике атакуют только атаками зверя
+  if (c.shape) return c.shape.atk.map((a) => ({ id: a.id, n: `${a.n} (${c.shape.n})`, bonus: a.hit, dmg: a.dmg, type: a.type, rng: atkRange(a.range, false), beast: true }));
   return [
     ...c.attacks.map((a) => ({ id: a.id, n: a.n, bonus: attackBonus(c, a), dmg: dmgExpr(c, a), type: a.type || '', rng: atkRange(a.range, a.ability === 'spell'),
       spell: a.ability === 'spell', ammo: a.ammo ? ammoLeft(c, a) : null, ammoName: a.ammo || '', mastery: masteryActive(c, a) && MASTERY[a.mastery] ? MASTERY[a.mastery].n : '' })),
     ...c.spells.filter(tableCantrip).map((s) => {
-      const beams = s.e === 'Eldritch Blast' ? cantripTier(c) : 1, dice = beams > 1 ? s.f : scaleDice(s.f, cantripTier(c)), mod = s.addMod ? spellMod(c) : 0;
-      return { id: 'sp:' + s.id, n: s.n, bonus: spellAtk(c), dmg: withMod(dice, mod), dice, mod, type: dmgWord(s.x), rng: atkRange(s.r, true), spell: true, cantrip: true, beams };
+      const beams = s.e === 'Eldritch Blast' ? cantripTier(c) : 1, dice = beams > 1 ? s.f : scaleDice(s.f, cantripTier(c)), mod = s.addMod ? spellModFor(c, s) : 0;
+      return { id: 'sp:' + s.id, n: s.n, bonus: spellAtkFor(c, s), dmg: withMod(dice, mod), dice, mod, type: dmgWord(s.x), rng: atkRange(s.r, true), spell: true, cantrip: true, beams };
     }),
   ];
 }
@@ -2189,7 +2468,7 @@ function doCast(s, castLvl, how) {
     let expr = s.f;
     if (+s.l === 0) { const L = lvl(c); expr = scaleDice(expr, 1 + (L >= 5) + (L >= 11) + (L >= 17)); }
     else if (s.u && castLvl > s.l) for (let i = 0; i < castLvl - s.l; i++) expr += '+' + s.u;
-    if (s.addMod) expr = withMod(expr, spellMod(c));
+    if (s.addMod) expr = withMod(expr, spellModFor(c, s));
     const r = rollDice(`${s.n}${castLvl > s.l ? ` (${castLvl} ур.)` : ''}`, expr);
     return r && { ...r, expr };
   }
@@ -2248,6 +2527,7 @@ const ATTACK_FIELDS = () => [
   { k: 'ammo', label: 'Боеприпасы (начало названия предмета)', ph: 'Стрелы' },
   { k: 'mastery', label: 'Приём оружия (Mastery)', type: 'select', options: Object.entries(MASTERY).map(([k, m]) => [k, m.n]) },
   { k: 'wkind', label: 'Вид оружия (для приёма)', type: 'select', options: [['', '— своё, не из каталога —'], ...WEAPONS.map((w) => [w.n, w.n])] },
+  { k: 'item', label: 'Магический предмет (бонус к атаке и урону)', type: 'select', options: [['', '— нет —'], ...(ch().items || []).filter((i) => +i.mAtk).map((i) => [i.id, `${i.n} (+${i.mAtk})`])] },
   { k: 'prof', label: 'Владение (+БМ к попаданию)', type: 'check' },
   { k: 'addMod', label: 'Модификатор к урону', type: 'check' },
   { k: 'ma', label: 'Боевые искусства монаха (кость урона по уровню)', type: 'check', full: true },
@@ -2279,8 +2559,45 @@ const ITEM_FIELDS = () => [
   { k: 'chMax', label: 'Макс. зарядов (0 — нет)', type: 'number' },
   { k: 'eq', label: 'Экипировано', type: 'check' },
   { k: 'att', label: 'Требует настройки', type: 'check' },
+  { k: 'mAtk', label: 'Магия: бонус оружия к атаке и урону', type: 'number' },
+  { k: 'mAc', label: 'Магия: бонус к КД', type: 'number' },
+  { k: 'mSave', label: 'Магия: бонус к спасброскам', type: 'number' },
+  { k: 'mSetK', label: 'Магия: характеристика становится…', type: 'select', options: [['', '—'], ...ABILITIES.map((a) => [a.k, a.n])] },
+  { k: 'mSetV', label: '…не ниже', type: 'number' },
+  { k: 'heal', label: 'Зелье: лечение (формула)', ph: '2d4+2' },
   { k: 'x', label: 'Описание', type: 'textarea', rows: 5 },
 ];
+// Частые магические предметы (DMG 2024, упрощённо). pick: 'w' — выбрать оружие, 'a' — доспех
+const MAGIC_ITEMS = [
+  { n: 'Оружие +1', pick: 'w', mAtk: 1, cost: 'необычный' }, { n: 'Оружие +2', pick: 'w', mAtk: 2, cost: 'редкий' }, { n: 'Оружие +3', pick: 'w', mAtk: 3, cost: 'очень редкий' },
+  { n: 'Доспех +1', pick: 'a', mAc: 1, cost: 'редкий' }, { n: 'Доспех +2', pick: 'a', mAc: 2, cost: 'очень редкий' }, { n: 'Доспех +3', pick: 'a', mAc: 3, cost: 'легендарный' },
+  { n: 'Щит +1', mAc: 1, cat: 'Доспехи', cost: 'необычный', x: 'Прибавляется к обычному щиту (+2).' }, { n: 'Щит +2', mAc: 2, cat: 'Доспехи', cost: 'редкий', x: 'Прибавляется к обычному щиту (+2).' },
+  { n: 'Кольцо защиты', mAc: 1, mSave: 1, att: true, cost: 'редкий' },
+  { n: 'Плащ защиты', mAc: 1, mSave: 1, att: true, cost: 'необычный' },
+  { n: 'Амулет здоровья', mSetK: 'con', mSetV: 19, att: true, cost: 'редкий' },
+  { n: 'Рукавицы силы огра', mSetK: 'str', mSetV: 19, att: true, cost: 'необычный' },
+  { n: 'Повязка интеллекта', mSetK: 'int', mSetV: 19, att: true, cost: 'необычный' },
+  { n: 'Пояс силы холмового великана', mSetK: 'str', mSetV: 21, att: true, cost: 'редкий' },
+  { n: 'Зелье лечения', heal: '2d4+2', cat: 'Расходник', cost: '50 зм' },
+  { n: 'Зелье большого лечения', heal: '4d4+4', cat: 'Расходник', cost: 'необычный' },
+  { n: 'Зелье превосходного лечения', heal: '8d4+8', cat: 'Расходник', cost: 'редкий' },
+  { n: 'Зелье высшего лечения', heal: '10d4+20', cat: 'Расходник', cost: 'очень редкий' },
+  { n: 'Палочка магических снарядов', chMax: 7, cost: 'необычный', x: 'Тратите 1–3 заряда: «Волшебная стрела» 1–3 уровня. Восстанавливает 1к6+1 зарядов на рассвете.' },
+  { n: 'Сумка хранения', cost: 'необычный', x: 'Вмещает до 500 фнт, весит 15 фнт.' },
+  { n: 'Сапоги эльфов', cost: 'необычный', x: 'Ваши шаги бесшумны: преимущество на Скрытность, основанную на тишине.' },
+  { n: 'Плащ эльфов', att: true, cost: 'необычный', x: 'Капюшон: проверки Мудрости (Внимательность), чтобы заметить вас, с помехой; преимущество на Скрытность.' },
+];
+function addMagicItem(c, M, base) {
+  const it = { id: uid(), cat: M.cat || (M.pick === 'w' ? 'Оружие' : M.pick === 'a' ? 'Доспехи' : 'Магический предмет'), qty: 1, w: base ? base.w : 0, cost: M.cost || '',
+    chMax: M.chMax || 0, ch: M.chMax || 0, eq: !M.heal, att: !!M.att, attuned: false, x: M.x || '',
+    n: base ? `${base.n} ${M.n.match(/\+\d/)[0]}` : M.n, mAtk: M.mAtk || 0, mAc: M.mAc || 0, mSave: M.mSave || 0, mSetK: M.mSetK || '', mSetV: M.mSetV || 0, heal: M.heal || '' };
+  if (M.heal) { const same = c.items.find((i) => i.n === it.n); if (same) { same.qty = (+same.qty || 0) + 1; return same; } }
+  c.items.push(it);
+  // Магическое оружие сразу в атаки (связано с предметом), магический доспех надевается
+  if (M.pick === 'w' && base) c.attacks.push({ ...weaponAttack(base), n: it.n, item: it.id });
+  if (M.pick === 'a' && base) { c.armor.mode = 'auto'; c.armor.id = base.id; }
+  return it;
+}
 const RES_FIELDS = () => [
   { k: 'n', label: 'Название', full: true },
   { k: 'max', label: 'Максимум', type: 'number' },
@@ -2302,7 +2619,7 @@ function showSpellDb() {
   modalRefresh = () => {
     const q = $('#dbQ').value.trim().toLowerCase(), l = $('#dbL').value, cl = $('#dbC').value;
     const have = new Set(ch().spells.map((s) => s.n));
-    $('#dbList').innerHTML = SPELLS.map((s, i) => [s, i]).filter(([s]) => (!q || (s.n + ' ' + s.e).toLowerCase().includes(q)) && (l === '' || s.l === +l) && (!cl || s.k.includes(cl)))
+    $('#dbList').innerHTML = SPELLS.map((s, i) => [s, i]).filter(([s]) => (!q || (s.n + ' ' + s.e).toLowerCase().includes(q)) && (l === '' || s.l === +l) && (!cl || s.k.includes(cl) || (cl === 'Бард' && clsLvl(ch(), 'Бард') >= 10 && /Жрец|Друид|Волшебник/.test(s.k))))
       .map(([s, i]) => `<div><div class="db-row"><span class="li-title" data-act="toggleOpen" data-id="db${i}">${esc(s.n)} <span class="muted small">${s.l ? s.l + ' ур.' : 'заговор'} · ${esc(s.s)}</span></span>
         ${s.cn ? '<span class="tag c">К</span>' : ''}${s.rt ? '<span class="tag r">Р</span>' : ''}
         <button data-act="addSpellFromDb" data-i="${i}" ${have.has(s.n) ? 'disabled' : ''}>${have.has(s.n) ? '✓' : '＋'}</button></div>
@@ -2407,6 +2724,7 @@ const ACT = {
     if (!confirmBox(`Установить максимум хитов = ${max}? (${how}: максимум кости на 1 уровне, дальше среднее; мод. Тел ${fmt(con)}${extra ? `, +${extra} за уровень от расы/черты` : ''})`)) return;
     if (c.combat.hp >= c.combat.hpMax) c.combat.hp = max;
     c.combat.hpMax = max;
+    c.combat.hpRolled = max - hpPart(c);
     c.combat.hp = Math.min(c.combat.hp, max);
   },
   rollCheck(el) { const a = ABILITIES.find((x) => x.k === el.dataset.k); rollD20(`Проверка: ${a.n}`, am(ch(), a.k), { kind: 'check', abil: a.k }); },
@@ -2415,7 +2733,13 @@ const ACT = {
     const c = ch(), s = SKILLS.find((x) => x.k === el.dataset.k);
     rollD20(s.n, skillBonus(c, s), { kind: 'check', abil: s.a, skill: s.k, floor10: clsLvl(c, 'Плут') >= 7 && (c.skills[s.k] || 0) > 0 });
   },
-  skillProf(el) { const c = ch(), k = el.dataset.k; c.skills[k] = ((c.skills[k] || 0) + 1) % 3; },
+  skillProf(el) {
+    const c = ch(), k = el.dataset.k, nv = ((c.skills[k] || 0) + 1) % 3;
+    // Компетентность — не больше, чем дают класс и черты
+    if (nv === 2 && expertiseCount(c) >= expertiseLimit(c)) { c.skills[k] = 0; toast(`Компетентность исчерпана: ${expertiseLimit(c)} по классу и чертам`); return; }
+    c.skills[k] = nv;
+  },
+  cpick(el) { openClassPick(el.dataset.k); },
   skillInfo(el) {
     const s = SKILLS.find((x) => x.k === el.dataset.k), a = ABILITIES.find((x) => x.k === s.a);
     openModal(`<h2>${s.n}</h2><p class="muted">Характеристика: ${a.n}</p><p>${esc(s.d)}</p><div class="modal-actions"><button data-act="rollSkill" data-k="${s.k}">🎲 Бросить ${fmt(skillBonus(ch(), s))}</button><button data-act="closeModal">Закрыть</button></div>`);
@@ -2452,6 +2776,27 @@ const ACT = {
     ammoWarn(c, a);
   },
   // После боя можно найти половину потраченных боеприпасов (округление вниз)
+  shapePick() {
+    const c = ch(), L = wildLimit(c);
+    if (!L) return;
+    beastPicker('Дикий облик', BEASTS().filter((m) => crNum(m.cr) <= L.cr && (L.fly || !/полёт/.test(m.speed))), (m) => startShape(c, m));
+  },
+  shapeEnd() { endShape(ch()); },
+  beastRoll(el) { const a = ch().shape.atk[+el.dataset.i]; rollD20(`${ch().shape.n}: ${a.n}`, a.hit, { attack: true, kind: 'attack' }); },
+  beastDmg(el) { const a = ch().shape.atk[+el.dataset.i], crit = !!el.dataset.crit; rollDice(`${crit ? 'КРИТ ' : ''}${ch().shape.n}: ${a.n}`, crit ? scaleDice(a.dmg, 2) : a.dmg); },
+  compAdd() {
+    beastPicker('Новый спутник', BEASTS(), (m, nm) => {
+      const c = ch(), hp = (() => { let t = 0; String(m.hp).replace(/(\d+)d(\d+)|([+-]\d+)/g, (_, n, s, k) => { t += k ? +k : (+n * (+s + 1)) / 2; return ''; }); return Math.max(1, Math.floor(t)); })();
+      (c.companions = c.companions || []).push({ id: uid(), n: nm || m.n, kind: m.n, ac: m.ac, speed: m.speed, hp, hpMax: hp, atk: beastAtk(m) });
+    }, true);
+  },
+  compHp(el) { const p = findById(ch().companions || [], el.dataset.id); p.hp = clamp(p.hp + +el.dataset.d, 0, p.hpMax); },
+  compRoll(el) {
+    const p = findById(ch().companions || [], el.dataset.id), a = p.atk[+el.dataset.i];
+    rollD20(`${p.n}: ${a.n}`, a.hit, { attack: true, kind: 'attack' });
+    if (a.dmg) rollDice(`${p.n}: урон`, a.dmg);
+  },
+  compDel(el) { const c = ch(), p = findById(c.companions || [], el.dataset.id); if (confirmBox(`Убрать «${p.n}»?`)) c.companions = c.companions.filter((x) => x !== p); },
   recoverAmmo() {
     const c = ch(), spent = c.combat.ammoSpent || {}, got = [];
     Object.entries(spent).forEach(([id, n]) => {
@@ -2617,9 +2962,11 @@ const ACT = {
       const bad = [S.newCls, ...classList(c).map((e) => e.cls)].filter((n) => n && !mcOk(c, n));
       if (bad.length && !confirmBox(`Требования мультикласса не выполнены (${bad.map((n) => `${n}: ${mcReqText(n)}`).join('; ')}). Всё равно взять класс «${S.newCls}» (с разрешения Мастера)?`)) return;
     }
+    // Хиты за уровень: в основу идёт только кость, модификаторы досчитает syncHpMax (с учётом нового Тел)
+    syncHpMax(c);
+    const dieGain = gain - hpPerLvl(c);
     applyAdvance(c, S);
-    c.combat.hpMax = (+c.combat.hpMax || 0) + gain;
-    c.combat.hp = (+c.combat.hp || 0) + gain;
+    c.combat.hpRolled = (+c.combat.hpRolled || 0) + dieGain;
     const notes = [`+${gain} хитов`];
     S.slots.forEach((k) => {
       const p = S.picks[k];
@@ -2675,6 +3022,23 @@ const ACT = {
     if (c.armor.mode !== 'auto') { c.armor.mode = 'auto'; }
     toast(`🛡 Щит в руке — КД ${computeAC(c).ac}`);
     renderCatalog();
+  },
+  catMagic(el) {
+    const c = ch(), M = MAGIC_ITEMS[+el.dataset.i], sel = $(`[data-mpick="${el.dataset.i}"]`);
+    let base = null;
+    if (M.pick) {
+      if (!sel || !sel.value) { toast(`Выберите ${M.pick === 'w' ? 'оружие' : 'доспех'} в списке рядом`); return; }
+      base = M.pick === 'w' ? WEAPONS[+sel.value] : ARMOR.find((a) => a.id === sel.value);
+    }
+    const it = addMagicItem(c, M, base);
+    toast(`✨ ${esc(it.n)} добавлен${M.att ? ' — не забудьте настроиться (✦)' : ''}`);
+  },
+  drink(el) {
+    const c = ch(), i = findById(c.items, el.dataset.id), r = rollDice(`🧪 ${i.n}`, i.heal);
+    if (!r) return;
+    applyHeal(Math.max(0, r.total));
+    i.qty = Math.max(0, (+i.qty || 0) - 1);
+    toast(`🧪 ${esc(i.n)}: +${r.total} хитов`, 'crit');
   },
   catGear(el) {
     const g = GEAR[+el.dataset.i];
@@ -2805,6 +3169,8 @@ function bindEvents() {
     if ('num' in el.dataset) v = el.value === '' ? 0 : Number(el.value);
     const c = ch(), before = snap(c);
     setPath(c, p, v);
+    // Максимум хитов, заданный вручную, — новая основа для пересчёта
+    if (p === 'combat.hpMax') c.combat.hpRolled = (+v || 0) - hpPart(c);
     save(); render();
     // Ввод подряд в одно поле — одна запись в истории отмены
     const fresh = !bindUndo || bindUndo.path !== p || bindUndo.id !== c.id || Date.now() - bindUndo.t > 3000;

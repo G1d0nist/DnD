@@ -87,7 +87,7 @@ async function joinGame(code, charId) {
 function subscribe(gid, code) {
   unsubs.forEach((u) => u());
   unsubs = [];
-  game = { id: gid, code, meta: null, members: {}, tokens: {}, map: {}, init: null, econ: {}, log: {}, areas: {}, reveal: {}, seen: {}, lights: {}, doors: {}, effects: {} };
+  game = { id: gid, code, meta: null, members: {}, tokens: {}, map: {}, init: null, econ: {}, log: {}, areas: {}, reveal: {}, seen: {}, lights: {}, doors: {}, effects: {}, xp: {} };
   ls.set(GAME_KEY, JSON.stringify({ id: gid, code, uid: user.uid }));
   const lost = (e) => { if (String(e && e.code).includes('PERMISSION')) { app.toast('Нет доступа к игре — возможно, вас исключили'); leaveLocal(); renderAll(); } };
   const on = (p, fn) => unsubs.push(R.onValue(ref(gpath(p)), (s) => { if (game && game.id === gid) { fn(s.val()); renderAll(); } }, lost));
@@ -98,8 +98,10 @@ function subscribe(gid, code) {
   on('lights', (v) => { game.lights = v || {}; drawTerrain(); });
   on('doors', (v) => { game.doors = v || {}; drawTerrain(); });
   on('effects', (v) => { game.effects = v || {}; syncEffects(); });
-  on('members', (v) => { game.members = v || {}; syncEffects(); });
-  on('tokens', (v) => { game.tokens = v || {}; cleanupInit(); syncEffects(); });
+  on('xp', (v) => { game.xp = v || {}; });
+  on(`xpAward/${user.uid}`, (v) => { game.award = v; applyXp(); });
+  on('members', (v) => { game.members = v || {}; syncEffects(); applyXp(); });
+  on('tokens', (v) => { game.tokens = v || {}; cleanupInit(); syncEffects(); awardKills(); });
   on('map', (v) => { game.map = v || {}; drawTerrain(); });
   on('init', (v) => { game.init = v; checkMyTurn(); checkNpcTurn(); cleanupInit(); syncEffects(); });
   on('econ', (v) => { game.econ = v || {}; });
@@ -728,6 +730,7 @@ function newEnemyDialog(x, y, base) {
     <label>Скорость, фт<input id="nS" type="number" step="5" value="${b.speed}"></label><label>Бонус инициативы<input id="nI" type="number" value="${b.init}"></label>
     <label>Размер<select id="nZ">${sizes.map(([v, n]) => `<option value="${v}" ${b.size === v ? 'selected' : ''}>${n}</option>`).join('')}</select></label>
     <label>Количество<input id="nC" type="number" min="1" max="12" value="1"></label>
+    <label>Опыт за победу<input id="nXp" type="number" min="0" value="${b.xp != null ? b.xp : xpOf(b)}"></label>
     <label class="check" id="nRollBox" ${mon ? '' : 'hidden'}><input type="checkbox" id="nRoll"> Бросить хиты <span class="muted small" id="nHpF">${mon ? esc(mon.hp) : ''}</span></label>
     <label class="check"><input type="checkbox" id="nHid"> Скрыт от игроков</label>
     <label>Сторона<select id="nSide">${[['enemy', 'враг'], ['neutral', 'нейтральный'], ['ally', 'союзник игроков']].map(([v, n]) => `<option value="${v}" ${(b.side || 'enemy') === v ? 'selected' : ''}>${n}</option>`).join('')}</select></label>
@@ -745,6 +748,7 @@ function newEnemyDialog(x, y, base) {
     $('#nRollBox').hidden = false; $('#nHpF').textContent = m.hp; $('#nCustom').hidden = true;
     // NPC по умолчанию нейтральны и не умирают сразу; монстры — враги
     $('#nSide').value = m.cat === 'npc' ? 'neutral' : 'enemy'; $('#nDs').checked = m.cat === 'npc';
+    $('#nXp').value = typeof XP_CR !== 'undefined' ? XP_CR[m.cr] || 0 : 0;
     $$('#nList [data-mon]').forEach((x) => x.classList.toggle('on', x.dataset.mon === m.e));
   };
   const list = () => {
@@ -771,7 +775,7 @@ function newEnemyDialog(x, y, base) {
     for (let i = 0; i < n; i++) {
       const id = R.push(ref(gpath('tokens'))).key, hp = mon && $('#nRoll').checked ? Math.max(1, rollExpr(mon.hp).total) : +$('#nH').value || 1;
       upd[id] = { kind: 'npc', owner: user.uid, name: n > 1 ? `${name} ${i + 1}` : name, x: Math.min(W() - size, x + i * size), y, size, color: '#c94a3d',
-        hp, hpMax: hp, ac: +$('#nA').value || 10, speed: +$('#nS').value || 30, init: +$('#nI').value || 0, hidden: $('#nHid').checked, cond: [], side: $('#nSide').value, dsOn: $('#nDs').checked, ...stats };
+        hp, hpMax: hp, ac: +$('#nA').value || 10, speed: +$('#nS').value || 30, init: +$('#nI').value || 0, hidden: $('#nHid').checked, cond: [], side: $('#nSide').value, dsOn: $('#nDs').checked, ...stats, xp: Math.max(0, +$('#nXp').value || 0) };
     }
     R.update(ref(gpath('tokens')), upd);
     app.closeModal();
@@ -1684,6 +1688,61 @@ function toggleDoor(k, shift) {
 }
 const LIGHTS = [['', 'нет'], ['20/20', 'факел'], ['30/30', 'фонарь'], ['20/20', 'заговор «Свет»'], ['5/5', 'свеча'], ['60/60', 'фонарь «бычий глаз» (упрощённо)']];
 
+/* ---------- Опыт ---------- */
+// games/{id}/xp/kills/{tokenId}: { n, name } — опыт за побеждённых врагов (считает браузер мастера);
+// games/{id}/xpAward/{uid}/{key}: { n, why } — начислено игроку; его браузер прибавляет опыт в листе и удаляет запись
+const xpOf = (t) => (t.xp != null ? +t.xp || 0 : typeof XP_CR !== 'undefined' && t.cr != null ? XP_CR[t.cr] || 0 : 0);
+function awardKills() {
+  if (!game || !isDM()) return;
+  const kills = (game.xp || {}).kills || {}, upd = {};
+  Object.entries(game.tokens || {}).forEach(([id, t]) => {
+    if (t.kind !== 'npc' || team(t) !== 'npc' || !isDead(t) || kills[id]) return;
+    const n = xpOf(t);
+    upd[`kills/${id}`] = { n, name: t.name };
+    if (n) addLog({ kind: 'sys', txt: `⭐ ${t.name} побеждён: +${n} опыта в общий котёл` });
+  });
+  if (Object.keys(upd).length) R.update(ref(gpath('xp')), upd).catch(() => {});
+}
+// Мастер раздаёт опыт: котёл делится поровну между отмеченными персонажами
+function xpDialog(after) {
+  const kills = Object.values((game.xp || {}).kills || {}), total = kills.reduce((s, k) => s + (+k.n || 0), 0);
+  const pcs = Object.values(game.tokens || {}).filter((t) => t.kind === 'pc' && t.owner);
+  app.openModal(`<h2>⭐ Опыт${after ? ' за бой' : ''}</h2>
+    ${kills.length ? `<p class="small">Побеждены: ${kills.map((k) => `${esc(k.name)} (${k.n})`).join(', ')}</p>` : ''}
+    <div class="form-grid"><label>Всего опыта<input type="number" id="xTot" min="0" value="${total}"></label></div>
+    <div class="atk-ways mt">${pcs.map((t) => `<label class="check"><input type="checkbox" data-xp="${esc(t.owner)}" checked> ${esc(t.name)}</label>`).join('') || '<p class="muted">На поле нет персонажей.</p>'}</div>
+    <p class="small" id="xEach"></p>
+    <div class="modal-actions"><button data-act="closeModal">${after ? 'Не раздавать' : 'Отмена'}</button><button class="primary" id="xOk">Раздать</button></div>`);
+  const each = () => { const n = $$('[data-xp]').filter((x) => x.checked).length; return n ? Math.floor((+$('#xTot').value || 0) / n) : 0; };
+  const upd = () => { $('#xEach').textContent = `Каждому: ${each()} опыта`; };
+  $$('#modalBody input').forEach((x) => x.addEventListener('input', upd)); upd();
+  $('#xOk').onclick = async () => {
+    const n = each(), uids = $$('[data-xp]').filter((x) => x.checked).map((x) => x.dataset.xp);
+    app.closeModal();
+    if (!n || !uids.length) return;
+    const k = R.push(ref(gpath('xpAward'))).key, upd2 = { xp: null };
+    uids.forEach((u) => { upd2[`xpAward/${u}/${k}`] = { n, why: after ? 'бой' : 'мастер' }; });
+    await R.update(ref(gpath()), upd2);
+    addLog({ kind: 'sys', txt: `⭐ Опыт: ${n} каждому (${uids.map((u) => (game.tokens[`pc_${u}`] || {}).name || '?').join(', ')})` });
+  };
+}
+// Игрок: прибавить начисленный опыт в лист; хватает на уровень — сразу мастер повышения уровня
+const xpDone = new Set();
+// Начисление может прийти раньше списка участников — тогда применится, когда он загрузится
+function applyXp() {
+  const m = me(), v = game && game.award;
+  if (!v || !m || !m.charId) return;
+  let level = false;
+  Object.entries(v).forEach(([k, a]) => {
+    if (xpDone.has(k)) return;
+    xpDone.add(k);
+    const r = app.addXp(m.charId, +a.n || 0);
+    R.remove(ref(gpath(`xpAward/${user.uid}/${k}`))).catch(() => {});
+    if (r) { app.toast(`⭐ +${a.n} опыта (всего ${r.xp})`, 'crit'); level = level || r.canLevel; }
+  });
+  if (level) setTimeout(() => { app.toast('⬆ Достаточно опыта для нового уровня!', 'crit'); app.openLevelUp(m.charId); }, 600);
+}
+
 /* ---------- Анимации ---------- */
 // Запускаются у всех участников по новым записям журнала: снаряд или удар → число урона над целью,
 // вспышка области, ☠ при гибели. Записи, бывшие до открытия страницы, не анимируются.
@@ -1949,7 +2008,7 @@ function renderInit() {
       <b>${e.roll}</b><span>${esc(e.name)}</span>${isDM() ? `<button class="ghost" data-tbl="initDel" data-id="${e.id}" title="Убрать">✕</button>` : ''}</div>`).join('')}</div>` : '<p class="muted small">Пока никто не бросил инициативу.</p>')
     + `<div class="row gap wrap mt">
       ${!isDM() && me() && !inList ? '<button class="primary" data-tbl="rollInit">🎲 Бросить инициативу</button>' : ''}
-      ${isDM() ? `<button data-tbl="rollNpc" title="Бросить за всех существ на поле">🎲 Враги</button>
+      ${isDM() ? `<button data-tbl="rollNpc" title="Бросить за всех существ на поле">🎲 Враги</button><button data-tbl="xpGive" title="Раздать опыт персонажам (котёл: ${Object.values((game.xp || {}).kills || {}).reduce((s, k) => s + (+k.n || 0), 0)})">⭐ Опыт</button>
         ${active ? '<button class="primary" data-tbl="next">▶ Следующий ход</button><button class="ghost" data-tbl="endFight">Закончить бой</button>'
           : `<button class="primary" data-tbl="startFight" ${l.length ? '' : 'disabled'}>⚔ Начать бой</button>`}` : ''}</div>`;
 }
@@ -1980,7 +2039,8 @@ function renderSide() {
     ${dm && t.kind === 'npc' ? `${npcStatHtml(t)}
       ${isDead(t) ? '<p class="muted small">Тело остаётся на поле: его можно оживить лечением (например, для второй фазы боя) и вернуть в инициативу.</p>' : ''}
       <div class="row gap wrap mt"><label>Сторона <select data-tbl-side>${[['enemy', 'враг'], ['neutral', 'нейтральный'], ['ally', 'союзник игроков']].map(([v, n]) => `<option value="${v}" ${(t.side || 'enemy') === v ? 'selected' : ''}>${n}</option>`).join('')}</select></label>
-        <label class="check" title="На нуле хитов не умирает сразу, а делает спасброски от смерти, как персонажи"><input type="checkbox" data-tbl-ds ${t.dsOn ? 'checked' : ''}> Спасброски от смерти (босс, важный NPC)</label></div>
+        <label class="check" title="На нуле хитов не умирает сразу, а делает спасброски от смерти, как персонажи"><input type="checkbox" data-tbl-ds ${t.dsOn ? 'checked' : ''}> Спасброски от смерти (босс, важный NPC)</label>
+        <label>Опыт <input type="number" min="0" style="width:80px" data-tbl-xp value="${xpOf(t)}"></label></div>
       ${aim && aim.from === selId || incapTok(t) ? '' : `<div class="mt"><button class="primary" data-tbl="npcAttack" data-id="${selId}" title="${inFight() && !isTurnOf(selId) ? 'Не его ход — атака реакцией (по возможности)' : ''}">⚔ Атака${inFight() && !isTurnOf(selId) ? ' реакцией' : ''}</button></div>`}
       <div class="row gap wrap mt"><input type="number" id="tblDmg" min="0" placeholder="0" style="width:70px"><button data-tbl="npcDmg">− Урон</button><button data-tbl="npcHeal">＋ Лечение</button></div>
       <div class="row gap wrap mt"><label class="check"><input type="checkbox" data-tbl-hidden ${t.hidden ? 'checked' : ''}> Скрыт от игроков</label>
@@ -2035,7 +2095,9 @@ async function onClick(e) {
       await R.set(ref(gpath(`init/list/${selId}`)), { name: t.name, roll: die(20) + (+t.init || 0), owner: user.uid, kind: 'npc', tokenId: selId });
     } else if (a === 'startFight') { await R.update(ref(gpath()), { 'init/active': true, 'init/round': 1, 'init/turn': 0, econ: null }); addLog({ kind: 'sys', txt: '⚔ Бой начался · раунд 1' }); }
     else if (a === 'next' || a === 'endTurn') nextTurn();
-    else if (a === 'endFight') { if (app.confirm('Закончить бой и очистить инициативу?')) { await R.update(ref(gpath()), { init: null, econ: null }); addLog({ kind: 'sys', txt: 'Бой окончен' }); } }
+    else if (a === 'endFight') { if (app.confirm('Закончить бой и очистить инициативу?')) { await R.update(ref(gpath()), { init: null, econ: null }); addLog({ kind: 'sys', txt: 'Бой окончен' });
+      if (Object.keys((game.xp || {}).kills || {}).length) xpDialog(true); } }
+    else if (a === 'xpGive') xpDialog(false);
     else if (a === 'attack') openAttack(b.dataset.id);
     else if (a === 'aimOff') { aim = null; hint(''); renderAll(); }
     else if (a === 'spell') openCast(b.dataset.id);
@@ -2090,6 +2152,7 @@ document.addEventListener('change', (e) => {
     const i = +e.target.value, [b, d] = (LIGHTS[i][0] || '').split('/').map(Number);
     R.update(ref(gpath(`tokens/${selId}`)), { lt: i ? { b, d, i } : null }).catch((err) => app.toast(`Не удалось: ${esc(err.code || err.message)}`));
   }
+  if (e.target.matches('[data-tbl-xp]') && game && selId) R.update(ref(gpath(`tokens/${selId}`)), { xp: Math.max(0, +e.target.value || 0) });
   if (e.target.matches('[data-tbl-side]') && game && selId) R.update(ref(gpath(`tokens/${selId}`)), { side: e.target.value });
   if (e.target.matches('[data-tbl-ds]') && game && selId) R.update(ref(gpath(`tokens/${selId}`)), { dsOn: e.target.checked });
   if (e.target.matches('[data-tbl-sv]') && game && selId) R.update(ref(gpath(`tokens/${selId}/sv`)), { [e.target.dataset.tblSv]: +e.target.value || 0 });
