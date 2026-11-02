@@ -213,8 +213,39 @@ window.dndApp = {
     return { name: c.info.name || 'Без имени', cls: classLabel(c), hp: +cb.hp || 0, hpMax: +cb.hpMax || 1, temp: +cb.temp || 0, ac: +cb.ac || 10,
       cond: [...cb.conditions, ...(cb.exhaustion ? [`истощение ${cb.exhaustion}`] : [])], conc: cb.conc || '', speed: curSpeed(c), init: initBonus(c), size: c.info.size || 'Средний',
       // Рывок и Отход бонусным действием: Хитрое действие плута, Шаг ветра / Терпеливая оборона монаха
-      bonus: clsLvl(c, 'Плут') >= 2 || clsLvl(c, 'Монах') >= 2 ? ['dash', 'dis'] : [], atks: attacksPerAction(c) };
+      bonus: clsLvl(c, 'Плут') >= 2 || clsLvl(c, 'Монах') >= 2 ? ['dash', 'dis'] : [], atks: attacksPerAction(c), evasion: hasEvasion(c) };
   },
+  // Заклинания с областью или спасброском: подготовленные, всегда подготовленные и заговоры
+  areaSpells(id) {
+    const c = state.chars[id];
+    if (!c) return [];
+    return c.spells.filter((s) => +s.l === 0 || s.prep || s.always).map((s) => ({ s, a: spellArea(s) })).filter((x) => x.a)
+      .map(({ s, a }) => ({ id: s.id, n: s.n, l: +s.l, f: s.f || '', u: s.u || '', cn: !!s.cn, dur: s.d || '', dc: spellDC(c), slots: slotOptions(c, s), ...a }));
+  },
+  // Сотворить со стола: ячейка, концентрация и эффекты — как в листе; возвращает бросок урона (или null)
+  castArea(id, spellId, slotKey) {
+    if (!state.chars[id]) return null;
+    if (state.current !== id) { state.current = id; render(); }
+    const c = ch(), s = findById(c.spells, spellId);
+    if (!s) return null;
+    let out = null;
+    tracked(`сотворение: ${s.n}`, () => {
+      const { castLvl, how } = spendSlot(c, s, slotKey);
+      const r = doCast(s, castLvl, how);
+      out = { castLvl, how, dmg: r ? Math.max(0, r.total) : 0, dmgDetail: r ? r.detail : '', expr: r ? r.expr : '' };
+    });
+    save(); render();
+    return out;
+  },
+  rollSave(id, abil, dc, o = {}) {
+    if (!state.chars[id]) return null;
+    if (state.current !== id) { state.current = id; render(); }
+    const c = ch(), a = ABILITIES.find((x) => x.k === abil);
+    const r = rollD20(`Спасбросок: ${a ? a.n : abil}${o.label ? ` — ${o.label}` : ''}`, saveBonus(c, abil), { kind: 'save', abil, dc, adv: o.adv, dis: o.dis });
+    save(); render();
+    return { total: r.total, nat: r.nat, ok: r.total >= dc, detail: r.detail || 'автоматический провал' };
+  },
+  rollFormula(expr, label) { const r = rollDice(label || 'Бросок', expr); return r ? { total: Math.max(0, r.total), detail: r.detail } : null; },
   attacks(id) { const c = state.chars[id]; return c ? tableAttacks(c) : []; },
   // Атака по цели со стола: бросок с преимуществом/помехой от обстановки, при попадании — урон (крит удваивает кости)
   attack(id, atkId, o = {}) {
@@ -2105,9 +2136,51 @@ function doCast(s, castLvl, how) {
     if (+s.l === 0) { const L = lvl(c); expr = scaleDice(expr, 1 + (L >= 5) + (L >= 11) + (L >= 17)); }
     else if (s.u && castLvl > s.l) for (let i = 0; i < castLvl - s.l; i++) expr += '+' + s.u;
     if (s.addMod) expr = withMod(expr, spellMod(c));
-    rollDice(`${s.n}${castLvl > s.l ? ` (${castLvl} ур.)` : ''}`, expr);
+    const r = rollDice(`${s.n}${castLvl > s.l ? ` (${castLvl} ур.)` : ''}`, expr);
+    return r && { ...r, expr };
   }
+  return null;
 }
+// Ячейки для сотворения: [{ key, label, lvl, left }] — key передаётся в spendSlot
+function slotOptions(c, s) {
+  if (+s.l === 0) return [{ key: 'free', label: 'Заговор', lvl: 0, left: 1 }];
+  const out = [];
+  c.slots.forEach((sl, i) => { if (i + 1 >= s.l && sl.max) out.push({ key: String(i), label: `${i + 1} уровень (${sl.max - sl.used}/${sl.max})`, lvl: i + 1, left: sl.max - sl.used }); });
+  if (c.pact.max && c.pact.level >= s.l) out.push({ key: 'pact', label: `Договор ${c.pact.level} ур. (${c.pact.max - c.pact.used}/${c.pact.max})`, lvl: c.pact.level, left: c.pact.max - c.pact.used });
+  if (s.rt) out.push({ key: 'ritual', label: 'Как ритуал (+10 мин)', lvl: +s.l, left: 1 });
+  out.push({ key: 'free', label: 'Без ячейки (умение/предмет)', lvl: +s.l, left: 1 });
+  return out;
+}
+function spendSlot(c, s, key) {
+  if (+s.l === 0) return { castLvl: 0, how: '' };
+  if (key === 'pact') { c.pact.used++; return { castLvl: c.pact.level, how: `ячейка договора ${c.pact.level} ур.` }; }
+  if (key === 'ritual') return { castLvl: +s.l, how: 'ритуал' };
+  if (key === 'free') return { castLvl: +s.l, how: 'без ячейки' };
+  c.slots[+key].used++;
+  return { castLvl: +key + 1, how: `ячейка ${+key + 1} ур.` };
+}
+
+/* ---------- Заклинания с областью и спасброском — для игрового стола ---------- */
+const SAVE_AB = { 'силы': 'str', 'ловкости': 'dex', 'телосложения': 'con', 'интеллекта': 'int', 'мудрости': 'wis', 'харизмы': 'cha' };
+// Форма и размер из дистанции и описания: «На себя (конус 15 фт)», «сферой радиусом 20 фт», «Линия 100×5 фт», «На себя (15 фт)»
+function spellArea(s) {
+  const r = String(s.r || ''), t = `${r} ${s.x || ''}`, num = (re) => { const m = t.match(re); return m ? +m[1] : 0; };
+  let shape = null, size = 0, width = 5;
+  if ((size = num(/конус\S*\s+(\d+)/i))) shape = 'cone';
+  else if ((size = num(/линия\S*\s+(\d+)/i))) { shape = 'line'; const w = t.match(/(\d+)\s*[×x]\s*(\d+)\s*фт/); if (w) width = +w[2]; }
+  else if ((size = num(/куб\S*\s+(\d+)/i))) shape = 'cube';
+  else if ((size = num(/(?:сфер|цилиндр)\S*\s+радиусом\s+(\d+)/i))) shape = 'sphere';
+  else if ((size = num(/^на себя\s*\((\d+)/i))) shape = 'aura';
+  else if ((size = num(/радиусом\s+(\d+)/i))) shape = 'sphere';
+  const sv = t.match(/спасброс\S*\s+(Силы|Ловкости|Телосложения|Интеллекта|Мудрости|Харизмы)/i);
+  const save = sv ? SAVE_AB[sv[1].toLowerCase()] : '';
+  if (!shape && save) shape = 'target';
+  if (!shape) return null;
+  const self = /^на себя/i.test(r);
+  return { shape, size, width, save, half: /половин\S* при успехе/i.test(s.x || ''), self, range: self ? 0 : /касан/i.test(r) ? 5 : parseInt(r) || 0,
+    heal: /восстанавлива\S* .*хит|лечит/i.test(s.x || '') && !save, dtype: dmgWord(s.x), act: /бонусн/i.test(s.t || '') ? 'bonus' : /реакц/i.test(s.t || '') ? 'reaction' : 'action' };
+}
+const hasEvasion = (c) => clsLvl(c, 'Плут') >= 7 || clsLvl(c, 'Монах') >= 7;
 const ATTACK_FIELDS = () => [
   { k: 'n', label: 'Название', full: true },
   { k: 'ability', label: 'Характеристика', type: 'select', options: [...ABILITIES.map((a) => [a.k, a.n]), ['fin', 'Сила или Ловкость (фехтовальное)'], ['spell', 'Заклинательная']] },
@@ -2373,12 +2446,8 @@ const ACT = {
     openModal(`<h2>Сотворить: ${esc(s.n)}</h2>${spellMetaHtml(s)}<p class="muted small">Выберите ячейку. ${s.u ? 'При ячейке выше уровня заклинания бросок усилится автоматически.' : ''}</p><div class="slot-choice">${btns}</div>`);
   },
   castWith(el) {
-    const c = ch(), s = findById(c.spells, el.dataset.id), slot = el.dataset.slot;
-    let castLvl = +s.l, how = '';
-    if (slot === 'pact') { c.pact.used++; castLvl = c.pact.level; how = `ячейка договора ${castLvl} ур.`; }
-    else if (slot === 'ritual') how = 'ритуал';
-    else if (slot === 'free') how = 'без ячейки';
-    else { c.slots[+slot].used++; castLvl = +slot + 1; how = `ячейка ${castLvl} ур.`; }
+    const c = ch(), s = findById(c.spells, el.dataset.id);
+    const { castLvl, how } = spendSlot(c, s, el.dataset.slot);
     closeModal();
     doCast(s, castLvl, how);
   },

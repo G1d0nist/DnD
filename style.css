@@ -461,3 +461,10 @@ button.stat:hover { border-color: var(--gold); }
   .hpctl button { padding: 6px 8px; }
   main { padding: 10px; }
 }
+.sv-area { padding: 6px 0; border-top: 1px solid var(--line); }
+.sv-area:first-of-type { border-top: 0; }
+.sv-row { display: flex; align-items: center; justify-content: space-between; gap: 8px; margin-top: 4px; }
+.sv-row input { width: 56px; }
+.lg.area { border-left-color: #e0703a; }
+.lg.save { border-left-color: var(--purple); }
+.tbl-board[data-tool="ruler"] { cursor: crosshair; }
