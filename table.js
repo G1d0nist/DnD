@@ -87,7 +87,7 @@ async function joinGame(code, charId) {
 function subscribe(gid, code) {
   unsubs.forEach((u) => u());
   unsubs = [];
-  game = { id: gid, code, meta: null, members: {}, tokens: {}, map: {}, init: null, econ: {}, log: {}, areas: {}, reveal: {}, seen: {} };
+  game = { id: gid, code, meta: null, members: {}, tokens: {}, map: {}, init: null, econ: {}, log: {}, areas: {}, reveal: {}, seen: {}, lights: {}, doors: {}, effects: {} };
   ls.set(GAME_KEY, JSON.stringify({ id: gid, code, uid: user.uid }));
   const lost = (e) => { if (String(e && e.code).includes('PERMISSION')) { app.toast('Нет доступа к игре — возможно, вас исключили'); leaveLocal(); renderAll(); } };
   const on = (p, fn) => unsubs.push(R.onValue(ref(gpath(p)), (s) => { if (game && game.id === gid) { fn(s.val()); renderAll(); } }, lost));
@@ -95,10 +95,13 @@ function subscribe(gid, code) {
   on('bgimg', (v) => { loadBg(v && v.data); });
   on('reveal', (v) => { game.reveal = v || {}; });
   on('seen', (v) => { game.seen = v || {}; });
-  on('members', (v) => { game.members = v || {}; });
-  on('tokens', (v) => { game.tokens = v || {}; cleanupInit(); });
+  on('lights', (v) => { game.lights = v || {}; drawTerrain(); });
+  on('doors', (v) => { game.doors = v || {}; drawTerrain(); });
+  on('effects', (v) => { game.effects = v || {}; syncEffects(); });
+  on('members', (v) => { game.members = v || {}; syncEffects(); });
+  on('tokens', (v) => { game.tokens = v || {}; cleanupInit(); syncEffects(); });
   on('map', (v) => { game.map = v || {}; drawTerrain(); });
-  on('init', (v) => { game.init = v; checkMyTurn(); checkNpcTurn(); cleanupInit(); });
+  on('init', (v) => { game.init = v; checkMyTurn(); checkNpcTurn(); cleanupInit(); syncEffects(); });
   on('econ', (v) => { game.econ = v || {}; });
   on('log', (v) => { game.log = v || {}; applyLog(); notifyLog(); fxLog(); });
   on('areas', (v) => { game.areas = v || {}; drawAreas(); notifyAreas(); autoNpcSaves(); });
@@ -157,7 +160,7 @@ function pushMyChar() {
       Object.assign(upd, { [`tokens/pc_${user.uid}/name`]: s.name, [`tokens/pc_${user.uid}/hp`]: s.hp, [`tokens/pc_${user.uid}/hpMax`]: s.hpMax,
         [`tokens/pc_${user.uid}/temp`]: s.temp, [`tokens/pc_${user.uid}/ac`]: s.ac, [`tokens/pc_${user.uid}/cond`]: s.cond, [`tokens/pc_${user.uid}/speed`]: s.speed,
         [`tokens/pc_${user.uid}/size`]: SIZE_N[s.size] || 1, [`tokens/pc_${user.uid}/init`]: s.init,
-        [`tokens/pc_${user.uid}/dsS`]: s.dsS || 0, [`tokens/pc_${user.uid}/dsF`]: s.dsF || 0 });
+        [`tokens/pc_${user.uid}/dsS`]: s.dsS || 0, [`tokens/pc_${user.uid}/dsF`]: s.dsF || 0, [`tokens/pc_${user.uid}/dv`]: s.dv || 0 });
     }
     R.update(ref(gpath()), upd).catch(() => {});
   }, 300);
@@ -166,7 +169,7 @@ function placeMyToken(x, y) {
   const m = me(), s = m && app.summary(m.charId);
   if (!s) { app.toast('Персонаж не найден на этом устройстве'); return; }
   R.set(ref(gpath(`tokens/pc_${user.uid}`)), { kind: 'pc', owner: user.uid, name: s.name, x, y, size: SIZE_N[s.size] || 1, color: colorOf(user.uid),
-    hp: s.hp, hpMax: s.hpMax, temp: s.temp, ac: s.ac, cond: s.cond, speed: s.speed, init: s.init });
+    hp: s.hp, hpMax: s.hpMax, temp: s.temp, ac: s.ac, cond: s.cond, speed: s.speed, init: s.init, dv: s.dv || 0 });
   lastSent = '';
 }
 
@@ -225,6 +228,19 @@ function drawTerrain() {
       g.stroke();
     }
   });
+  // Двери: закрытая — створка поперёк клетки, открытая — откинута к краю; запертая — с замком
+  Object.entries(game.doors || {}).forEach(([k, d]) => {
+    const [x, y] = k.split('_').map(Number), cx = x * CELL, cy = y * CELL;
+    g.save();
+    g.fillStyle = d.o ? 'rgba(120,80,40,.35)' : '#7a5230';
+    g.strokeStyle = '#d4a64a'; g.lineWidth = 2;
+    if (d.o) { g.fillRect(cx + 2, cy + 2, 7, CELL - 4); g.strokeRect(cx + 2, cy + 2, 7, CELL - 4); }
+    else { g.fillRect(cx + 3, cy + CELL / 2 - 7, CELL - 6, 14); g.strokeRect(cx + 3, cy + CELL / 2 - 7, CELL - 6, 14); g.fillStyle = '#f0c76a'; g.fillRect(cx + CELL - 12, cy + CELL / 2 - 2, 4, 4); }
+    if (d.l) { g.font = '13px system-ui'; g.fillText('🔒', cx + CELL / 2 - 7, cy + 13); }
+    g.restore();
+  });
+  // Источники света видит только мастер
+  if (isDM()) Object.values(game.lights || {}).forEach((L) => { g.font = '18px system-ui'; g.fillText('💡', L.x * CELL + 10, L.y * CELL + 27); });
   if (!bgImg || bg.grid) {
     g.strokeStyle = bgImg ? 'rgba(0,0,0,.35)' : 'rgba(255,255,255,.07)';
     g.beginPath();
@@ -264,12 +280,13 @@ function mapDialog() {
     ${bgSrc ? '<button class="danger" id="mDel">Убрать карту</button>' : ''}
     <h3 class="mt">Туман войны</h3>
     <div class="form-grid"><label>Режим<select id="fMode">${[['off', 'выключен'], ['vision', 'обзор персонажей + открытое мастером'], ['manual', 'только открытое мастером']].map(([v, n]) => `<option value="${v}" ${fog.mode === v ? 'selected' : ''}>${n}</option>`).join('')}</select></label>
-      <label>Дальность обзора, фт<input type="number" id="fSight" step="5" min="5" value="${fog.sight}"></label></div>
+      <label>Дальность обзора, фт<input type="number" id="fSight" step="5" min="5" value="${fog.sight}"></label>
+      <label>Освещение<select id="fAmb">${[['bright', 'яркий свет (день)'], ['dim', 'тусклый (сумерки)'], ['dark', 'темнота (подземелье, ночь)']].map(([v, n]) => `<option value="${v}" ${(fog.amb || 'bright') === v ? 'selected' : ''}>${n}</option>`).join('')}</select></label></div>
     <p class="muted small">Обзор: игроки видят клетки в пределах дальности от своих персонажей и союзников, стены его перекрывают. Увиденное остаётся на карте приглушённым, но существ там не видно. Кисти «👁 Открыть» и «🌫 Скрыть» в инструментах открывают и закрывают клетки вручную.</p>
     <button id="fReset">Забыть разведанное игроками</button>
     <div class="modal-actions"><button data-act="closeModal">Отмена</button><button class="primary" id="mOk">Сохранить</button></div>`);
   $('#mOk').onclick = async () => {
-    const upd = { 'meta/fog': { mode: $('#fMode').value, sight: Math.max(5, +$('#fSight').value || 60) } };
+    const upd = { 'meta/fog': { mode: $('#fMode').value, sight: Math.max(5, +$('#fSight').value || 60), amb: $('#fAmb').value } };
     let iw = 0, ih = 0;
     const file = $('#mFile').files[0], url = $('#mUrl').value.trim();
     try {
@@ -305,21 +322,53 @@ function lineClear(x0, y0, x1, y1) {
   for (let i = 1; i < n; i++) {
     const cx = Math.floor(x0 + (dx * i) / n), cy = Math.floor(y0 + (dy * i) / n);
     if (cx === Math.floor(x1) && cy === Math.floor(y1)) return true;
-    if ((game.map || {})[`${cx}_${cy}`] === 'wall') return false;
+    if ((game.map || {})[`${cx}_${cy}`] === 'wall' || doorShut(`${cx}_${cy}`)) return false;
   }
   return true;
 }
-// Что видит отряд: клетки в дальности обзора персонажей и союзников + открытые мастером
+// Освещённость клеток: 2 — яркий свет, 1 — тусклый, 0 — темнота. Общий свет (meta.fog.amb) + источники
+// на поле (lights) и в руках у существ (token.lt: b — яркий радиус, d — ещё столько же тусклого); стены и двери свет не пропускают
+const AMB = { bright: 2, dim: 1, dark: 0 };
+function lightMap() {
+  const base = AMB[fogSet().amb || 'bright'] ?? 2, lv = new Map();
+  if (base >= 2) return { at: () => 2 };
+  const srcs = [...Object.values(game.lights || {}).map((L) => ({ x: L.x + 0.5, y: L.y + 0.5, b: +L.b || 20, d: +L.d || 20 })),
+    ...Object.values(game.tokens || {}).filter((t) => t.lt && !(t.hidden && !isDM())).map((t) => { const s = t.size || 1; return { x: t.x + s / 2, y: t.y + s / 2, b: +t.lt.b || 0, d: +t.lt.d || 0 }; })];
+  srcs.forEach((L) => {
+    const rb = L.b / 5, rd = (L.b + L.d) / 5;
+    for (let x = Math.max(0, Math.floor(L.x - rd - 1)); x < Math.min(W(), Math.ceil(L.x + rd + 1)); x++)
+      for (let y = Math.max(0, Math.floor(L.y - rd - 1)); y < Math.min(H(), Math.ceil(L.y + rd + 1)); y++) {
+        const dd = Math.hypot(x + 0.5 - L.x, y + 0.5 - L.y), k = `${x}_${y}`;
+        if (dd > rd + 0.5 || (lv.get(k) || 0) >= 2 || !lineClear(L.x, L.y, x + 0.5, y + 0.5)) continue;
+        lv.set(k, Math.max(lv.get(k) || 0, dd <= rb + 0.5 ? 2 : 1));
+      }
+  });
+  return { at: (k) => Math.max(base, lv.get(k) || 0) };
+}
+// Что видит отряд: клетки в дальности обзора персонажей и союзников, где достаточно света (или в пределах
+// тёмного зрения), + открытые мастером. dark — клетки, видимые только тёмным зрением; dim — в тусклом свете
+let fogDim = new Set(), fogDark = new Set();
 function computeVision() {
   const f = fogSet(), vis = new Set(Object.keys(game.reveal || {}));
+  fogDim = new Set(); fogDark = new Set();
   if (f.mode === 'vision') {
-    const R2 = f.sight / 5;
-    Object.values(game.tokens || {}).filter((t) => team(t) === 'pc' && !isDead(t)).forEach((t) => {
-      const s = t.size || 1, ox = t.x + s / 2, oy = t.y + s / 2;
+    const R2 = f.sight / 5, L = lightMap();
+    Object.values(game.tokens || {}).filter((t) => team(t) === 'pc' && !isDown(t)).forEach((t) => {
+      const s = t.size || 1, ox = t.x + s / 2, oy = t.y + s / 2, dv = (+t.dv || 0) / 5;
       for (let x = Math.max(0, Math.floor(ox - R2 - 1)); x < Math.min(W(), Math.ceil(ox + R2 + 1)); x++)
         for (let y = Math.max(0, Math.floor(oy - R2 - 1)); y < Math.min(H(), Math.ceil(oy + R2 + 1)); y++) {
-          const inside = x >= t.x && x < t.x + s && y >= t.y && y < t.y + s;
-          if (inside || (Math.hypot(x + 0.5 - ox, y + 0.5 - oy) <= R2 + 0.5 && lineClear(ox, oy, x + 0.5, y + 0.5))) vis.add(`${x}_${y}`);
+          const k = `${x}_${y}`, inside = x >= t.x && x < t.x + s && y >= t.y && y < t.y + s, dd = Math.hypot(x + 0.5 - ox, y + 0.5 - oy);
+          if (!inside && (dd > R2 + 0.5 || !lineClear(ox, oy, x + 0.5, y + 0.5))) continue;
+          const lit = L.at(k);
+          if (lit >= 1 || inside || dd <= dv + 0.5) {
+            if (!vis.has(k) || fogDark.has(k) || fogDim.has(k)) {
+              // Тусклый свет и тёмное зрение — клетка видна, но приглушена (у кого лучше видно — того и берём)
+              const kind = lit >= 2 || inside ? 2 : lit === 1 ? 1 : 0;
+              const prev = vis.has(k) ? (fogDark.has(k) ? 0 : fogDim.has(k) ? 1 : 2) : -1;
+              if (kind > prev) { fogDim.delete(k); fogDark.delete(k); if (kind === 1) fogDim.add(k); if (kind === 0) fogDark.add(k); }
+            }
+            vis.add(k);
+          }
         }
     });
   }
@@ -340,7 +389,11 @@ function drawFog() {
   const player = !isDM() || fogPreview, seen = game.seen || {};
   for (let x = 0; x < W(); x++) for (let y = 0; y < H(); y++) {
     const k = `${x}_${y}`;
-    if (fogVis.has(k)) continue;
+    if (fogVis.has(k)) {
+      if (fogDim.has(k)) { g.fillStyle = 'rgba(0,0,0,.28)'; g.fillRect(x * CELL, y * CELL, CELL, CELL); }
+      else if (fogDark.has(k)) { g.fillStyle = 'rgba(14,16,30,.48)'; g.fillRect(x * CELL, y * CELL, CELL, CELL); }
+      continue;
+    }
     g.fillStyle = player ? (seen[k] ? 'rgba(10,8,6,.62)' : '#0a0806') : seen[k] ? 'rgba(0,0,0,.18)' : 'rgba(0,0,0,.42)';
     g.fillRect(x * CELL, y * CELL, CELL, CELL);
   }
@@ -374,7 +427,7 @@ function reachMap(sx, sy, limit, occ, crawl) {
       const nx = x + dx, ny = y + dy, k = `${nx}_${ny}`;
       if (nx < 0 || ny < 0 || nx >= W() || ny >= H()) continue;
       const T = TERRAIN[(game.map || {})[k]], o = occ && occ.get(k);
-      if ((T && T.block) || o === 'block') continue;
+      if ((T && T.block) || o === 'block' || doorShut(k)) continue;
       const nd = d + 5 + ((T && T.cost) || o === 'pass' ? 5 : 0) + (crawl ? 5 : 0);
       if (nd > limit || (dist.has(k) && dist.get(k) <= nd)) continue;
       dist.set(k, nd);
@@ -413,7 +466,7 @@ function renderTokens() {
     el.title = `${label}${showNums ? ` · ${t.hp}/${t.hpMax} хитов${t.ac ? ` · КД ${t.ac}` : ''}` : ''}${(t.cond || []).length ? ` · ${t.cond.map(condName).join(', ')}` : ''}${ec.dodge ? ' · уклоняется' : ''}${ec.dis ? ' · отходит' : ''}`;
     const html = `<div class="tok-face">${dead ? '☠' : esc((t.name || '?').trim().slice(0, 2))}</div>
       ${t.hpMax ? `<div class="tok-hp"><div style="width:${pct * 100}%;background:${pct > .5 ? '#5a9e5a' : pct > .25 ? '#d4a64a' : '#c94a3d'}"></div></div>` : ''}
-      <div class="tok-name">${esc(label || '')}${(t.cond || []).length ? ` <span class="tok-cond">●${t.cond.length}</span>` : ''}</div>`;
+      <div class="tok-name">${esc(label || '')}${fxOf(id).map(([, f]) => f.ic || '').join('').slice(0, 6)}${(t.cond || []).length ? ` <span class="tok-cond">●${t.cond.length}</span>` : ''}</div>`;
     // Пересоздавать содержимое только при изменении — иначе касание пальцем «теряет» токен посреди перетаскивания
     if (el._html !== html) { el.innerHTML = html; el._html = html; }
   });
@@ -448,13 +501,37 @@ function onDown(e) {
   if (tool === 'enemy') { newEnemyDialog(p.x, p.y); return; }
   // Размещение области: нажатие фиксирует её; для заклинания на одну цель — нажатие на существо
   if (cast) {
-    if (cast.area.shape === 'target') { if (tokEl) { cast.area.tgt = tokEl.dataset.tok; confirmCast(); } return; }
+    if (cast.area.shape === 'target') {
+      if (!tokEl) return;
+      const id = tokEl.dataset.tok, src = cast.caster && game.tokens[cast.caster];
+      if (cast.area.tgts) { // несколько целей: нажатие добавляет или убирает
+        const L = cast.area.tgts;
+        if (L.includes(id)) L.splice(L.indexOf(id), 1);
+        else if (src && cast.range && distFt(src, game.tokens[id]) > cast.range) app.toast(`Слишком далеко: дистанция ${cast.range} фт`);
+        else if (L.length >= cast.info.nT) app.toast(`Не больше ${cast.info.nT} целей`);
+        else L.push(id);
+        drawAreas(); renderCastBar();
+        if (L.length >= cast.info.nT) confirmCast();
+        return;
+      }
+      cast.area.tgt = id; confirmCast();
+      return;
+    }
     castFollow(p.px / CELL, p.py / CELL);
     confirmCast();
     return;
   }
   // Выбор цели атаки: нажатие на чужой токен — атака; по пустому месту и своему токену — как обычно
   if (aim && tokEl && tokEl.dataset.tok !== aim.from) { attackTarget(tokEl.dataset.tok); return; }
+  // Двери и свет: мастер ставит и убирает их кистью; дверь открывается нажатием инструментом «Двигать»
+  const ck = `${p.x}_${p.y}`;
+  if (tool === 'door' && isDM()) { R.update(ref(gpath('doors')), { [ck]: (game.doors || {})[ck] ? null : { o: 0 } }); return; }
+  if (tool === 'light' && isDM()) {
+    const lk = Object.keys(game.lights || {}).find((k) => game.lights[k].x === p.x && game.lights[k].y === p.y);
+    if (lk) R.remove(ref(gpath(`lights/${lk}`))); else R.set(ref(gpath(`lights/${R.push(ref(gpath('lights'))).key}`)), { x: p.x, y: p.y, b: 20, d: 20 });
+    return;
+  }
+  if (tool === 'move' && !tokEl && (game.doors || {})[ck]) { toggleDoor(ck, e.shiftKey); return; }
   if (TERRAIN[tool] || tool === 'erase' || tool === 'reveal' || tool === 'conceal') {
     drag = { kind: 'paint', pending: {}, root: tool === 'reveal' || tool === 'conceal' };
     paintAt(p);
@@ -504,7 +581,7 @@ function onMove(e) {
   if (!drag) {
     const over = game && e.target.closest && e.target.closest('#tblBoard');
     if (cast && over) {
-      if (cast.area.shape === 'target') { const tokEl = e.target.closest('[data-tok]'); cast.area.tgt = tokEl ? tokEl.dataset.tok : null; }
+      if (cast.area.shape === 'target') { const tokEl = e.target.closest('[data-tok]'); if (!cast.area.tgts) cast.area.tgt = tokEl ? tokEl.dataset.tok : null; }
       else { const p = cellAt(e); castFollow(p.px / CELL, p.py / CELL); }
       drawAreas();
       castHint(e);
@@ -558,7 +635,7 @@ function onUp(e) {
     const s = t.size || 1;
     const x = Math.max(0, Math.min(W() - s, Math.round((p.px - d.offX) / CELL))), y = Math.max(0, Math.min(H() - s, Math.round((p.py - d.offY) / CELL)));
     const T = TERRAIN[(game.map || {})[`${x}_${y}`]];
-    if (T && T.block) { app.toast('Там стена'); renderTokens(); return; }
+    if ((T && T.block) || doorShut(`${x}_${y}`)) { app.toast(T && T.block ? 'Там стена' : 'Дверь закрыта'); renderTokens(); return; }
     if (x === d.sx && y === d.sy) { renderTokens(); return; }
     const upd = { [`tokens/${d.id}/x`]: x, [`tokens/${d.id}/y`]: y };
     if (d.fight) {
@@ -637,7 +714,7 @@ const BEST = () => (typeof BESTIARY !== 'undefined' ? BESTIARY : []);
 function npcAttacks(t) {
   return (t.atk || []).map((a, i) => {
     const m = String(a.range || '').match(/(\d+)\s*\/\s*(\d+)/), reach = a.reach === 0 || a.reach === '0' ? 0 : +a.reach || (m ? 0 : 5);
-    return { id: 'n' + i, n: a.n, bonus: +a.hit || 0, dmg: a.dmg || '', type: a.type || '', rng: { reach, ...(m ? { near: +m[1], far: +m[2], thrown: !!reach } : {}) }, npc: true };
+    return { id: 'n' + i, n: a.n, bonus: +a.hit || 0, dmg: a.dmg || '', type: a.type || '', rng: { reach, ...(m ? { near: +m[1], far: +m[2], thrown: !!reach } : {}) }, npc: true, on: a.on || null };
   });
 }
 function newEnemyDialog(x, y, base) {
@@ -739,10 +816,13 @@ function npcAttackRoll(t, A, o) {
   ['blinded', 'frightened', 'poisoned', 'prone', 'restrained'].forEach((k) => { if (cond.includes(k)) dis.push(condName(k).toLowerCase()); });
   if (cond.includes('invisible')) adv.push('невидим');
   const mode = adv.length && !dis.length ? 1 : dis.length && !adv.length ? -1 : 0;
-  const r1 = die(20), r2 = die(20), nat = mode > 0 ? Math.max(r1, r2) : mode < 0 ? Math.min(r1, r2) : r1, total = nat + A.bonus;
+  // Кости эффектов (+1к4 «Благословения», −1к4 «Порчи»)
+  const ex = (o.dice || []).map((x) => { const neg = String(x.e).startsWith('-'), r = rollExpr(String(x.e).replace(/^[+-]/, '')); return { v: neg ? -r.total : r.total, n: x.n }; });
+  const exSum = ex.reduce((s, x) => s + x.v, 0);
+  const r1 = die(20), r2 = die(20), nat = mode > 0 ? Math.max(r1, r2) : mode < 0 ? Math.min(r1, r2) : r1, total = nat + A.bonus + exSum;
   const hit = nat !== 1 && (nat === 20 || total >= o.ac), crit = hit && (nat === 20 || !!o.autoCrit);
   let detail = mode ? `${mode > 0 ? 'преимущество' : 'помеха'} (${(mode > 0 ? adv : dis).join(', ')}) [${r1}, ${r2}]` : `к20 [${r1}]`;
-  detail += ` ${fmtMod(A.bonus)}`;
+  detail += ` ${fmtMod(A.bonus)}${ex.map((x) => ` ${x.v >= 0 ? '+' : '−'}${Math.abs(x.v)} (${x.n})`).join('')}`;
   if (!mode && adv.length && dis.length) detail += ' · преимущество и помеха взаимно отменились';
   const d = hit && A.dmg ? rollExpr(A.dmg, crit) : null;
   return { total, nat, detail, hit, crit, dmg: d ? d.total : 0, dmgDetail: d ? d.detail : '', type: A.type };
@@ -796,6 +876,9 @@ function currentEntry() {
 function nextTurn() {
   const l = initList();
   if (!l.length) return;
+  // Конец хода текущего существа: повторные спасброски («Удержание личности» и т. п.)
+  const ending = l[(game.init.turn || 0) % l.length];
+  if (ending && ending.tokenId) repeatSaves(ending.tokenId);
   let turn = (game.init.turn || 0) + 1, round = game.init.round || 1;
   if (turn >= l.length) { turn = 0; round += 1; addLog({ kind: 'sys', txt: `Раунд ${round}` }); }
   aim = null;
@@ -844,7 +927,10 @@ function charOf(t) {
   return (game.members[t.owner] || {}).char || null;
 }
 function moveInfo(id) {
-  const t = game.tokens[id], e = econ(id), speed = speedOf(t), cond = t.cond || [];
+  const t = game.tokens[id], e = econ(id), cond = t.cond || [];
+  // Скорость с эффектами: «Ускорение» — вдвое, «Замедление» — вдвое меньше, приём «Замедление» — −10 фт
+  let speed = speedOf(t);
+  fxOf(id).forEach(([, f]) => { if (f.spd === 'x2') speed *= 2; else if (f.spd === 'half') speed = Math.floor(speed / 10) * 5; else if (+f.spd) speed = Math.max(0, speed + +f.spd); });
   const incap = isDown(t) || cond.some((k) => INCAP.includes(k)), bonus = (charOf(t) || {}).bonus || [];
   const total = speed * (1 + (e.dash || 0));
   return { speed, total, used: e.move || 0, left: Math.max(0, total - (e.move || 0)), prone: cond.includes('prone'), incap, bonus,
@@ -888,11 +974,14 @@ function applyLog() {
   if (!game || !user) return;
   logList().forEach((e) => {
     const t = e.tgt && game.tokens[e.tgt];
-    if (!e.dmg || e.applied || !t || applying.has(e.k)) return;
+    if (!(e.dmg || e.heal) || e.applied || !t || applying.has(e.k)) return;
     if (t.kind === 'npc' ? !isDM() : t.owner !== user.uid) return;
     applying.add(e.k);
     const upd = { [`log/${e.k}/applied`]: true };
-    if (t.kind === 'npc') {
+    if (e.heal) {
+      if (t.kind === 'npc') Object.assign(upd, healUpd(e.tgt, t, e.heal));
+      else { const m = me(); if (m && m.charId) app.heal(m.charId, e.heal); }
+    } else if (t.kind === 'npc') {
       Object.assign(upd, npcDamageUpd(e.tgt, t, e.dmg, e.crit));
       if (isDead({ ...t, hp: upd[`tokens/${e.tgt}/hp`], dsF: upd[`tokens/${e.tgt}/dsF`] ?? t.dsF }) && !isDead(t)) upd[`log/${e.k}/down`] = true;
     } else {
@@ -940,6 +1029,7 @@ function renderLog() {
         <div><span class="lg-roll">${e.total}</span>${dm && e.ac ? ` против КД ${e.ac}` : ''} — ${res}${e.down ? ' · ☠ повержен' : ''}</div>
         <div class="muted small">${esc(e.detail || '')}${e.dmgDetail ? ` · урон: ${esc(e.dmgDetail)}` : ''}${e.way ? ` · ${esc(e.way)}` : ''} · ${time}</div></div>`;
     }
+    if (e.kind === 'heal') return `<div class="lg heal"><div><b>${esc(e.who)}</b> → <b>${esc(e.tgtName)}</b>: ${esc(e.txt)} — <b class="lg-heal">+${e.heal}</b> хитов</div><div class="muted small">${e.detail ? `${esc(e.detail)} · ` : ''}${time}</div></div>`;
     return `<div class="lg ${e.kind}"><div>${e.who ? `<b>${esc(e.who)}</b>: ` : ''}${esc(e.txt)}</div><div class="muted small">${e.detail ? `${esc(e.detail)} · ` : ''}${time}</div></div>`;
   }).join('') || '<p class="muted small">Здесь появятся атаки и действия участников.</p>';
 }
@@ -1012,12 +1102,34 @@ function attackTarget(tid) {
   if (tc.includes('invisible')) dis.push('цель невидима');
   if (ranged && d > r.near) dis.push('большая дистанция');
   if (ranged && foesNear(me_, a.from).length) dis.push('враг рядом');
-  const ro = { target: T.name, ac: +T.ac || 10, adv, dis, autoCrit: d <= 5 && (tc.includes('paralyzed') || tc.includes('unconscious')) };
+  // Эффекты: «Огонь фей» на цели, «Ослабление» на атакующем (помеха на одну атаку), «Досаждение» (преимущество по этой цели)
+  const used = [];
+  if (fxOf(tid).some(([, e]) => e.lit)) adv.push('цель светится');
+  fxOf(a.from).forEach(([k, e]) => {
+    if (e.sap) { dis.push('ослаблен'); used.push(k); }
+    if (e.vex === tid) { adv.push('досаждение'); used.push(k); }
+  });
+  const ac = acOf(T, tid);
+  const ro = { target: T.name, ac, adv, dis, dice: fxDice(a.from), autoCrit: d <= 5 && (tc.includes('paralyzed') || tc.includes('unconscious')) };
   const res = a.npc ? npcAttackRoll(me_, A, ro) : app.attack(a.charId, A.id, ro);
   if (!res) { aim = null; renderAll(); return; }
-  addLog({ kind: 'atk', who: me_.name, txt: A.n, tgt: tid, tgtName: T.name, total: res.total, nat: res.nat, ac: +T.ac || 10, hit: res.hit, crit: res.crit,
+  if (used.length) R.update(ref(gpath('effects')), Object.fromEntries(used.map((k) => [k, null]))).catch(() => {});
+  addLog({ kind: 'atk', who: me_.name, txt: A.n, tgt: tid, tgtName: T.name, total: res.total, nat: res.nat, ac, hit: res.hit, crit: res.crit,
     dmg: res.dmg, dtype: res.type, detail: res.detail, dmgDetail: res.dmgDetail, way: WAYS[a.way],
     from: a.from, anim: A.spell ? 'bolt' : ranged ? (r.thrown ? 'throw' : 'arrow') : 'melee' });
+  // Приёмы оружия (2024) и эффекты атак чудовищ
+  const mk = res.mastery, round = inFight() ? game.init.round || 1 : 0;
+  if (res.hit && mk === 'topple') saveRequest(tid, { n: 'Опрокидывание', who: me_.name, abil: 'con', dc: res.mdc, fail: { n: 'Опрокидывание', cond: 'prone', once: true } });
+  if (res.hit && mk === 'sap') addEffect(tid, { n: 'Ослабление', ic: '💫', sap: true, by: user.uid, from: a.from });
+  if (res.hit && res.dmg && mk === 'vex') addEffect(a.from, { n: 'Досаждение', ic: '🎯', vex: tid, by: user.uid, from: a.from });
+  if (res.hit && res.dmg && mk === 'slow') addEffect(tid, { n: 'Замедление (приём)', ic: '🐢', spd: -10, by: user.uid, from: a.from, until: round || null });
+  if (!res.hit && mk === 'graze' && res.mmod > 0)
+    addLog({ kind: 'atk', who: me_.name, txt: `${A.n} — Задевание`, tgt: tid, tgtName: T.name, total: res.total, ac, hit: false, graze: true, dmg: res.mmod, dtype: res.type, from: a.from });
+  if (res.hit && A.on && A.on.cond) {
+    const fail = { n: A.n, ic: '⛓', cond: A.on.cond, once: !A.on.rep && A.on.cond === 'prone' };
+    if (A.on.save) saveRequest(tid, { n: `${me_.name}: ${A.n}`, who: me_.name, abil: A.on.save, dc: A.on.dc, fail, rep: A.on.rep ? { abil: A.on.save, dc: A.on.dc } : null, from: a.from });
+    else addEffect(tid, { ...fail, by: user.uid, from: a.from });
+  }
   // Расход: первая атака тратит действие (остаток Дополнительной атаки — в atk), бонусное действие или реакцию
   const upd = {};
   if (a.way === 'action') { upd.a = 1; upd.atk = a.left - 1 || null; }
@@ -1082,7 +1194,7 @@ function areaCells(A) {
   return out;
 }
 function areaTokens(A) {
-  if (A.shape === 'target') return A.tgt && game.tokens[A.tgt] ? [A.tgt] : [];
+  if (A.shape === 'target') return (A.tgts && A.tgts.length ? A.tgts : A.tgt ? [A.tgt] : []).filter((id) => game.tokens[id]);
   const set = new Set(areaCells(A).map(([x, y]) => `${x}_${y}`));
   return Object.entries(game.tokens).filter(([id, t]) => {
     if ((A.shape === 'aura' && id === A.from) || (t.hidden && !isDM())) return false;
@@ -1109,8 +1221,10 @@ function drawAreas() {
     g.save();
     g.strokeStyle = col; g.lineWidth = 2; g.setLineDash(A.preview ? [6, 4] : []);
     if (A.shape === 'target') {
-      const t = game.tokens[A.tgt];
-      if (t) { const s = (t.size || 1) * CELL; g.beginPath(); g.arc(t.x * CELL + s / 2, t.y * CELL + s / 2, s / 2 + 4, 0, Math.PI * 2); g.stroke(); }
+      (A.tgts && A.tgts.length ? A.tgts : [A.tgt]).forEach((id) => {
+        const t = game.tokens[id];
+        if (t) { const s = (t.size || 1) * CELL; g.beginPath(); g.arc(t.x * CELL + s / 2, t.y * CELL + s / 2, s / 2 + 4, 0, Math.PI * 2); g.stroke(); }
+      });
     } else {
       const G = geo(A);
       g.fillStyle = rgba(col, A.preview ? 0.32 : 0.22);
@@ -1141,14 +1255,14 @@ function castFollow(mx, my) {
 function castInRange() {
   const A = cast.area, src = cast.caster && game.tokens[cast.caster];
   if (!src || !cast.range || cast.self || A.shape === 'aura') return true;
-  if (A.shape === 'target') return !!A.tgt && distFt(src, game.tokens[A.tgt]) <= cast.range;
+  if (A.shape === 'target') { const ids = areaTokens(A); return ids.length > 0 && ids.every((id) => distFt(src, game.tokens[id]) <= cast.range); }
   const cx = A.shape === 'cube' ? A.ox + A.size / 10 : A.ox;
   return distFt(src, { x: Math.floor(cx - 0.001), y: Math.floor(A.oy - 0.001), size: 1 }) <= cast.range
     || distFt(src, { x: Math.floor(cx), y: Math.floor(A.oy), size: 1 }) <= cast.range;
 }
 function castHint(e) {
   const A = cast.area, n = areaTokens(A).length;
-  hint(A.shape === 'target' ? (A.tgt ? `${game.tokens[A.tgt].name}${castInRange() ? '' : ' — слишком далеко'}` : 'выберите цель')
+  hint(A.tgts ? `цели ${A.tgts.length}/${cast.info.nT} — нажмите на существо` : A.shape === 'target' ? (A.tgt ? `${game.tokens[A.tgt].name}${castInRange() ? '' : ' — слишком далеко'}` : 'выберите цель')
     : `${castInRange() ? '' : 'слишком далеко · '}в области: ${n}`, e);
 }
 function startCast(c) {
@@ -1156,34 +1270,46 @@ function startCast(c) {
   cast = { ...c, self: !!I.self, range: I.range || 0,
     area: { n: I.n, shape: I.shape, size: I.size, width: I.width || 5, color: colorFor(I.dtype), from: I.shape === 'aura' ? c.caster : null } };
   if (I.shape === 'aura') { cast.area.ox = 0; confirmCast(); return; }
+  if (I.shape === 'target' && (I.nT || 1) > 1) cast.area.tgts = [];
   aim = null;
   renderAll();
-  app.toast(I.shape === 'target' ? `✨ ${esc(I.n)}: нажмите на цель` : `✨ ${esc(I.n)}: наведите область и нажмите на поле · Esc — отмена`);
+  app.toast(I.shape === 'target' ? `✨ ${esc(I.n)}: ${(I.nT || 1) > 1 ? `выберите до ${I.nT} целей и нажмите «Готово»` : 'нажмите на цель'}` : `✨ ${esc(I.n)}: наведите область и нажмите на поле · Esc — отмена`);
 }
 function cancelCast() { cast = null; hint(''); renderAll(); }
 // Игрок: список заклинаний с областью/спасброском → ячейка → размещение
 function openCast(id) {
   const m = me(), e = econ(id), turn = isTurnOf(id);
   if (!m || !m.charId) return;
-  const list = app.areaSpells(m.charId);
+  const list = app.areaSpells(m.charId, Object.keys(SPELL_FX));
   const can = (act) => !inFight() || (act === 'reaction' ? !e.r : turn && (act === 'bonus' ? !e.b : !e.a && !(e.atk > 0)));
   const ACT_N = { action: 'действие', bonus: 'бонусное', reaction: 'реакция' };
+  const what = (s) => {
+    const F = SPELL_FX[s.e];
+    if (F && F.heal) return ` · лечение ${esc(s.f)}${s.addMod ? '+мод.' : ''}${F.n ? `, до ${F.n} существ` : ''}`;
+    if (F && F.fx) return ` · ${esc(F.fx.n)}${(F.n || 1) > 1 ? `, до ${F.n} целей` : ''}`;
+    return `${s.save ? ` · спасбросок ${AB_N[s.save]} СЛ ${s.dc}` : ''}${s.f ? ` · ${esc(s.f)}${s.dtype ? ' ' + esc(s.dtype) : ''}` : ''}${F && F.fail && F.fail.cond ? ` · ${condName(F.fail.cond).toLowerCase()}` : ''}`;
+  };
   app.openModal(`<h2>✨ Заклинание</h2>
     <div class="list">${list.map((s) => `<button class="atk-pick" data-sp="${esc(s.id)}" ${can(s.act) ? '' : 'disabled'}>
       <b>${esc(s.n)} <span class="muted small">${s.l ? `${s.l} ур.` : 'заговор'}</span></b>
-      <span class="muted small">${SHAPE_N[s.shape]}${s.size ? ` ${s.size} фт` : ''}${s.range ? ` · дистанция ${s.range} фт` : s.self ? ' · от себя' : ''}${s.save ? ` · спасбросок ${AB_N[s.save]} СЛ ${s.dc}` : ''}${s.f ? ` · ${esc(s.f)}${s.dtype ? ' ' + esc(s.dtype) : ''}` : ''} · ${ACT_N[s.act]}</span></button>`).join('')
-      || '<p class="muted">Нет подготовленных заклинаний с областью или спасброском.</p>'}</div>
+      <span class="muted small">${SHAPE_N[s.shape]}${s.size ? ` ${s.size} фт` : ''}${s.range ? ` · дистанция ${s.range} фт` : s.self ? ' · от себя' : ''}${what(s)} · ${ACT_N[s.act]}</span></button>`).join('')
+      || '<p class="muted">Нет подготовленных заклинаний, которые можно применить на столе.</p>'}</div>
     <div class="modal-actions"><button data-act="closeModal">Отмена</button></div>`);
   $$('[data-sp]').forEach((b) => b.addEventListener('click', () => {
-    const I = list.find((x) => x.id === b.dataset.sp);
-    const go = (slotKey) => { app.closeModal(); startCast({ info: I, caster: id, charId: m.charId, slotKey }); };
+    const I = list.find((x) => x.id === b.dataset.sp), F = SPELL_FX[I.e];
+    // Число целей растёт с уровнем ячейки («Благословение»: 3 + 1 за уровень выше 1)
+    const go = (slotKey, lvl) => {
+      app.closeModal();
+      const nT = F && I.shape === 'target' ? (F.n || 1) + Math.max(0, (lvl || I.l) - I.l) * (F.up || 0) : 1;
+      startCast({ info: { ...I, fxDef: F || null, nT, pick: I.pick || !!(F && F.heal) }, caster: id, charId: m.charId, slotKey });
+    };
     const slots = I.slots.filter((s) => s.left > 0);
-    if (!I.l) { go('free'); return; }
+    if (!I.l) { go('free', 0); return; }
     if (!slots.length) { app.toast('Нет свободных ячеек'); return; }
-    $('#modalBody').innerHTML = `<h2>${esc(I.n)}</h2><p class="muted small">Выберите ячейку${I.u ? ` — выше уровня: +${esc(I.u)} за уровень` : ''}.</p>
-      <div class="slot-choice">${slots.map((s) => `<button data-slot="${s.key}">${esc(s.label)}</button>`).join('')}</div>
+    $('#modalBody').innerHTML = `<h2>${esc(I.n)}</h2><p class="muted small">Выберите ячейку${I.u ? ` — выше уровня: +${esc(I.u)} за уровень` : ''}${F && F.up ? ` — выше уровня: +${F.up} цель за уровень` : ''}.</p>
+      <div class="slot-choice">${slots.map((s) => `<button data-slot="${s.key}" data-lvl="${s.lvl}">${esc(s.label)}</button>`).join('')}</div>
       <div class="modal-actions"><button data-act="closeModal">Отмена</button></div>`;
-    $$('[data-slot]').forEach((x) => x.addEventListener('click', () => go(x.dataset.slot)));
+    $$('[data-slot]').forEach((x) => x.addEventListener('click', () => go(x.dataset.slot, +x.dataset.lvl)));
   }));
 }
 // Мастер: область без заклинания из листа (дыхание дракона, ловушка) — источник — выбранное существо
@@ -1219,18 +1345,24 @@ function confirmCast() {
   const tok = (id) => game.tokens[id], src = cast.caster && tok(cast.caster);
   const allies = src ? ids.filter((id) => team(tok(id)) === team(src)) : [];
   const pick = !!I.pick && A.shape !== 'target';
-  const nameHtml = (id) => `${esc(tok(id).name)}${allies.includes(id) ? ' (союзник)' : ''}`;
+  // Лечение и баффы — для своих: предупреждение об уроне союзникам не нужно, по умолчанию отмечены союзники
+  const F = I.fxDef, friendly = !!(F && (F.heal || F.fx));
+  const nameHtml = (id) => `${esc(tok(id).name)}${allies.includes(id) && !friendly ? ' (союзник)' : ''}`;
+  const descr = friendly ? (F.heal ? `Лечение ${esc(I.f)}${I.addMod ? ' + модификатор' : ''}` : `${esc(F.fx.n)}${I.cn ? ' · концентрация' : ''}`)
+    : `${I.save ? `Спасбросок <b>${AB_N[I.save]}</b>, СЛ <b>${I.dc}</b>` : 'Без спасброска'}${I.f ? ` · ${esc(I.f)} ${esc(I.dtype || '')}${I.save ? (I.half ? ', половина при успехе' : ', при успехе — без урона') : ''}` : ''}${F && F.fail && F.fail.cond ? ` · при провале: ${condName(F.fail.cond).toLowerCase()}` : ''}`;
   app.openModal(`<h2>✨ ${esc(I.n)}</h2>
-    <p class="small">${I.save ? `Спасбросок <b>${AB_N[I.save]}</b>, СЛ <b>${I.dc}</b>` : 'Без спасброска'}${I.f ? ` · ${esc(I.f)} ${esc(I.dtype || '')}${I.save ? (I.half ? ', половина при успехе' : ', при успехе — без урона') : ''}` : ''}</p>
+    <p class="small">${descr}</p>
     ${!ids.length ? '<p class="muted">В области никого нет.</p>'
-      : pick ? `<div class="atk-ways">${ids.map((id) => `<label class="check"><input type="checkbox" data-tg="${id}" ${allies.includes(id) ? '' : 'checked'}> ${nameHtml(id)}</label>`).join('')}</div>
-        <p class="muted small">Это заклинание затрагивает только выбранных вами существ.</p>`
+      : pick ? `<div class="atk-ways">${ids.map((id) => `<label class="check"><input type="checkbox" data-tg="${id}" ${allies.includes(id) === friendly ? 'checked' : ''}> ${nameHtml(id)}</label>`).join('')}</div>
+        <p class="muted small">Это заклинание затрагивает только выбранных вами существ${F && F.n ? ` (не больше ${F.n})` : ''}.</p>`
+      : friendly ? `<p>Цели: ${ids.map((id) => `<b>${esc(tok(id).name)}</b>`).join(', ')}</p>`
       : `<p>Задевает: ${ids.map((id) => `<b class="${allies.includes(id) ? 'warn-text' : ''}">${esc(tok(id).name)}${allies.includes(id) ? ' (союзник!)' : ''}</b>`).join(', ')}</p>
         ${allies.length ? '<p class="small warn-text">⚠ В области союзники — они тоже получат урон.</p>' : ''}`}
     <div class="modal-actions"><button id="cBack">Назад</button><button class="primary" id="cOk">✨ Сотворить</button></div>`);
   $('#cBack').onclick = () => { app.closeModal(); if (A.shape === 'aura') cancelCast(); };
   $('#cOk').onclick = () => {
-    const chosen = pick ? $$('[data-tg]').filter((x) => x.checked).map((x) => x.dataset.tg) : ids;
+    let chosen = pick ? $$('[data-tg]').filter((x) => x.checked).map((x) => x.dataset.tg) : ids;
+    if (F && F.n && A.shape !== 'target' && chosen.length > F.n) { app.toast(`Не больше ${F.n} существ`); chosen = chosen.slice(0, F.n); }
     app.closeModal();
     doCastArea(chosen);
   };
@@ -1240,16 +1372,36 @@ function doCastArea(chosen) {
   let roll = null;
   if (c.charId) { roll = app.castArea(c.charId, I.id, c.slotKey); if (!roll) { cancelCast(); return; } }
   else if (I.f) roll = app.rollFormula(I.f, I.n);
-  const src = c.caster && game.tokens[c.caster];
-  const keep = c.dm ? !!I.keepAlways : !!I.cn || !/мгновен/i.test(I.dur || '');
-  const lvlTxt = roll && roll.castLvl > I.l ? ` (${roll.castLvl} ур.)` : '';
-  const entry = { ...A, by: user.uid, who: src ? src.name : 'Мастер', n: I.n + lvlTxt, abil: I.save || '', dc: I.dc || 0, half: !!I.half,
+  const src = c.caster && game.tokens[c.caster], F = I.fxDef || null, names = chosen.map((id) => game.tokens[id].name).join(', ');
+  const lvlTxt = roll && roll.castLvl > I.l ? ` (${roll.castLvl} ур.)` : '', who = src ? src.name : 'Мастер';
+  const spend = () => { if ((c.charId || c.npcAct != null) && inFight()) R.update(ref(gpath(`econ/${c.caster}`)), { [I.act === 'bonus' ? 'b' : I.act === 'reaction' ? 'r' : 'a']: 1 }).catch(() => {}); };
+  const until = inFight() ? (game.init.round || 1) + durRounds(I.dur) : null, conc = I.cn ? c.caster : null;
+  // Лечение: всем выбранным столько, сколько выпало; применяют владельцы целей
+  if (F && F.heal) {
+    const amt = roll ? roll.dmg || 0 : 0;
+    chosen.forEach((id) => addLog({ kind: 'heal', who, txt: I.n + lvlTxt, tgt: id, tgtName: game.tokens[id].name, heal: amt, from: c.caster, detail: roll ? roll.dmgDetail : '' }));
+    if (A.shape !== 'target') addLog({ kind: 'area', who, txt: `✨ ${I.n}${lvlTxt}: +${amt} хитов · ${names}`, fx: fxShape({ ...A, color: '#5a9e5a' }) });
+    spend(); cast = null; hint(''); renderAll();
+    return;
+  }
+  // Бафф без спасброска: эффект на каждую цель; при концентрации пропадёт вместе с ней
+  if (F && F.fx) {
+    chosen.forEach((id) => addEffect(id, { ...F.fx, by: user.uid, from: c.caster, spell: I.n, conc, until }));
+    addLog({ kind: 'area', who, txt: `✨ ${I.n}${lvlTxt}: ${names || 'нет целей'}` });
+    spend(); cast = null; hint(''); renderAll();
+    return;
+  }
+  // Область на поле остаётся, если заклинание длится; одиночные цели с эффектом держатся эффектом, а не областью
+  const keep = c.dm ? !!I.keepAlways : (!!I.cn || !/мгновен/i.test(I.dur || '')) && A.shape !== 'target';
+  const entry = { ...A, by: user.uid, who, n: I.n + lvlTxt, abil: I.save || '', dc: I.dc || 0, half: !!I.half,
     expr: (roll && roll.expr) || I.f || '', dmg: roll ? roll.dmg || roll.total || 0 : 0, dmgDetail: roll ? roll.dmgDetail || roll.detail || '' : '', dtype: I.dtype || '', keep, t: Date.now(),
-    pick: !!I.pick, ck: src ? team(src) : '' };
+    pick: !!I.pick, ck: src ? team(src) : '', from: c.caster || null, spell: I.n, conc, until,
+    fail: F && F.fail ? F.fail : null, rep: F && F.rep && I.save ? { abil: I.save, dc: I.dc } : null };
   if (I.save && chosen.length) entry.tg = Object.fromEntries(chosen.map((id) => [id, { done: false }]));
   const k = R.push(ref(gpath('areas'))).key;
-  R.set(ref(gpath(`areas/${k}`)), entry).catch((err) => app.toast(`Не удалось создать область: ${esc(err.code || err.message)}`));
-  if ((c.charId || c.npcAct != null) && inFight()) R.update(ref(gpath(`econ/${c.caster}`)), { [I.act === 'bonus' ? 'b' : I.act === 'reaction' ? 'r' : 'a']: 1 }).catch(() => {});
+  R.set(ref(gpath(`areas/${k}`)), Object.fromEntries(Object.entries(entry).filter(([, v]) => v !== undefined)))
+    .catch((err) => app.toast(`Не удалось создать область: ${esc(err.code || err.message)}`));
+  spend();
   // Способность существа с перезарядкой (дыхание) — до броска к6 в начале его хода
   if (c.npcAct != null && src && ((src.acts || [])[c.npcAct] || {}).rech) R.update(ref(gpath(`tokens/${c.caster}/rech`)), { [c.npcAct]: 1 }).catch(() => {});
   addLog({ kind: 'area', who: entry.who, txt: `✨ ${entry.n}${entry.dmg ? ` — ${entry.dmg} ${entry.dtype || ''}` : ''}${I.save ? ` · спасбросок ${AB_N[I.save]} СЛ ${entry.dc}` : ''}${chosen.length ? ` · цели: ${chosen.map((id) => game.tokens[id].name).join(', ')}` : ''}`,
@@ -1273,15 +1425,21 @@ function finishArea(k, doneIds) {
 function saveMine(k, tid) {
   const A = game.areas[k], t = game.tokens[tid], m = me();
   if (!A || !t || !m || !m.charId || !(A.tg || {})[tid] || A.tg[tid].done) return;
-  const adv = econ(tid).dodge && A.abil === 'dex' ? ['Уклонение'] : [];
-  const r = app.rollSave(m.charId, A.abil, A.dc, { label: A.n, adv });
+  const dexAdv = A.abil === 'dex' && (econ(tid).dodge || fxOf(tid).some(([, e]) => e.dexAdv));
+  const r = app.rollSave(m.charId, A.abil, A.dc, { label: A.n, adv: dexAdv ? ['Уклонение / Ускорение'] : [], dice: fxDice(tid) });
   if (!r) return;
   const dmg = saveDmg(A, r.ok, (app.summary(m.charId) || {}).evasion);
   R.update(ref(gpath(`areas/${k}/tg/${tid}`)), { done: true, ok: r.ok, roll: r.total, dmg }).catch(() => {});
   if (dmg) app.takeDamage(m.charId, dmg);
+  saveOutcome(A, tid, r.ok);
   addLog({ kind: 'save', who: t.name, txt: `${A.n}: спасбросок ${AB_N[A.abil]} ${r.total} — ${r.ok ? 'успех' : 'провал'}${dmg ? `, ${dmg} ${A.dtype || 'урона'}` : ', без урона'}`, detail: r.detail,
     res: [{ id: tid, dmg, ok: r.ok }] });
   finishArea(k, [tid]);
+}
+// Итог спасброска против эффекта: провал — состояние/эффект; успех повторного спасброска — эффект снимается
+function saveOutcome(A, tid, ok) {
+  if (!ok && A.fail) applyFail(A, tid);
+  if (ok && A.rem) R.remove(ref(gpath(`effects/${A.rem}`))).catch(() => {});
 }
 // Спасброски существ бросает браузер мастера автоматически, как только они попали в область; итог — в журнале.
 // Бонус спасброска — из токена (sv), автопровал и преимущество/помеха — от состояний
@@ -1306,11 +1464,15 @@ function saveNpcs(k) {
     let ok, total, note = '';
     if ((A.abil === 'str' || A.abil === 'dex') && ((t.hpMax && (+t.hp || 0) <= 0) || cond.some((x) => AUTO_FAIL_T.includes(x)))) { ok = false; total = '—'; note = ' (автопровал)'; }
     else {
-      const mode = (econ(id).dodge && A.abil === 'dex' ? 1 : 0) - (cond.includes('restrained') && A.abil === 'dex' ? 1 : 0);
+      const dexAdv = A.abil === 'dex' && (econ(id).dodge || fxOf(id).some(([, e]) => e.dexAdv));
+      const mode = (dexAdv ? 1 : 0) - (cond.includes('restrained') && A.abil === 'dex' ? 1 : 0);
       const d1 = die(20), d2 = die(20), nat = mode > 0 ? Math.max(d1, d2) : mode < 0 ? Math.min(d1, d2) : d1;
-      total = nat + bonus; ok = total >= A.dc;
+      const ex = fxDice(id).map((x) => { const neg = String(x.e).startsWith('-'), r = rollExpr(String(x.e).replace(/^[+-]/, '')); return neg ? -r.total : r.total; });
+      total = nat + bonus + ex.reduce((s, v) => s + v, 0); ok = total >= A.dc;
       if (mode) note = mode > 0 ? ` (преим. ${d1}, ${d2})` : ` (помеха ${d1}, ${d2})`;
+      if (ex.length) note += ` (${ex.map((v) => (v >= 0 ? `+${v}` : `−${-v}`)).join(' ')})`;
     }
+    saveOutcome(A, id, ok);
     const dmg = saveDmg(A, ok, false), du = dmg ? npcDamageUpd(id, t, dmg, false) : {};
     const after = { ...t, hp: du[`tokens/${id}/hp`] ?? t.hp, dsF: du[`tokens/${id}/dsF`] ?? t.dsF }, died = !!dmg && isDead(after) && !isDead(t);
     upd[`areas/${k}/tg/${id}`] = { done: true, ok, roll: total, dmg };
@@ -1368,7 +1530,10 @@ function renderCastBar() {
   const bar = $('#tblCastBar');
   if (!bar) return;
   bar.hidden = !cast;
-  if (cast) bar.innerHTML = `✨ <b>${esc(cast.info.n)}</b>: ${cast.area.shape === 'target' ? 'нажмите на цель' : 'наведите область и нажмите на поле'}<button data-tbl="castOff">Отмена</button>`;
+  if (!cast) return;
+  const multi = cast.area.tgts;
+  bar.innerHTML = `✨ <b>${esc(cast.info.n)}</b>: ${multi ? `цели ${multi.length}/${cast.info.nT}` : cast.area.shape === 'target' ? 'нажмите на цель' : 'наведите область и нажмите на поле'}
+    <span>${multi && multi.length ? '<button class="primary" data-tbl="castDone">Готово</button>' : ''}<button data-tbl="castOff">Отмена</button></span>`;
 }
 // Линейка: расстояние по клеткам (диагональ — 5 фт)
 function drawRuler() {
@@ -1394,6 +1559,131 @@ function checkMyTurn() {
   if (game.init.round > 1) app.tickRound(m.charId);
 }
 
+/* ---------- Эффекты заклинаний, лечение и состояния ---------- */
+// games/{id}/effects/{key}: { tgt, n, ic, by (uid), from (токен заклинателя), spell, conc (заклинатель держит концентрацию),
+//   die ('1d4' / '-1d4' к атакам и спасброскам), ac, spd ('x2' | 'half' | число), dexAdv, lit (атаки по цели с преимуществом),
+//   sap (помеха на следующую атаку цели), vex (преимущество на следующую атаку по этому токену), cond / cond2 (состояния,
+//   пока эффект действует), once (только наложить состояние — эффект сразу снимается), rep ({ abil, dc } — повторный
+//   спасбросок в конце хода цели), until (последний раунд) }
+// Состояния накладывает и снимает браузер владельца цели: игрок — в своём листе, мастер — у существ.
+// Таблица заклинаний: heal — лечение; n/up — сколько целей (и +за уровень ячейки); fx — бафф без спасброска;
+// fail — что получает провалившая спасбросок цель; rep — повторный спасбросок в конце её хода
+const SPELL_FX = {
+  'Cure Wounds': { heal: 1 }, 'Healing Word': { heal: 1 }, 'Mass Healing Word': { heal: 1, n: 6 }, 'Mass Cure Wounds': { heal: 1, n: 6 }, 'Prayer of Healing': { heal: 1, n: 5 },
+  'Bless': { n: 3, up: 1, fx: { n: 'Благословение', ic: '✨', die: '1d4' } },
+  'Bane': { n: 3, up: 1, fail: { n: 'Порча', ic: '⬇', die: '-1d4' } },
+  'Shield of Faith': { n: 1, fx: { n: 'Щит веры', ic: '🛡', ac: 2 } },
+  'Haste': { n: 1, fx: { n: 'Ускорение', ic: '⚡', ac: 2, spd: 'x2', dexAdv: true } },
+  'Slow': { n: 6, fail: { n: 'Замедление', ic: '🐌', ac: -2, spd: 'half' }, rep: true },
+  'Hold Person': { n: 1, up: 1, fail: { n: 'Удержание', ic: '⛓', cond: 'paralyzed' }, rep: true },
+  'Hold Monster': { n: 1, up: 1, fail: { n: 'Удержание', ic: '⛓', cond: 'paralyzed' }, rep: true },
+  'Command': { n: 1, up: 1, fail: { n: 'Приказ «Пади»', cond: 'prone', once: true } },
+  'Blindness/Deafness': { n: 1, up: 1, fail: { n: 'Слепота', ic: '🙈', cond: 'blinded' }, rep: true },
+  'Cause Fear': { n: 1, up: 1, fail: { n: 'Страх', ic: '😱', cond: 'frightened' }, rep: true },
+  'Hideous Laughter': { n: 1, fail: { n: 'Жуткий смех', ic: '😂', cond: 'incapacitated', cond2: 'prone' }, rep: true },
+  "Tasha's Hideous Laughter": { n: 1, fail: { n: 'Жуткий смех', ic: '😂', cond: 'incapacitated', cond2: 'prone' }, rep: true },
+  'Entangle': { fail: { n: 'Опутывание', ic: '🌿', cond: 'restrained' } },
+  'Web': { fail: { n: 'Паутина', ic: '🕸', cond: 'restrained' } },
+  'Grease': { fail: { n: 'Скольжение', cond: 'prone', once: true } },
+  'Hypnotic Pattern': { fail: { n: 'Гипнотический узор', ic: '🌀', cond: 'charmed', cond2: 'incapacitated' } },
+  'Sleep': { fail: { n: 'Усыпление', ic: '💤', cond: 'incapacitated' }, rep: true },
+  'Faerie Fire': { fail: { n: 'Огонь фей', ic: '🔆', lit: true } },
+  'Fear': { fail: { n: 'Ужас', ic: '😱', cond: 'frightened' }, rep: true },
+};
+const fxOf = (tid) => Object.entries(game.effects || {}).filter(([, e]) => e.tgt === tid);
+const acOf = (t, id) => (+t.ac || 10) + fxOf(id).reduce((s, [, e]) => s + (+e.ac || 0), 0);
+const fxDice = (id) => fxOf(id).filter(([, e]) => e.die).map(([, e]) => ({ e: e.die, n: e.n }));
+const durRounds = (d) => { const m = String(d || '').match(/(\d+)\s*(минут|час|раунд)/); return !m ? 10 : m[2] === 'час' ? +m[1] * 600 : m[2] === 'раунд' ? +m[1] : +m[1] * 10; };
+function addEffect(tgt, spec) {
+  const k = R.push(ref(gpath('effects'))).key, clean = Object.fromEntries(Object.entries({ ...spec, tgt, t: Date.now() }).filter(([, v]) => v != null && v !== ''));
+  return R.set(ref(gpath(`effects/${k}`)), clean).catch((err) => app.toast(`Не удалось наложить эффект: ${esc(err.code || err.message)}`));
+}
+// Владелец цели: игрок — свой персонаж, мастер — существа
+const ownsTarget = (t) => (t.kind === 'pc' ? user && t.owner === user.uid : isDM());
+function setTokCond(id, cond, on) {
+  const t = game.tokens[id];
+  if (!t || !cond) return;
+  if (t.kind === 'pc') { const m = me(); if (m && m.charId && t.owner === user.uid) app.setCond(m.charId, cond, on); return; }
+  const list = new Set(t.cond || []);
+  if (on) list.add(cond); else list.delete(cond);
+  R.update(ref(gpath(`tokens/${id}`)), { cond: [...list] }).catch(() => {});
+}
+// Синхронизация эффектов: наложить/снять состояния у своих целей, снять эффекты по концентрации и времени
+const fxApplied = new Map();
+function syncEffects() {
+  if (!game || !user) return;
+  const eff = game.effects || {}, live = new Map();
+  Object.entries(eff).forEach(([k, e]) => {
+    const t = game.tokens[e.tgt];
+    if (!t || !ownsTarget(t)) return;
+    if (e.once) { // разовое состояние (сбит с ног): наложить и убрать эффект
+      if (!fxApplied.has(k)) { fxApplied.set(k, null); [e.cond, e.cond2].forEach((c) => setTokCond(e.tgt, c, true)); R.remove(ref(gpath(`effects/${k}`))).catch(() => {}); }
+      return;
+    }
+    if (e.cond || e.cond2) live.set(k, { tid: e.tgt, conds: [e.cond, e.cond2].filter(Boolean) });
+  });
+  live.forEach((v, k) => { if (!fxApplied.has(k)) { fxApplied.set(k, v); v.conds.forEach((c) => setTokCond(v.tid, c, true)); } });
+  fxApplied.forEach((v, k) => {
+    if (live.has(k) || eff[k]) return;
+    fxApplied.delete(k);
+    if (!v) return;
+    // Снять состояние, если его не держит другой эффект
+    v.conds.forEach((c) => { if (![...live.values()].some((o) => o.tid === v.tid && o.conds.includes(c))) setTokCond(v.tid, c, false); });
+  });
+  // Концентрация: заклинатель-персонаж сменил или потерял её, упал без сознания — его эффекты пропадают
+  const m = me(), mySum = m && m.charId ? app.summary(m.charId) : null, myTok = user && game.tokens[`pc_${user.uid}`];
+  const drop = Object.entries(eff).filter(([, e]) => e.conc && (
+    (e.by === user.uid && !isDM() && mySum && (mySum.conc !== e.spell || (myTok && isDown(myTok))))
+    || (isDM() && e.from && game.tokens[e.from] && game.tokens[e.from].kind === 'npc' && isDown(game.tokens[e.from]))
+    || (isDM() && e.from && !game.tokens[e.from])));
+  // Время действия: мастер снимает истёкшие в начале нового раунда
+  const round = game.init && game.init.active ? game.init.round || 1 : 0;
+  if (isDM() && round) Object.entries(eff).forEach(([k, e]) => { if (e.until && round > e.until && !drop.some(([x]) => x === k)) drop.push([k, e]); });
+  if (drop.length) R.update(ref(gpath('effects')), Object.fromEntries(drop.map(([k]) => [k, null]))).catch(() => {});
+}
+// Провал спасброска против заклинания или приёма: состояние / эффект на цель
+function applyFail(A, tid) {
+  if (!A.fail) return;
+  addEffect(tid, { ...A.fail, by: A.by, from: A.from, spell: A.spell, conc: A.conc, until: A.until, rep: A.rep && !A.fail.once ? A.rep : null });
+}
+// Запрос спасброска одной цели (приём оружия, атака чудовища, повторный спасбросок): та же панель «Спасброски»
+function saveRequest(tid, spec) {
+  const t = game.tokens[tid];
+  if (!t) return;
+  const k = R.push(ref(gpath('areas'))).key;
+  const A = { shape: 'target', tgt: tid, size: 0, by: user.uid, who: spec.who || '', n: spec.n, abil: spec.abil, dc: spec.dc, half: false, dmg: 0, keep: false,
+    color: '#9b6fd1', t: Date.now(), tg: { [tid]: { done: false } }, ...(spec.fail ? { fail: spec.fail } : {}), ...(spec.rem ? { rem: spec.rem } : {}),
+    ...(spec.rep ? { rep: spec.rep } : {}), ...(spec.from ? { from: spec.from } : {}) };
+  R.set(ref(gpath(`areas/${k}`)), A).catch(() => {});
+}
+// Конец хода: у кого «повторяет спасбросок в конце каждого своего хода» — запрос спасброска, успех снимает эффект
+function repeatSaves(tokenId) {
+  fxOf(tokenId).filter(([, e]) => e.rep && e.rep.abil).forEach(([k, e]) => saveRequest(tokenId, { n: `${e.n}: повторный спасбросок`, abil: e.rep.abil, dc: e.rep.dc, rem: k, who: e.n }));
+}
+// Лечение: применяет владелец цели (игрок — в листе, мастер — существу); на нуле хитов существо приходит в себя
+function healUpd(id, t, n) {
+  const p = `tokens/${id}/`;
+  return { [`${p}hp`]: Math.min(+t.hpMax || 1, (+t.hp || 0) + n), ...(isDown(t) ? { [`${p}dsS`]: null, [`${p}dsF`]: null } : {}) };
+}
+// Двери: мастер открывает, закрывает и (с Shift) запирает; игрок — если его персонаж рядом и сейчас его ход
+const doorShut = (k) => { const d = (game.doors || {})[k]; return !!d && !d.o; };
+function toggleDoor(k, shift) {
+  const d = game.doors[k], [x, y] = k.split('_').map(Number), dm = isDM();
+  if (dm && shift) { R.update(ref(gpath(`doors/${k}`)), { l: d.l ? 0 : 1, o: 0 }); app.toast(d.l ? 'Дверь отперта' : '🔒 Дверь заперта'); return; }
+  if (!dm) {
+    const my = game.tokens[`pc_${user.uid}`];
+    if (!my) return;
+    if (d.l) { app.toast('🔒 Заперто'); return; }
+    if (distFt(my, { x, y, size: 1 }) > 5) { app.toast('Дверь далеко — подойдите вплотную'); return; }
+    if (inFight() && !isTurnOf(`pc_${user.uid}`)) { app.toast('Сейчас не ваш ход'); return; }
+  }
+  if (d.o && Object.values(game.tokens).some((t) => t.x <= x && x < t.x + (t.size || 1) && t.y <= y && y < t.y + (t.size || 1))) { app.toast('В проёме кто-то стоит'); return; }
+  R.update(ref(gpath(`doors/${k}`)), { o: d.o ? 0 : 1 }).catch((err) => app.toast(`Не удалось: ${esc(err.code || err.message)}`));
+  const who = dm ? '' : (game.tokens[`pc_${user.uid}`] || {}).name;
+  if (who) addLog({ kind: 'act', who, txt: d.o ? 'закрывает дверь' : 'открывает дверь' });
+}
+const LIGHTS = [['', 'нет'], ['20/20', 'факел'], ['30/30', 'фонарь'], ['20/20', 'заговор «Свет»'], ['5/5', 'свеча'], ['60/60', 'фонарь «бычий глаз» (упрощённо)']];
+
 /* ---------- Анимации ---------- */
 // Запускаются у всех участников по новым записям журнала: снаряд или удар → число урона над целью,
 // вспышка области, ☠ при гибели. Записи, бывшие до открытия страницы, не анимируются.
@@ -1417,7 +1707,9 @@ function fxLog() {
     if (!animated.has(e.k)) {
       animated.add(e.k);
       if ((e.t || 0) < openedAt || Date.now() - (e.t || 0) > 15000) { if (e.down) skulls.add(e.k); return; }
-      if (e.kind === 'atk') fxAttack(e);
+      if (e.kind === 'atk' && e.graze) fxHit(e.tgt, e.dmg, {});
+      else if (e.kind === 'atk') fxAttack(e);
+      else if (e.kind === 'heal') floatText(e.tgt, `+${e.heal}`, 'fx-heal');
       else if (e.kind === 'area' && e.fx) fxArea(e.fx);
       else if (e.kind === 'save' && e.res) e.res.forEach((r, i) => setTimeout(() => fxHit(r.id, r.dmg, { saved: r.ok, down: r.down }), 200 + i * 140));
       if (e.down) skulls.add(e.k);
@@ -1589,6 +1881,8 @@ function renderTools() {
   $('#tblBoard').dataset.tool = tool; // курсор поля соответствует инструменту
   $('#tblTools').innerHTML = `<div class="seg">${t('move', '✋ Двигать', 'Перетаскивайте токены, по пустому месту — прокрутка')}${t('ruler', '📏 Линейка', 'Протяните, чтобы измерить расстояние')}
     ${isDM() ? t('wall', '▮ Стена') + t('difficult', '▦ Трудная') + t('water', '≈ Вода') + t('erase', '⌫ Ластик') + t('enemy', '＋ Существо', 'Нажмите на клетку, чтобы поставить врага или NPC из бестиария')
+      + t('door', '🚪 Дверь', 'Поставить или убрать дверь. Открыть — нажатием с «Двигать», запереть — с Shift')
+      + t('light', '💡 Свет', 'Поставить или убрать источник света (20 фт яркого + 20 тусклого)')
       + t('area', '◯ Область', 'Область со спасброском: дыхание, ловушка… Конус и линия — от выделенного существа')
       + `<button class="${freeMove ? 'on' : ''}" data-tbl="freeMove" title="Двигать любые токены без учёта хода и скорости (толчок, перенос тела). То же — перетаскивание с Shift">🔓 Свободно</button>`
       + `<button data-tbl="mapCfg" title="Карта-подложка, размер поля, туман войны">🗺 Карта и туман</button>`
@@ -1681,6 +1975,8 @@ function renderSide() {
     ${isDown(t) && usesDS(t) && nums ? `<div class="death-row"><span>Успехи ${pips(+t.dsS || 0, 'ok')}</span><span>Провалы ${pips(+t.dsF || 0, 'bad')}</span></div>` : ''}
     ${t.speed ? `<div class="muted small">Скорость ${t.speed} фт${t.init != null ? ` · инициатива ${t.init >= 0 ? '+' : ''}${t.init}` : ''}</div>` : ''}
     ${(t.cond || []).length ? `<div class="chips mt">${t.cond.map((c) => `<span class="chip on"><span>${esc(condName(c))}</span></span>`).join('')}</div>` : ''}
+    ${fxOf(selId).length ? `<div class="chips mt">${fxOf(selId).map(([k, f]) => `<span class="chip on" title="${esc(f.spell || '')}"><span>${f.ic || '✦'} ${esc(f.n || '')}</span>${dm || mine || f.by === user.uid ? `<button data-tbl="fxDel" data-k="${k}" title="Снять эффект">✕</button>` : ''}</span>`).join('')}</div>` : ''}
+    ${dm || mine ? `<div class="row gap wrap mt"><label>Свет <select data-tbl-light>${LIGHTS.map(([v, n], i) => `<option value="${i}" ${(t.lt ? +t.lt.i || 0 : 0) === i ? 'selected' : ''}>${n}${v ? ` (${v.replace('/', '+')} фт)` : ''}</option>`).join('')}</select></label></div>` : ''}
     ${dm && t.kind === 'npc' ? `${npcStatHtml(t)}
       ${isDead(t) ? '<p class="muted small">Тело остаётся на поле: его можно оживить лечением (например, для второй фазы боя) и вернуть в инициативу.</p>' : ''}
       <div class="row gap wrap mt"><label>Сторона <select data-tbl-side>${[['enemy', 'враг'], ['neutral', 'нейтральный'], ['ally', 'союзник игроков']].map(([v, n]) => `<option value="${v}" ${(t.side || 'enemy') === v ? 'selected' : ''}>${n}</option>`).join('')}</select></label>
@@ -1759,6 +2055,8 @@ async function onClick(e) {
     else if (a === 'fogPreview') { fogPreview = !fogPreview; renderAll(); }
     else if (a === 'freeMove') { freeMove = !freeMove; renderTools(); app.toast(freeMove ? '🔓 Свободное перемещение: токены двигаются без учёта хода и скорости' : 'Свободное перемещение выключено'); }
     else if (a === 'castOff') cancelCast();
+    else if (a === 'castDone') { if (cast) confirmCast(); }
+    else if (a === 'fxDel') await R.remove(ref(gpath(`effects/${b.dataset.k}`)));
     else if (a === 'saveMine') saveMine(b.dataset.k, b.dataset.id);
     else if (a === 'areaAgain') areaAgain(b.dataset.k);
     else if (a === 'areaDel') await R.remove(ref(gpath(`areas/${b.dataset.k}`)));
@@ -1788,6 +2086,10 @@ async function onClick(e) {
 document.addEventListener('click', (e) => { if (e.target.closest('#tab-table')) onClick(e); });
 document.addEventListener('change', (e) => {
   if (e.target.matches('[data-tbl-hidden]') && game && selId) R.update(ref(gpath(`tokens/${selId}`)), { hidden: e.target.checked });
+  if (e.target.matches('[data-tbl-light]') && game && selId) {
+    const i = +e.target.value, [b, d] = (LIGHTS[i][0] || '').split('/').map(Number);
+    R.update(ref(gpath(`tokens/${selId}`)), { lt: i ? { b, d, i } : null }).catch((err) => app.toast(`Не удалось: ${esc(err.code || err.message)}`));
+  }
   if (e.target.matches('[data-tbl-side]') && game && selId) R.update(ref(gpath(`tokens/${selId}`)), { side: e.target.value });
   if (e.target.matches('[data-tbl-ds]') && game && selId) R.update(ref(gpath(`tokens/${selId}`)), { dsOn: e.target.checked });
   if (e.target.matches('[data-tbl-sv]') && game && selId) R.update(ref(gpath(`tokens/${selId}/sv`)), { [e.target.dataset.tblSv]: +e.target.value || 0 });

@@ -213,14 +213,24 @@ window.dndApp = {
     return { name: c.info.name || 'Без имени', cls: classLabel(c), hp: +cb.hp || 0, hpMax: +cb.hpMax || 1, temp: +cb.temp || 0, ac: +cb.ac || 10,
       cond: [...cb.conditions, ...(cb.exhaustion ? [`истощение ${cb.exhaustion}`] : [])], conc: cb.conc || '', speed: curSpeed(c), init: initBonus(c), size: c.info.size || 'Средний',
       // Рывок и Отход бонусным действием: Хитрое действие плута, Шаг ветра / Терпеливая оборона монаха
-      bonus: clsLvl(c, 'Плут') >= 2 || clsLvl(c, 'Монах') >= 2 ? ['dash', 'dis'] : [], atks: attacksPerAction(c), evasion: hasEvasion(c), dsS: +cb.deathS || 0, dsF: +cb.deathF || 0 };
+      bonus: clsLvl(c, 'Плут') >= 2 || clsLvl(c, 'Монах') >= 2 ? ['dash', 'dis'] : [], atks: attacksPerAction(c), evasion: hasEvasion(c), dsS: +cb.deathS || 0, dsF: +cb.deathF || 0,
+      dv: +((String(c.prof.senses || '').match(/тёмное зрение\D*(\d+)/i) || [])[1] || 0) };
   },
   // Заклинания с областью или спасброском: подготовленные, всегда подготовленные и заговоры
-  areaSpells(id) {
+  // extra — английские названия заклинаний, которые стол умеет применять без области (лечение, баффы)
+  areaSpells(id, extra = []) {
     const c = state.chars[id];
     if (!c) return [];
-    return c.spells.filter((s) => +s.l === 0 || s.prep || s.always).map((s) => ({ s, a: spellArea(s) })).filter((x) => x.a)
-      .map(({ s, a }) => ({ id: s.id, n: s.n, l: +s.l, f: s.f || '', u: s.u || '', cn: !!s.cn, dur: s.d || '', dc: spellDC(c), slots: slotOptions(c, s), ...a }));
+    const plain = (s) => ({ shape: 'target', size: 0, width: 5, save: '', half: false, self: false, range: /касан/i.test(s.r || '') ? 5 : parseInt(s.r) || 0,
+      dtype: dmgWord(s.x), act: /бонусн/i.test(s.t || '') ? 'bonus' : /реакц/i.test(s.t || '') ? 'reaction' : 'action', pick: false });
+    return c.spells.filter((s) => +s.l === 0 || s.prep || s.always).map((s) => ({ s, a: spellArea(s) || (extra.includes(s.e) ? plain(s) : null) })).filter((x) => x.a)
+      .map(({ s, a }) => ({ id: s.id, e: s.e || '', n: s.n, l: +s.l, f: s.f || '', u: s.u || '', addMod: !!s.addMod, cn: !!s.cn, dur: s.d || '', dc: spellDC(c), slots: slotOptions(c, s), ...a }));
+  },
+  heal(id, n) {
+    if (!state.chars[id] || !(n > 0)) return;
+    if (state.current !== id) state.current = id;
+    tracked('лечение', () => applyHeal(n));
+    save(); render();
   },
   // Сотворить со стола: ячейка, концентрация и эффекты — как в листе; возвращает бросок урона (или null)
   castArea(id, spellId, slotKey) {
@@ -241,7 +251,7 @@ window.dndApp = {
     if (!state.chars[id]) return null;
     if (state.current !== id) { state.current = id; render(); }
     const c = ch(), a = ABILITIES.find((x) => x.k === abil);
-    const r = rollD20(`Спасбросок: ${a ? a.n : abil}${o.label ? ` — ${o.label}` : ''}`, saveBonus(c, abil), { kind: 'save', abil, dc, adv: o.adv, dis: o.dis });
+    const r = rollD20(`Спасбросок: ${a ? a.n : abil}${o.label ? ` — ${o.label}` : ''}`, saveBonus(c, abil), { kind: 'save', abil, dc, adv: o.adv, dis: o.dis, dice: o.dice });
     save(); render();
     return { total: r.total, nat: r.nat, ok: r.total >= dc, detail: r.detail || 'автоматический провал' };
   },
@@ -256,13 +266,16 @@ window.dndApp = {
     let res = null;
     tracked(`атака: ${A.n}`, () => {
       if (!spendAmmo(c, a)) return;
-      const r = rollD20(`${A.n} → ${o.target || 'цель'}`, A.bonus, { attack: true, kind: 'attack', weapon: !A.spell, adv: o.adv, dis: o.dis, ac: o.ac });
+      const r = rollD20(`${A.n} → ${o.target || 'цель'}`, A.bonus, { attack: true, kind: 'attack', weapon: !A.spell, adv: o.adv, dis: o.dis, ac: o.ac, dice: o.dice });
       const hit = r.nat !== 1 && (r.crit || r.total >= o.ac);
       const crit = hit && (r.crit || !!o.autoCrit);
       let d = null;
       if (hit) d = rollDice(`${crit ? 'КРИТ ' : ''}Урон: ${A.n}${A.type ? ` (${A.type})` : ''}`, A.cantrip ? withMod(crit ? scaleDice(A.dice, 2) : A.dice, A.mod) : dmgExpr(c, a, crit));
       ammoWarn(c, a);
-      res = { total: r.total, nat: r.nat, detail: r.detail, hit, crit, dmg: d ? Math.max(0, d.total) : 0, dmgDetail: d ? d.detail : '', type: A.type };
+      // Приём оружия: ключ, СЛ спасброска (8 + модификатор атаки + БМ) и модификатор (урон «Задевания»)
+      const mk = a && masteryActive(c, a) ? a.mastery : '';
+      res = { total: r.total, nat: r.nat, detail: r.detail, hit, crit, dmg: d ? Math.max(0, d.total) : 0, dmgDetail: d ? d.detail : '', type: A.type,
+        mastery: mk, mdc: a ? 8 + abilFor(c, a) + pb(c) : 0, mmod: a ? abilFor(c, a) : 0 };
     });
     save(); render();
     return res;
@@ -667,8 +680,16 @@ function rollD20(label, bonus, opts = {}) {
   // Надёжный талант: при проверке с владением результат кубика ниже 10 считается 10
   let used = nat;
   if (opts.floor10 && nat < 10) { used = 10; notes.push(`Надёжный талант: ${nat}→10`); }
-  const total = used + bonus - pen;
-  detail += ` ${fmt(bonus)}` + (pen ? ` −${pen} (истощение)` : '') + (notes.length ? ` · ${notes.join(', ')}` : '');
+  // Кости от эффектов стола: +1к4 «Благословения», −1к4 «Порчи»
+  let extraSum = 0;
+  const diceTxt = (opts.dice || []).map((x) => {
+    const neg = String(x.e).startsWith('-'), r = evalDice(String(x.e).replace(/^[+-]/, ''));
+    if (!r) return '';
+    extraSum += neg ? -r.total : r.total;
+    return ` ${neg ? '−' : '+'}${r.total} (${x.n})`;
+  }).join('');
+  const total = used + bonus - pen + extraSum;
+  detail += ` ${fmt(bonus)}` + diceTxt + (pen ? ` −${pen} (истощение)` : '') + (notes.length ? ` · ${notes.join(', ')}` : '');
   // Чемпион: критическое попадание оружием на 19–20 (с 15 уровня — на 18–20)
   const critAt = opts.weapon ? critMin(c) : 20;
   let cls = nat >= critAt && opts.attack ? 'crit' : nat === 20 ? 'crit' : nat === 1 ? 'fumble' : '';
@@ -2201,7 +2222,7 @@ function spellArea(s) {
   let shape = null, size = 0, width = 5;
   if ((size = num(/конус\S*\s+(\d+)/i))) shape = 'cone';
   else if ((size = num(/линия\S*\s+(\d+)/i))) { shape = 'line'; const w = t.match(/(\d+)\s*[×x]\s*(\d+)\s*фт/); if (w) width = +w[2]; }
-  else if ((size = num(/куб\S*\s+(\d+)/i))) shape = 'cube';
+  else if ((size = num(/(?:куб|квадрат)\S*\s+(\d+)/i))) shape = 'cube';
   else if ((size = num(/(?:сфер|цилиндр)\S*\s+радиусом\s+(\d+)/i))) shape = 'sphere';
   else if ((size = num(/^на себя\s*\((\d+)/i))) shape = 'aura';
   else if ((size = num(/радиусом\s+(\d+)/i))) shape = 'sphere';

@@ -45,6 +45,16 @@
         "reveal": {
           ".write": false
         },
+        "lights": {
+          ".write": false
+        },
+        "doors": {
+          "$cell": {
+            "o": {
+              ".write": "auth != null && root.child('games/' + $gameId + '/members/' + auth.uid).exists() && data.parent().exists() && data.parent().child('l').val() !== 1"
+            }
+          }
+        },
         "$other": {
           ".write": "auth != null && root.child('games/' + $gameId + '/members/' + auth.uid).exists()"
         }

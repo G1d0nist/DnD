@@ -294,7 +294,7 @@ button.stat:hover { border-color: var(--gold); }
 .tbl-sizer { position: relative; }
 .tbl-board { position: absolute; left: 0; top: 0; transform-origin: 0 0; user-select: none; touch-action: none; }
 .tbl-board canvas { position: absolute; left: 0; top: 0; pointer-events: none; }
-.tbl-board[data-tool="wall"], .tbl-board[data-tool="difficult"], .tbl-board[data-tool="water"], .tbl-board[data-tool="erase"], .tbl-board[data-tool="reveal"], .tbl-board[data-tool="conceal"], .tbl-board[data-tool="enemy"], .tbl-board[data-tool="place"] { cursor: crosshair; }
+.tbl-board[data-tool="wall"], .tbl-board[data-tool="difficult"], .tbl-board[data-tool="water"], .tbl-board[data-tool="erase"], .tbl-board[data-tool="reveal"], .tbl-board[data-tool="door"], .tbl-board[data-tool="light"], .tbl-board[data-tool="conceal"], .tbl-board[data-tool="enemy"], .tbl-board[data-tool="place"] { cursor: crosshair; }
 #tblTokens { position: absolute; inset: 0; }
 .tok { position: absolute; transition: left .35s ease, top .35s ease; cursor: default; touch-action: none; }
 .tok * { touch-action: none; }
@@ -502,3 +502,6 @@ button.stat:hover { border-color: var(--gold); }
 .tok.dead .tok-name { color: var(--muted); font-style: italic; }
 .lg.death { border-left-color: #8e6bb0; }
 #tblTools button.on[data-tbl="freeMove"] { border-color: var(--gold); background: #3b2e17; }
+.fx-heal { color: #7ddc7d; }
+.lg.heal { border-left-color: var(--green); }
+.lg-heal { color: #7ddc7d; }
