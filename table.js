@@ -92,7 +92,7 @@ function subscribe(gid, code) {
   on('map', (v) => { game.map = v || {}; drawTerrain(); });
   on('init', (v) => { game.init = v; checkMyTurn(); checkNpcTurn(); });
   on('econ', (v) => { game.econ = v || {}; });
-  on('log', (v) => { game.log = v || {}; applyLog(); notifyLog(); });
+  on('log', (v) => { game.log = v || {}; applyLog(); notifyLog(); fxLog(); });
   on('areas', (v) => { game.areas = v || {}; drawAreas(); notifyAreas(); autoNpcSaves(); });
   // Присутствие: онлайн, пока открыта вкладка
   unsubs.push(R.onValue(ref('.info/connected'), (s) => {
@@ -171,7 +171,7 @@ function layoutBoard() {
   b.style.transform = `scale(${zoom})`;
   $('#tblSizer').style.width = w * zoom + 'px';
   $('#tblSizer').style.height = h * zoom + 'px';
-  ['#tblTerrain', '#tblAreas', '#tblRange'].forEach((s) => { const cv = $(s); if (cv.width !== w || cv.height !== h) { cv.width = w; cv.height = h; } });
+  ['#tblTerrain', '#tblAreas', '#tblRange', '#tblFxCv'].forEach((s) => { const cv = $(s); if (cv.width !== w || cv.height !== h) { cv.width = w; cv.height = h; } });
   $('#tblZoom').textContent = Math.round(zoom * 100) + '%';
 }
 function drawTerrain() {
@@ -779,7 +779,8 @@ function attackTarget(tid) {
   const res = a.npc ? npcAttackRoll(me_, A, ro) : app.attack(a.charId, A.id, ro);
   if (!res) { aim = null; renderAll(); return; }
   addLog({ kind: 'atk', who: me_.name, txt: A.n, tgt: tid, tgtName: T.name, total: res.total, nat: res.nat, ac: +T.ac || 10, hit: res.hit, crit: res.crit,
-    dmg: res.dmg, dtype: res.type, detail: res.detail, dmgDetail: res.dmgDetail, way: WAYS[a.way] });
+    dmg: res.dmg, dtype: res.type, detail: res.detail, dmgDetail: res.dmgDetail, way: WAYS[a.way],
+    from: a.from, anim: A.spell ? 'bolt' : ranged ? (r.thrown ? 'throw' : 'arrow') : 'melee' });
   // Расход: первая атака тратит действие (остаток Дополнительной атаки — в atk), бонусное действие или реакцию
   const upd = {};
   if (a.way === 'action') { upd.a = 1; upd.atk = a.left - 1 || null; }
@@ -1015,7 +1016,7 @@ function doCastArea(chosen) {
   // Способность существа с перезарядкой (дыхание) — до броска к6 в начале его хода
   if (c.npcAct != null && src && ((src.acts || [])[c.npcAct] || {}).rech) R.update(ref(gpath(`tokens/${c.caster}/rech`)), { [c.npcAct]: 1 }).catch(() => {});
   addLog({ kind: 'area', who: entry.who, txt: `✨ ${entry.n}${entry.dmg ? ` — ${entry.dmg} ${entry.dtype || ''}` : ''}${I.save ? ` · спасбросок ${AB_N[I.save]} СЛ ${entry.dc}` : ''}${chosen.length ? ` · цели: ${chosen.map((id) => game.tokens[id].name).join(', ')}` : ''}`,
-    detail: entry.dmgDetail });
+    detail: entry.dmgDetail, fx: fxShape(entry) });
   if (!keep && !entry.tg) setTimeout(() => R.remove(ref(gpath(`areas/${k}`))).catch(() => {}), 8000);
   cast = null; hint('');
   renderAll();
@@ -1041,7 +1042,8 @@ function saveMine(k, tid) {
   const dmg = saveDmg(A, r.ok, (app.summary(m.charId) || {}).evasion);
   R.update(ref(gpath(`areas/${k}/tg/${tid}`)), { done: true, ok: r.ok, roll: r.total, dmg }).catch(() => {});
   if (dmg) app.takeDamage(m.charId, dmg);
-  addLog({ kind: 'save', who: t.name, txt: `${A.n}: спасбросок ${AB_N[A.abil]} ${r.total} — ${r.ok ? 'успех' : 'провал'}${dmg ? `, ${dmg} ${A.dtype || 'урона'}` : ', без урона'}`, detail: r.detail });
+  addLog({ kind: 'save', who: t.name, txt: `${A.n}: спасбросок ${AB_N[A.abil]} ${r.total} — ${r.ok ? 'успех' : 'провал'}${dmg ? `, ${dmg} ${A.dtype || 'урона'}` : ', без урона'}`, detail: r.detail,
+    res: [{ id: tid, dmg, ok: r.ok }] });
   finishArea(k, [tid]);
 }
 // Спасброски существ бросает браузер мастера автоматически, как только они попали в область; итог — в журнале.
@@ -1061,7 +1063,7 @@ function saveNpcs(k) {
   if (!A || !isDM()) return;
   const ids = Object.entries(A.tg || {}).filter(([id, v]) => !v.done && game.tokens[id] && game.tokens[id].kind === 'npc').map(([id]) => id);
   if (!ids.length) return;
-  const upd = {}, parts = [];
+  const upd = {}, parts = [], res = [];
   ids.forEach((id) => {
     const t = game.tokens[id], cond = t.cond || [], bonus = +((t.sv || {})[A.abil]) || 0;
     let ok, total, note = '';
@@ -1075,10 +1077,11 @@ function saveNpcs(k) {
     const dmg = saveDmg(A, ok, false), hp = Math.max(0, (+t.hp || 0) - dmg);
     upd[`areas/${k}/tg/${id}`] = { done: true, ok, roll: total, dmg };
     if (dmg) upd[`tokens/${id}/hp`] = hp;
+    res.push({ id, dmg, ok, down: !!dmg && hp === 0 });
     parts.push(`${t.name} ${total}${note} ${ok ? '✔' : '✘'}${dmg ? ` −${dmg}` : ''}${dmg && hp === 0 ? ' ☠' : ''}`);
   });
   R.update(ref(gpath()), upd).catch((err) => app.toast(`Ошибка: ${esc(err.code || err.message)}`));
-  addLog({ kind: 'save', who: '', txt: `${A.n} — спасброски ${AB_N[A.abil]} (СЛ ${A.dc}): ${parts.join('; ')}` });
+  addLog({ kind: 'save', who: '', txt: `${A.n} — спасброски ${AB_N[A.abil]} (СЛ ${A.dc}): ${parts.join('; ')}`, res });
   finishArea(k, ids);
 }
 // Повторное срабатывание (Духовные стражи, Лунный луч…): новый бросок урона и спасброски для тех, кто сейчас в области
@@ -1089,7 +1092,7 @@ function areaAgain(k) {
   const r = A.expr ? app.rollFormula(A.expr, A.n) : null, ids = areaTokens(A).filter((id) => !A.pick || !A.ck || game.tokens[id].kind !== A.ck);
   if (!ids.length) { app.toast('В области никого нет'); return; }
   R.update(ref(gpath(`areas/${k}`)), { dmg: r ? r.total : 0, dmgDetail: r ? r.detail : '', tg: Object.fromEntries(ids.map((id) => [id, { done: false }])) });
-  addLog({ kind: 'area', who: A.who, txt: `⟳ ${A.n}${r ? ` — ${r.total} ${A.dtype || ''}` : ''} · цели: ${ids.map((id) => game.tokens[id].name).join(', ')}`, detail: r ? r.detail : '' });
+  addLog({ kind: 'area', who: A.who, txt: `⟳ ${A.n}${r ? ` — ${r.total} ${A.dtype || ''}` : ''} · цели: ${ids.map((id) => game.tokens[id].name).join(', ')}`, detail: r ? r.detail : '', fx: fxShape(A) });
 }
 const notifiedSaves = new Set();
 function notifyAreas() {
@@ -1150,6 +1153,131 @@ function checkMyTurn() {
   app.toast('⚔ Ваш ход!', 'crit');
   // С начала 2-го раунда каждый ваш ход сдвигает эффекты в листе на раунд
   if (game.init.round > 1) app.tickRound(m.charId);
+}
+
+/* ---------- Анимации ---------- */
+// Запускаются у всех участников по новым записям журнала: снаряд или удар → число урона над целью,
+// вспышка области, ☠ при гибели. Записи, бывшие до открытия страницы, не анимируются.
+const animated = new Set(), skulls = new Set();
+let fxAreas = [], fxRaf = 0;
+const calm = () => !!(window.matchMedia && matchMedia('(prefers-reduced-motion: reduce)').matches);
+function fxShape(A) {
+  const g = geo(A);
+  return { shape: g.shape, size: g.size || 0, width: g.width || 5, ox: g.ox != null ? g.ox : 0, oy: g.oy != null ? g.oy : 0, ang: g.ang || 0,
+    r: g.r || null, tgt: g.tgt || null, color: A.color || colorFor(A.dtype) };
+}
+function tokCenter(id) {
+  const t = game.tokens[id];
+  if (!t || (t.hidden && !isDM())) return null;
+  const s = (t.size || 1) * CELL;
+  return { x: t.x * CELL + s / 2, y: t.y * CELL + s / 2, s };
+}
+function fxLog() {
+  if (!game) return;
+  logList().slice().reverse().forEach((e) => {
+    if (!animated.has(e.k)) {
+      animated.add(e.k);
+      if ((e.t || 0) < openedAt || Date.now() - (e.t || 0) > 15000) { if (e.down) skulls.add(e.k); return; }
+      if (e.kind === 'atk') fxAttack(e);
+      else if (e.kind === 'area' && e.fx) fxArea(e.fx);
+      else if (e.kind === 'save' && e.res) e.res.forEach((r, i) => setTimeout(() => fxHit(r.id, r.dmg, { saved: r.ok, down: r.down }), 200 + i * 140));
+      if (e.down) skulls.add(e.k);
+      return;
+    }
+    // Гибель от атаки отмечает браузер мастера чуть позже — тогда и показываем ☠
+    if (e.down && !skulls.has(e.k)) { skulls.add(e.k); setTimeout(() => floatText(e.tgt, '☠', 'fx-skull'), 250); }
+  });
+}
+function fxAttack(e) {
+  const A = tokCenter(e.from), B = tokCenter(e.tgt);
+  if (!B) return;
+  const impact = () => fxHit(e.tgt, e.hit ? e.dmg : null, { crit: e.crit, miss: !e.hit, down: e.down });
+  if (!A || calm()) { impact(); return; }
+  const color = colorFor(e.dtype);
+  if (e.anim === 'melee' || !e.anim) { fxSlash(B, color, e.crit); setTimeout(impact, 200); return; }
+  const dist = Math.hypot(B.x - A.x, B.y - A.y) || 1, ux = (B.x - A.x) / dist, uy = (B.y - A.y) / dist, side = (e.nat || 0) % 2 ? 1 : -1;
+  // Промах: снаряд проходит мимо цели
+  const end = e.hit ? B : { x: B.x + ux * CELL * 1.6 - uy * CELL * 0.55 * side, y: B.y + uy * CELL * 1.6 + ux * CELL * 0.55 * side };
+  const dur = Math.min(650, 160 + dist * 0.9);
+  fxProjectile(A, end, e.anim, color, e.hit ? dur : dur * 1.3);
+  setTimeout(impact, dur);
+}
+function fxEl(cls, color) {
+  const el = document.createElement('div');
+  el.className = cls;
+  if (color) el.style.setProperty('--c', color);
+  $('#tblFx').appendChild(el);
+  return el;
+}
+function fxProjectile(A, B, kind, color, dur) {
+  const el = fxEl(`fx-proj fx-${kind}`, color), ang = (Math.atan2(B.y - A.y, B.x - A.x) * 180) / Math.PI;
+  const at = (p, rot) => `translate(${p.x}px, ${p.y}px) rotate(${rot}deg)`;
+  const kf = kind === 'throw' ? [{ transform: at(A, ang) }, { transform: at(B, ang + 900) }]
+    : kind === 'bolt' ? [{ transform: `${at(A, ang)} scale(.5)`, opacity: 0.6 }, { transform: `${at(B, ang)} scale(1.15)`, opacity: 1 }]
+      : [{ transform: at(A, ang) }, { transform: at(B, ang) }];
+  el.animate(kf, { duration: dur, easing: kind === 'bolt' ? 'ease-in' : 'linear' }).onfinish = () => el.remove();
+}
+function fxSlash(B, color, crit) {
+  const el = fxEl(`fx-slash${crit ? ' crit' : ''}`, color), at = `translate(${B.x}px, ${B.y}px)`;
+  el.animate([{ transform: `${at} rotate(-100deg) scale(.6)`, opacity: 0 }, { opacity: 1, offset: 0.35 }, { transform: `${at} rotate(70deg) scale(1.15)`, opacity: 0 }],
+    { duration: 320, easing: 'ease-out' }).onfinish = () => el.remove();
+}
+// Попадание: встряска и вспышка токена, число урона; промах — уклон в сторону и «промах»
+function fxHit(id, dmg, o = {}) {
+  const face = $(`[data-tok="${id}"] .tok-face`);
+  if (face && !calm()) {
+    if (o.miss || (o.saved && !dmg)) face.animate([{ transform: 'none' }, { transform: 'translateX(9px)' }, { transform: 'none' }], { duration: 320, easing: 'ease-out' });
+    else face.animate([{ transform: 'none', filter: 'brightness(2.2) saturate(1.6)' }, { transform: 'translateX(-5px)' }, { transform: 'translateX(5px)' }, { transform: 'translateX(-3px)' }, { transform: 'none', filter: 'none' }],
+      { duration: o.crit ? 480 : 340 });
+  }
+  if (o.miss) floatText(id, 'промах', 'fx-miss');
+  else if (dmg) floatText(id, `${o.crit ? 'КРИТ! ' : ''}−${dmg}`, o.crit ? 'fx-crit' : o.saved ? 'fx-dmg half' : 'fx-dmg');
+  else if (o.saved) floatText(id, 'спасся', 'fx-miss');
+  if (o.down) setTimeout(() => floatText(id, '☠', 'fx-skull'), 450);
+}
+const floatAt = {}; // несколько чисел над одной целью подряд — друг над другом, а не внахлёст
+function floatText(id, text, cls) {
+  const c = tokCenter(id);
+  if (!c) return;
+  const now = Date.now(), prev = floatAt[id], n = prev && now - prev.t < 700 ? prev.n + 1 : 0;
+  floatAt[id] = { t: now, n };
+  const el = fxEl(`fx-float ${cls}`), y = c.y - c.s / 2 - n * 22;
+  el.textContent = text;
+  el.animate([{ transform: `translate(${c.x}px, ${y}px) translate(-50%, 0) scale(.6)`, opacity: 0 },
+    { transform: `translate(${c.x}px, ${y - 14}px) translate(-50%, 0) scale(1.15)`, opacity: 1, offset: 0.18 },
+    { transform: `translate(${c.x}px, ${y - 46}px) translate(-50%, 0) scale(1)`, opacity: 0 }],
+  { duration: calm() ? 1600 : 1400, easing: 'ease-out' }).onfinish = () => el.remove();
+}
+// Вспышка области: сфера и конус «раскрываются» от точки начала, линия — бьёт лучом, затем гаснут
+function fxArea(f) {
+  if (calm()) return;
+  fxAreas.push({ f, t0: performance.now() });
+  if (f.shape === 'sphere' && f.size >= 20) $('#tblBoard').animate([{ translate: '0 0' }, { translate: '3px -2px' }, { translate: '-3px 2px' }, { translate: '2px 1px' }, { translate: '0 0' }], { duration: 300, delay: 250 });
+  if (!fxRaf) fxRaf = requestAnimationFrame(fxFrame);
+}
+function fxFrame(now) {
+  const cv = $('#tblFxCv'), g = cv.getContext('2d'), D = 1000;
+  g.clearRect(0, 0, cv.width, cv.height);
+  fxAreas = fxAreas.filter((a) => now - a.t0 < D);
+  fxAreas.forEach(({ f, t0 }) => {
+    const p = (now - t0) / D, grow = 1 - Math.pow(1 - Math.min(1, p * 2.2), 3), alpha = p < 0.35 ? 0.7 : 0.7 * (1 - (p - 0.35) / 0.65);
+    g.save();
+    if (f.shape === 'target') {
+      const c = tokCenter(f.tgt);
+      if (c) { g.fillStyle = rgba(f.color, alpha); g.beginPath(); g.arc(c.x, c.y, (c.s / 2 + 10) * grow, 0, Math.PI * 2); g.fill(); }
+    } else {
+      const s = f.shape === 'cube' || f.shape === 'aura' ? f : { ...f, size: f.size * grow, r: f.r ? f.r * grow : null };
+      g.fillStyle = rgba(f.color, alpha * 0.8); g.strokeStyle = `rgba(255,255,255,${alpha})`; g.lineWidth = 3;
+      g.beginPath(); shapePath(g, s); g.fill(); g.stroke();
+      if (f.shape === 'sphere') { // раскалённое ядро
+        const r = ((f.r || f.size / 5) * CELL) * grow * 0.55, gr = g.createRadialGradient(f.ox * CELL, f.oy * CELL, 0, f.ox * CELL, f.oy * CELL, Math.max(1, r));
+        gr.addColorStop(0, `rgba(255,255,230,${alpha})`); gr.addColorStop(1, 'rgba(255,255,230,0)');
+        g.fillStyle = gr; g.beginPath(); g.arc(f.ox * CELL, f.oy * CELL, Math.max(1, r), 0, Math.PI * 2); g.fill();
+      }
+    }
+    g.restore();
+  });
+  fxRaf = fxAreas.length ? requestAnimationFrame(fxFrame) : 0;
 }
 
 /* ---------- Отрисовка ---------- */
