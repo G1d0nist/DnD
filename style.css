@@ -516,3 +516,6 @@ button.stat:hover { border-color: var(--gold); }
 .lg.roll.crit .lg-roll { color: #7ddc7d; }
 .lg.roll.fumble .lg-roll { color: #f3b1a8; }
 .lg.secret { opacity: .75; border-left-style: dashed; }
+.tok-face.img { background-size: cover; background-position: center; background-color: var(--tc); }
+.btn-file { display: inline-flex; align-items: center; padding: 6px 11px; border: 1px solid var(--line); border-radius: 8px; background: var(--card2); cursor: pointer; font-size: 14px; }
+.btn-file:hover { border-color: var(--gold); }

@@ -210,11 +210,13 @@ window.dndApp = {
     const c = state.chars[id];
     if (!c) return null;
     const cb = c.combat;
-    return { name: (c.info.name || 'Без имени') + (c.shape ? ` (${c.shape.n})` : ''), cls: classLabel(c), hp: +cb.hp || 0, hpMax: +cb.hpMax || 1, temp: +cb.temp || 0, ac: +cb.ac || 10,
+    return { name: (c.info.name || 'Без имени') + (c.shape ? ` (${c.shape.n})` : ''), img: c.info.portrait || '', cls: classLabel(c), hp: +cb.hp || 0, hpMax: +cb.hpMax || 1, temp: +cb.temp || 0, ac: +cb.ac || 10,
       cond: [...cb.conditions, ...(cb.exhaustion ? [`истощение ${cb.exhaustion}`] : [])], conc: cb.conc || '', speed: curSpeed(c), init: initBonus(c), size: c.info.size || 'Средний',
       // Рывок и Отход бонусным действием: Хитрое действие плута, Шаг ветра / Терпеливая оборона монаха
       bonus: clsLvl(c, 'Плут') >= 2 || clsLvl(c, 'Монах') >= 2 ? ['dash', 'dis'] : [], atks: attacksPerAction(c), evasion: hasEvasion(c), dsS: +cb.deathS || 0, dsF: +cb.deathF || 0,
-      dv: +((String(c.prof.senses || '').match(/тёмное зрение\D*(\d+)/i) || [])[1] || 0) };
+      dv: +((String(c.prof.senses || '').match(/тёмное зрение\D*(\d+)/i) || [])[1] || 0),
+      // Спасброски Силы и Ловкости — цель захвата или толчка выбирает лучший
+      svs: [saveBonus(c, 'str'), saveBonus(c, 'dex')], grapDC: 8 + am(c, 'str') + pb(c) };
   },
   // Заклинания с областью или спасброском: подготовленные, всегда подготовленные и заговоры
   // extra — английские названия заклинаний, которые стол умеет применять без области (лечение, баффы)
@@ -225,6 +227,53 @@ window.dndApp = {
       dtype: dmgWord(s.x), act: /бонусн/i.test(s.t || '') ? 'bonus' : /реакц/i.test(s.t || '') ? 'reaction' : 'action', pick: false });
     return c.spells.filter((s) => +s.l === 0 || s.prep || s.always).map((s) => ({ s, a: spellArea(s) || (extra.includes(s.e) ? plain(s) : null) })).filter((x) => x.a)
       .map(({ s, a }) => ({ id: s.id, e: s.e || '', n: s.n, l: +s.l, f: s.f || '', u: s.u || '', addMod: !!s.addMod, cn: !!s.cn, dur: s.d || '', dc: spellDCFor(c, s), slots: slotOptions(c, s), ...a }));
+  },
+  // Портрет персонажа (маленький JPEG) — хранится в листе, стол показывает его на токене
+  setPortrait(id, data) { const c = state.chars[id]; if (!c) return; c.info.portrait = data || ''; c.updatedAt = Date.now(); if (c === ch()) { save(); render(); } else lsSet(STORE, JSON.stringify(state)); },
+  // Спутники: список для стола и изменение хитов (урон/лечение со стола)
+  companions(id) { const c = state.chars[id]; return c ? (c.companions || []) : []; },
+  compHp(id, compId, delta) {
+    const c = state.chars[id], p = c && (c.companions || []).find((x) => x.id === compId);
+    if (!p) return;
+    if (state.current !== id) state.current = id;
+    tracked(delta < 0 ? 'урон спутнику' : 'лечение спутника', () => { p.hp = clamp(p.hp + delta, 0, p.hpMax); });
+    save(); render();
+  },
+  // Боевые возможности для окна атаки на столе: приёмы превосходства, Божественная кара, Скрытая атака, «Щит»
+  combatOpts(id) {
+    const c = state.chars[id];
+    if (!c) return {};
+    const sup = c.resources.find((x) => x.auto === 'superiority');
+    const smite = c.spells.find((s) => s.e === 'Divine Smite' && (s.prep || s.always));
+    const shield = c.spells.find((s) => s.e === 'Shield' && (s.prep || s.always));
+    return {
+      maneuvers: sup ? ((c.cpicks || {}).man || []) : [], supLeft: sup ? sup.max - sup.used : 0, supDie: supDie(c),
+      smiteSlots: smite ? slotOptions(c, smite).filter((s) => s.left > 0 && s.key !== 'free' && s.key !== 'ritual') : [],
+      sneak: Math.ceil(clsLvl(c, 'Плут') / 2),
+      shieldSlots: shield ? slotOptions(c, shield).filter((s) => s.left > 0 && s.key !== 'free' && s.key !== 'ritual') : [], shieldId: shield ? shield.id : '',
+      grapDC: 8 + am(c, 'str') + pb(c), svStr: saveBonus(c, 'str'), svDex: saveBonus(c, 'dex'),
+    };
+  },
+  // Вырваться из захвата: проверка Атлетики или Акробатики (что лучше) против СЛ
+  escape(id, dc) {
+    if (!state.chars[id]) return null;
+    if (state.current !== id) state.current = id;
+    const c = ch(), ath = SKILLS.find((s) => s.k === 'athletics'), acr = SKILLS.find((s) => s.k === 'acrobatics');
+    const s = skillBonus(c, ath) >= skillBonus(c, acr) ? ath : acr;
+    const r = rollD20(`Вырваться из захвата (${s.n}, СЛ ${dc})`, skillBonus(c, s), { kind: 'check', abil: s.a, skill: s.k, dc });
+    save(); render();
+    return { total: r.total, ok: r.total >= dc, skill: s.n };
+  },
+  // «Щит» реакцией: тратит ячейку, как в листе
+  castShield(id, slotKey) {
+    if (!state.chars[id]) return null;
+    if (state.current !== id) state.current = id;
+    const c = ch(), s = c.spells.find((x) => x.e === 'Shield');
+    if (!s) return null;
+    let r = null;
+    tracked('Щит', () => { r = spendSlot(c, s, slotKey); toast('🛡 Щит: +5 КД до начала вашего хода'); });
+    save(); render();
+    return r;
   },
   // Выполнить fn без отправки бросков в общий журнал (стол пишет туда сам)
   mute(fn) { rollMute++; try { return fn(); } finally { rollMute--; } },
@@ -286,17 +335,31 @@ window.dndApp = {
     let res = null;
     tracked(`атака: ${A.n}`, () => {
       if (!spendAmmo(c, a)) return;
-      const r = rollD20(`${A.n} → ${o.target || 'цель'}`, A.bonus, { attack: true, kind: 'attack', weapon: !A.spell, adv: o.adv, dis: o.dis, ac: o.ac, dice: o.dice });
+      // Приём превосходства (Мастер боевых искусств): «Точная атака» — кость к броску атаки, остальные — к урону при попадании
+      const sup = o.maneuver && c.resources.find((x) => x.auto === 'superiority' && x.used < x.max), sd = `1d${supDie(c)}`;
+      const dice = [...(o.dice || []), ...(sup && o.maneuver === 'Точная атака' ? [{ e: sd, n: 'Точная атака' }] : [])];
+      if (sup && o.maneuver === 'Точная атака') sup.used += 1;
+      const r = rollD20(`${A.n} → ${o.target || 'цель'}`, A.bonus, { attack: true, kind: 'attack', weapon: !A.spell, adv: o.adv, dis: o.dis, ac: o.ac, dice });
       const hit = r.nat !== 1 && (r.crit || r.total >= o.ac);
       const crit = hit && (r.crit || !!o.autoCrit);
+      let expr = A.beast ? (crit ? scaleDice(A.dmg, 2) : A.dmg) : A.cantrip ? withMod(crit ? scaleDice(A.dice, 2) : A.dice, A.mod) : A.dmg ? dmgExpr(c, a, crit) : '';
+      const extra = [], X = (e) => (crit ? scaleDice(e, 2) : e);
+      // Скрытая атака: раз в ход, фехтовальное или дальнобойное, есть преимущество или союзник рядом с целью (и нет помехи)
+      const sneakDice = Math.ceil(clsLvl(c, 'Плут') / 2);
+      if (hit && o.sneakOk && sneakDice && A.fin && (r.mode > 0 || (o.allyNear && r.mode === 0))) { expr += `+${X(`${sneakDice}d6`)}`; extra.push('Скрытая атака'); }
+      // Божественная кара: ячейка тратится только при попадании, 2к8 + 1к8 за уровень выше 1
+      let smite = 0;
+      const smSpell = o.smite && c.spells.find((s) => s.e === 'Divine Smite');
+      if (hit && smSpell && !A.spell) { smite = spendSlot(c, smSpell, o.smite).castLvl || 1; expr += `+${X(`${1 + smite}d8`)}`; extra.push(`Божественная кара (${smite} ур.)`); }
+      if (hit && sup && o.maneuver !== 'Точная атака') { sup.used += 1; expr += `+${X(sd)}`; extra.push(o.maneuver); }
       let d = null;
-      if (hit && A.dmg) d = rollDice(`${crit ? 'КРИТ ' : ''}Урон: ${A.n}${A.type ? ` (${A.type})` : ''}`, A.beast ? (crit ? scaleDice(A.dmg, 2) : A.dmg)
-        : A.cantrip ? withMod(crit ? scaleDice(A.dice, 2) : A.dice, A.mod) : dmgExpr(c, a, crit));
+      if (hit && expr) d = rollDice(`${crit ? 'КРИТ ' : ''}Урон: ${A.n}${A.type ? ` (${A.type})` : ''}${extra.length ? ` + ${extra.join(', ')}` : ''}`, expr);
       ammoWarn(c, a);
       // Приём оружия: ключ, СЛ спасброска (8 + модификатор атаки + БМ) и модификатор (урон «Задевания»)
       const mk = a && masteryActive(c, a) ? a.mastery : '';
       res = { total: r.total, nat: r.nat, detail: r.detail, hit, crit, dmg: d ? Math.max(0, d.total) : 0, dmgDetail: d ? d.detail : '', type: A.type,
-        mastery: mk, mdc: a ? 8 + abilFor(c, a) + pb(c) : 0, mmod: a ? abilFor(c, a) : 0 };
+        mastery: mk, mdc: a ? 8 + abilFor(c, a) + pb(c) : 0, mmod: a ? abilFor(c, a) : 0, extra,
+        sneak: extra.includes('Скрытая атака'), smite, man: sup ? o.maneuver : '', manDC: 8 + pb(c) + Math.max(am(c, 'str'), am(c, 'dex')), repel: !!A.repel && hit };
     });
     save(); render();
     return res;
@@ -594,6 +657,8 @@ const finUsesStr = (c) => am(c, 'str') + (raging(c) ? rageDmg(c) : 0) >= am(c, '
 const usesStr = (c, a) => a.ability === 'str' || (a.ability === 'fin' && finUsesStr(c));
 // Максимум хитов = кости хитов без модификаторов (hpRolled) + за каждый уровень мод. Телосложения и бонусы
 // (дварф, «Крепкий») + «Дар стойкости». Растёт Телосложение — растёт и максимум, на 1 за каждый уровень
+// Кость превосходства Мастера боевых искусств: к8, с 10 уровня — к10, с 18 — к12
+const supDie = (c) => { const L = classList(c).filter((e) => e.cls === 'Воин' && e.sub === 'Мастер боевых искусств').reduce((s, e) => s + e.lvl, 0); return L >= 18 ? 12 : L >= 10 ? 10 : 8; };
 const hpPerLvl = (c) => am(c, 'con') + hpPerLevelBonus(c);
 const hpExtra = (c) => (hasFeat(c, 'boonFortitude') ? 40 : 0);
 const hpPart = (c) => lvl(c) * hpPerLvl(c) + hpExtra(c);
@@ -693,6 +758,8 @@ function resLevels(c) {
   const map = {};
   classList(c).forEach((e) => { (CLASSES[e.cls] || { res: [] }).res.forEach((k) => { map[k] = (map[k] || 0) + e.lvl; }); });
   if (hasFeat(c, 'lucky')) map.luckyFeat = lvl(c);
+  const bm = classList(c).find((e) => e.cls === 'Воин' && e.sub === 'Мастер боевых искусств');
+  if (bm) map.superiority = bm.lvl;
   (speciesOf(c)?.res || []).forEach((k) => { map[k] = lvl(c); });
   return map;
 }
@@ -851,7 +918,7 @@ function rollD20(label, bonus, opts = {}) {
   if (opts.attack && nat === 1) extra = ' — промах';
   logRoll(label + extra, total, detail, cls);
   setAdv(0);
-  return { total, nat, crit: !!opts.attack && nat >= critAt, detail };
+  return { total, nat, crit: !!opts.attack && nat >= critAt, detail, mode };
 }
 function rollDice(label, expr) {
   const r = evalDice(expr);
@@ -2374,11 +2441,13 @@ function tableAttacks(c) {
   // В диком облике атакуют только атаками зверя
   if (c.shape) return c.shape.atk.map((a) => ({ id: a.id, n: `${a.n} (${c.shape.n})`, bonus: a.hit, dmg: a.dmg, type: a.type, rng: atkRange(a.range, false), beast: true }));
   return [
-    ...c.attacks.map((a) => ({ id: a.id, n: a.n, bonus: attackBonus(c, a), dmg: dmgExpr(c, a), type: a.type || '', rng: atkRange(a.range, a.ability === 'spell'),
+    ...c.attacks.map((a) => ({ id: a.id, n: a.n, bonus: attackBonus(c, a), dmg: dmgExpr(c, a), type: a.type || '', rng: atkRange(a.range, a.ability === 'spell'), fin: a.ability === 'fin' || isRangedWeapon(a),
       spell: a.ability === 'spell', ammo: a.ammo ? ammoLeft(c, a) : null, ammoName: a.ammo || '', mastery: masteryActive(c, a) && MASTERY[a.mastery] ? MASTERY[a.mastery].n : '' })),
     ...c.spells.filter(tableCantrip).map((s) => {
-      const beams = s.e === 'Eldritch Blast' ? cantripTier(c) : 1, dice = beams > 1 ? s.f : scaleDice(s.f, cantripTier(c)), mod = s.addMod ? spellModFor(c, s) : 0;
-      return { id: 'sp:' + s.id, n: s.n, bonus: spellAtkFor(c, s), dmg: withMod(dice, mod), dice, mod, type: dmgWord(s.x), rng: atkRange(s.r, true), spell: true, cantrip: true, beams };
+      // «Мучительный взрыв» (воззвание): +мод. Харизмы к урону Мистического заряда; «Отталкивающий взрыв» — толчок на 10 фт
+      const EB = s.e === 'Eldritch Blast', inv = (c.cpicks || {}).inv || [];
+      const beams = EB ? cantripTier(c) : 1, dice = beams > 1 ? s.f : scaleDice(s.f, cantripTier(c)), mod = (s.addMod ? spellModFor(c, s) : 0) + (EB && inv.includes('Мучительный взрыв') ? am(c, 'cha') : 0);
+      return { id: 'sp:' + s.id, n: s.n, bonus: spellAtkFor(c, s), dmg: withMod(dice, mod), dice, mod, type: dmgWord(s.x), rng: atkRange(s.r, true), spell: true, cantrip: true, beams, repel: EB && inv.includes('Отталкивающий взрыв') };
     }),
   ];
 }

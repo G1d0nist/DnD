@@ -20,7 +20,7 @@
         },
         "tokens": {
           "$tokenId": {
-            ".write": "auth != null && $tokenId === 'pc_' + auth.uid && root.child('games/' + $gameId + '/members/' + auth.uid).exists() && (!newData.exists() || (newData.child('owner').val() === auth.uid && newData.child('kind').val() === 'pc'))"
+            ".write": "auth != null && ($tokenId === 'pc_' + auth.uid || $tokenId.beginsWith('pc_' + auth.uid + '_')) && root.child('games/' + $gameId + '/members/' + auth.uid).exists() && (!newData.exists() || (newData.child('owner').val() === auth.uid && newData.child('kind').val() === 'pc'))"
           }
         },
         "init": {

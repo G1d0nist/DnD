@@ -154,18 +154,26 @@ function pushMyChar() {
   if (!m || !m.charId) return;
   clearTimeout(pushTimer);
   pushTimer = setTimeout(() => {
-    const s = app.summary(m.charId);
+    const s = app.summary(m.charId), comps = app.companions(m.charId);
     if (!s || !game) return;
-    const key = JSON.stringify(s);
+    const key = JSON.stringify([s, comps]);
     if (key === lastSent) return;
     lastSent = key;
-    const upd = { [`members/${user.uid}/char`]: s };
+    const { img, ...char } = s;
+    const upd = { [`members/${user.uid}/char`]: char };
     if (game.tokens[`pc_${user.uid}`]) {
       Object.assign(upd, { [`tokens/pc_${user.uid}/name`]: s.name, [`tokens/pc_${user.uid}/hp`]: s.hp, [`tokens/pc_${user.uid}/hpMax`]: s.hpMax,
         [`tokens/pc_${user.uid}/temp`]: s.temp, [`tokens/pc_${user.uid}/ac`]: s.ac, [`tokens/pc_${user.uid}/cond`]: s.cond, [`tokens/pc_${user.uid}/speed`]: s.speed,
         [`tokens/pc_${user.uid}/size`]: SIZE_N[s.size] || 1, [`tokens/pc_${user.uid}/init`]: s.init,
-        [`tokens/pc_${user.uid}/dsS`]: s.dsS || 0, [`tokens/pc_${user.uid}/dsF`]: s.dsF || 0, [`tokens/pc_${user.uid}/dv`]: s.dv || 0 });
+        [`tokens/pc_${user.uid}/dsS`]: s.dsS || 0, [`tokens/pc_${user.uid}/dsF`]: s.dsF || 0, [`tokens/pc_${user.uid}/dv`]: s.dv || 0, [`tokens/pc_${user.uid}/img`]: img || null });
     }
+    // Спутники на поле: хиты, КД и имя — из карточки в листе; убранный из листа спутник уходит и с поля
+    Object.entries(game.tokens).forEach(([id, t]) => {
+      if (!t.comp || t.owner !== user.uid) return;
+      const p = comps.find((x) => x.id === t.comp);
+      if (!p) { upd[`tokens/${id}`] = null; return; }
+      Object.assign(upd, { [`tokens/${id}/hp`]: p.hp, [`tokens/${id}/hpMax`]: p.hpMax, [`tokens/${id}/ac`]: p.ac, [`tokens/${id}/name`]: p.n, [`tokens/${id}/speed`]: parseInt(p.speed) || 30 });
+    });
     R.update(ref(gpath()), upd).catch(() => {});
   }, 300);
 }
@@ -173,8 +181,32 @@ function placeMyToken(x, y) {
   const m = me(), s = m && app.summary(m.charId);
   if (!s) { app.toast('Персонаж не найден на этом устройстве'); return; }
   R.set(ref(gpath(`tokens/pc_${user.uid}`)), { kind: 'pc', owner: user.uid, name: s.name, x, y, size: SIZE_N[s.size] || 1, color: colorOf(user.uid),
-    hp: s.hp, hpMax: s.hpMax, temp: s.temp, ac: s.ac, cond: s.cond, speed: s.speed, init: s.init, dv: s.dv || 0 });
+    hp: s.hp, hpMax: s.hpMax, temp: s.temp, ac: s.ac, cond: s.cond, speed: s.speed, init: s.init, dv: s.dv || 0, ...(s.img ? { img: s.img } : {}) });
   lastSent = '';
+}
+// Спутник из листа на поле: отдельный токен игрока pc_<uid>_<id>; ходит в ход хозяина, хиты общие с карточкой
+let compPlace = null;
+function placeCompanion(x, y) {
+  const m = me(), p = m && app.companions(m.charId).find((c) => c.id === compPlace);
+  compPlace = null;
+  if (!p) return;
+  R.set(ref(gpath(`tokens/pc_${user.uid}_${p.id}`)), { kind: 'pc', comp: p.id, owner: user.uid, name: p.n, x, y, size: 1, color: colorOf(user.uid),
+    hp: p.hp, hpMax: p.hpMax, ac: p.ac, speed: parseInt(p.speed) || 30, cond: [] }).catch((err) => app.toast(`Не удалось: ${esc(err.code || err.message)}`));
+}
+// Портрет: квадрат 160×160 из середины картинки
+function portraitFrom(file) {
+  return new Promise((ok, fail) => {
+    const url = URL.createObjectURL(file), img = new Image();
+    img.onload = () => {
+      const S = 160, cv = document.createElement('canvas'), k = Math.min(img.naturalWidth, img.naturalHeight);
+      cv.width = cv.height = S;
+      cv.getContext('2d').drawImage(img, (img.naturalWidth - k) / 2, (img.naturalHeight - k) / 2, k, k, 0, 0, S, S);
+      URL.revokeObjectURL(url);
+      ok(cv.toDataURL('image/jpeg', 0.82));
+    };
+    img.onerror = () => { URL.revokeObjectURL(url); fail(new Error('не картинка')); };
+    img.src = url;
+  });
 }
 
 /* ---------- Поле ---------- */
@@ -468,7 +500,7 @@ function renderTokens() {
     el.className = `tok ${t.kind} side-${team(t)} ${canMove(t) ? 'mine' : ''} ${selId === id ? 'sel' : ''} ${cur && cur.tokenId === id ? 'turn' : ''} ${t.hidden ? 'hid' : ''} ${down ? 'down' : ''} ${dead ? 'dead' : ''}`;
     const ec = inFight() ? econ(id) : {};
     el.title = `${label}${showNums ? ` · ${t.hp}/${t.hpMax} хитов${t.ac ? ` · КД ${t.ac}` : ''}` : ''}${(t.cond || []).length ? ` · ${t.cond.map(condName).join(', ')}` : ''}${ec.dodge ? ' · уклоняется' : ''}${ec.dis ? ' · отходит' : ''}`;
-    const html = `<div class="tok-face">${dead ? '☠' : esc((t.name || '?').trim().slice(0, 2))}</div>
+    const html = `${t.img && !dead ? `<div class="tok-face img" style="background-image:url('${t.img}')"></div>` : `<div class="tok-face">${dead ? '☠' : esc((t.name || '?').trim().slice(0, 2))}</div>`}
       ${t.hpMax ? `<div class="tok-hp"><div style="width:${pct * 100}%;background:${pct > .5 ? '#5a9e5a' : pct > .25 ? '#d4a64a' : '#c94a3d'}"></div></div>` : ''}
       <div class="tok-name">${esc(label || '')}${fxOf(id).map(([, f]) => f.ic || '').join('').slice(0, 6)}${(t.cond || []).length ? ` <span class="tok-cond">●${t.cond.length}</span>` : ''}</div>`;
     // Пересоздавать содержимое только при изменении — иначе касание пальцем «теряет» токен посреди перетаскивания
@@ -503,6 +535,7 @@ function onDown(e) {
     }
   }
   if (tool === 'enemy') { newEnemyDialog(p.x, p.y); return; }
+  if (tool === 'placeComp') { placeCompanion(p.x, p.y); tool = 'move'; renderTools(); return; }
   // Размещение области: нажатие фиксирует её; для заклинания на одну цель — нажатие на существо
   if (cast) {
     if (cast.area.shape === 'target') {
@@ -553,7 +586,8 @@ function onDown(e) {
     const dg = { kind: 'token', id, sx: t.x, sy: t.y, offX: p.px - t.x * CELL, offY: p.py - t.y * CELL, speed, moved: false, forced };
     if (inFight()) {
       // В бою каждый, и существа мастера тоже, ходит только в свой ход и не дальше оставшейся скорости
-      const turn = isTurnOf(id);
+      // Спутник ходит в ход своего хозяина
+      const turn = isTurnOf(id) || (!!t.comp && isTurnOf(`pc_${t.owner}`));
       if (!forced && !turn) { app.toast(dm ? 'Сейчас не его ход. Сдвинуть принудительно — с Shift или в режиме «🔓 Свободно»' : 'Сейчас не ваш ход — дождитесь своей очереди в инициативе'); return; }
       const mv = moveInfo(id), occ = occupancy(id), counted = turn && !forced;
       if (!forced && !mv.left) { app.toast(mv.speed ? `Скорость на этот ход потрачена${mv.canDash ? ' — можно сделать Рывок' : ''}` : 'Скорость 0 — не может перемещаться'); return; }
@@ -769,7 +803,7 @@ function newEnemyDialog(x, y, base) {
     let stats;
     if (mon) stats = { mon: mon.e, cr: mon.cr, ab: mon.ab, atk: mon.atk, acts: mon.acts || [], multi: mon.multi || 1, tr: mon.x || '', spd: mon.speed,
       sv: Object.fromEntries(ABK.map((k, i) => [k, mon.sv[k] != null ? mon.sv[k] : abMod(mon.ab[i])])) };
-    else if (base) stats = { ...['mon', 'cr', 'ab', 'atk', 'acts', 'multi', 'tr', 'spd', 'sv'].reduce((o, k) => (base[k] != null ? { ...o, [k]: base[k] } : o), {}) };
+    else if (base) stats = { ...['mon', 'cr', 'ab', 'atk', 'acts', 'multi', 'tr', 'spd', 'sv', 'img'].reduce((o, k) => (base[k] != null ? { ...o, [k]: base[k] } : o), {}) };
     else {
       const an = $('#nAn').value.trim();
       stats = { multi: 1, atk: an ? [{ n: an, hit: +$('#nAh').value || 0, dmg: $('#nAd').value.trim(), type: $('#nAt').value.trim(), reach: $('#nAr').value.trim() ? 0 : 5, range: $('#nAr').value.trim() }] : [] };
@@ -802,10 +836,11 @@ function openNpcAttack(id) {
     <div class="atk-ways">${ways.map(([k, n], i) => `<label class="check"><input type="radio" name="atkWay" value="${k}" ${i ? '' : 'checked'}> ${esc(n)}</label>`).join('')}</div>
     <div class="list mt">${atks.map((a) => `<button class="atk-pick" data-atk="${a.id}"><b>${esc(a.n)}</b><span class="muted small">${fmtMod(a.bonus)} к попаданию${a.dmg ? ` · ${esc(a.dmg)} ${esc(a.type)}` : ''} · ${rng(a.rng)}</span></button>`).join('')}
       ${acts.map((a, i) => `<button class="atk-pick" data-act-i="${i}" ${actOk && !rech[i] ? '' : 'disabled'}><b>${esc(a.n)}</b><span class="muted small">${SHAPE_N[a.shape]} ${a.size} фт · спасбросок ${AB_N[a.save]} СЛ ${a.dc} · ${esc(a.f)} ${esc(a.dtype)}${a.rech ? ` · перезарядка ${a.rech}–6${rech[i] ? ' — не перезарядилось' : ''}` : ''} · действие</span></button>`).join('')}
+      ${SPECIAL_ATK.map((s) => `<button class="atk-pick" data-atk="${s.id}"><b>${s.n}</b><span class="muted small">${s.d}</span></button>`).join('')}
       ${!atks.length && !acts.length ? '<p class="muted">У существа нет атак — добавьте их, поставив существо из бестиария или указав атаку при создании.</p>' : ''}</div>
     <div class="modal-actions"><button data-act="closeModal">Отмена</button></div>`);
   $$('[data-atk]').forEach((b) => b.addEventListener('click', () => {
-    const A = atks.find((x) => x.id === b.dataset.atk), way = ($('input[name="atkWay"]:checked') || {}).value;
+    const A = atks.find((x) => x.id === b.dataset.atk) || SPECIAL_ATK.find((x) => x.id === b.dataset.atk), way = ($('input[name="atkWay"]:checked') || {}).value;
     app.closeModal();
     aim = { from: id, npc: true, atk: A, way, left: way === 'action' ? (e.atk > 0 ? e.atk : per) : 1 };
     renderAll();
@@ -888,7 +923,12 @@ function nextTurn() {
   let turn = (game.init.turn || 0) + 1, round = game.init.round || 1;
   if (turn >= l.length) { turn = 0; round += 1; addLog({ kind: 'sys', txt: `Раунд ${round}` }); }
   aim = null;
-  R.update(ref(gpath()), { 'init/turn': turn, 'init/round': round, [`econ/${l[turn].tokenId || l[turn].id}`]: null });
+  const nx = l[turn], upd = { 'init/turn': turn, 'init/round': round, [`econ/${nx.tokenId || nx.id}`]: null };
+  // Спутники хозяина получают свежее перемещение в его ход
+  if (nx.kind === 'pc') Object.entries(game.tokens).forEach(([id, t]) => { if (t.comp && t.owner === nx.owner) upd[`econ/${id}`] = null; });
+  // «Щит» и подобное — до начала следующего хода существа
+  Object.entries(game.effects || {}).forEach(([k, e]) => { if (e.untilTurn && e.untilTurn === (nx.tokenId || nx.id)) upd[`effects/${k}`] = null; });
+  R.update(ref(gpath()), upd);
 }
 
 // Убрать участника из инициативы, не сбив очередь: если ушёл тот, чей ход, ход переходит к следующему
@@ -984,7 +1024,10 @@ function applyLog() {
     if (t.kind === 'npc' ? !isDM() : t.owner !== user.uid) return;
     applying.add(e.k);
     const upd = { [`log/${e.k}/applied`]: true };
-    if (e.heal) {
+    if (t.comp) { // спутник: хиты в его карточке в листе
+      const m = me();
+      if (m && m.charId) app.compHp(m.charId, t.comp, e.heal ? e.heal : -e.dmg);
+    } else if (e.heal) {
       if (t.kind === 'npc') Object.assign(upd, healUpd(e.tgt, t, e.heal));
       else { const m = me(); if (m && m.charId) app.heal(m.charId, e.heal); }
     } else if (t.kind === 'npc') {
@@ -1010,12 +1053,14 @@ function npcDamageUpd(id, t, dmg, crit) {
 }
 // Всплывающие уведомления о том, что касается меня: атаки по моему персонажу, возможность атаки по возможности
 const notified = new Set();
+let lastHit = null; // последнее попадание по моему персонажу — для «Щита» реакцией
 function notifyLog() {
   if (!game || !user) return;
   logList().forEach((e) => {
     if ((e.t || 0) < openedAt || e.by === user.uid || notified.has(e.k)) return;
     notified.add(e.k);
     const t = e.tgt && game.tokens[e.tgt];
+    if (e.kind === 'atk' && e.hit && t && t.owner === user.uid && t.kind === 'pc' && !t.comp) lastHit = { k: e.k, tgt: e.tgt, total: e.total, dmg: e.dmg, t: Date.now() };
     if (e.kind === 'atk' && t && t.owner === user.uid && t.kind === 'pc')
       app.toast(`🗡 ${esc(e.who)} атакует вас: ${e.hit ? `${e.crit ? 'КРИТ! ' : ''}попадание, <b>${e.dmg}</b> урона` : 'промах'}`, e.hit ? 'fumble' : '');
     if (e.kind === 'oa' && (e.foes || []).some((id) => game.tokens[id] && canMove(game.tokens[id])))
@@ -1084,7 +1129,7 @@ function distFt(a, b) {
 // На нуле хитов: обычный монстр — сразу труп; персонажи и отмеченные мастером существа (боссы, важные NPC) —
 // без сознания со спасбросками от смерти, пока не стабилизируются или не наберут три провала
 const isDown = (t) => !!t.hpMax && (+t.hp || 0) <= 0;
-const usesDS = (t) => t.kind === 'pc' || !!t.dsOn;
+const usesDS = (t) => (t.kind === 'pc' && !t.comp) || !!t.dsOn; // спутник на нуле хитов погибает
 const isDead = (t) => isDown(t) && (!usesDS(t) || (+t.dsF || 0) >= 3);
 const isStable = (t) => isDown(t) && !isDead(t) && (+t.dsS || 0) >= 3;
 const downLabel = (t) => (isDead(t) ? `труп: ${t.name}` : isStable(t) ? `${t.name} (стабилен)` : `${t.name} (без сознания)`);
@@ -1107,14 +1152,22 @@ function openAttack(id) {
   if (!e.r) ways.push(['reaction', 'Реакция (атака по возможности)']);
   if (!ways.length) { app.toast('Нет доступных действий для атаки'); return; }
   const rng = (r) => (r.near ? `${r.reach ? `${r.reach} фт / бросок ` : ''}${r.near}${r.far > r.near ? `/${r.far}` : ''} фт` : `досягаемость ${r.reach} фт`);
+  // Классовые возможности: приём превосходства, Божественная кара (бонусное действие), Скрытая атака — считается сама
+  const O = app.combatOpts(m.charId);
+  const opts = `${O.maneuvers && O.maneuvers.length && O.supLeft ? `<label>Приём превосходства (к${O.supDie}, осталось ${O.supLeft})<select id="atkMan"><option value="">— не тратить кость —</option>${O.maneuvers.map((n) => `<option>${esc(n)}</option>`).join('')}</select></label>` : ''}
+    ${O.smiteSlots && O.smiteSlots.length && (!inFight() || !e.b) ? `<label>Божественная кара при попадании<select id="atkSmite"><option value="">— нет —</option>${O.smiteSlots.map((s) => `<option value="${s.key}">${esc(s.label)}</option>`).join('')}</select></label>` : ''}
+    ${O.sneak ? `<p class="muted small">Скрытая атака ${O.sneak}к6 добавится сама — раз в ход, фехтовальным или дальнобойным оружием при преимуществе или если рядом с целью ваш союзник.${e.sa ? ' <b>В этом ходу уже была.</b>' : ''}</p>` : ''}`;
   app.openModal(`<h2>⚔ Атака</h2>
     <div class="atk-ways">${ways.map(([k, n], i) => `<label class="check"><input type="radio" name="atkWay" value="${k}" ${i ? '' : 'checked'}> ${esc(n)}</label>`).join('')}</div>
+    ${opts.trim() ? `<div class="form-grid mt">${opts}</div>` : ''}
     <div class="list mt">${atks.map((a) => `<button class="atk-pick" data-atk="${esc(a.id)}" ${a.ammo === 0 ? 'disabled title="Нет боеприпасов"' : ''}>
-      <b>${esc(a.n)}</b><span class="muted small">${a.bonus >= 0 ? '+' : ''}${a.bonus} к попаданию · ${esc(a.dmg)} ${esc(a.type)}${a.beams > 1 ? ` ×${a.beams} луча` : ''} · ${rng(a.rng)}${a.ammo != null ? ` · 🏹 ${a.ammo}` : ''}${a.mastery ? ` · ⚔ ${esc(a.mastery)}` : ''}</span></button>`).join('') || '<p class="muted">В листе нет атак — добавьте оружие или заговор с атакой.</p>'}</div>
+      <b>${esc(a.n)}</b><span class="muted small">${a.bonus >= 0 ? '+' : ''}${a.bonus} к попаданию · ${esc(a.dmg)} ${esc(a.type)}${a.beams > 1 ? ` ×${a.beams} луча` : ''} · ${rng(a.rng)}${a.ammo != null ? ` · 🏹 ${a.ammo}` : ''}${a.mastery ? ` · ⚔ ${esc(a.mastery)}` : ''}</span></button>`).join('') || '<p class="muted">В листе нет атак — добавьте оружие или заговор с атакой.</p>'}
+      ${SPECIAL_ATK.map((s) => `<button class="atk-pick" data-atk="${s.id}"><b>${s.n}</b><span class="muted small">${s.d}</span></button>`).join('')}</div>
     <p class="muted small">Затем нажмите на цель на поле. Преимущество и помеха (цель лежит, уклоняется, враг рядом с вами при выстреле, дальняя дистанция) учитываются сами.</p>
     <div class="modal-actions"><button data-act="closeModal">Отмена</button></div>`);
   $$('.atk-pick').forEach((b) => b.addEventListener('click', () => {
-    const A = atks.find((x) => x.id === b.dataset.atk);
+    const A = atks.find((x) => x.id === b.dataset.atk) || SPECIAL_ATK.find((x) => x.id === b.dataset.atk);
+    const man = ($('#atkMan') || {}).value || '', smite = ($('#atkSmite') || {}).value || '';
     let way = ($('input[name="atkWay"]:checked') || {}).value;
     if (A.cantrip) {
       if (!turn || e.atk > 0 || e.a) { app.toast(turn ? 'Заговор накладывается действием «Магия», а действие уже потрачено' : 'Заговор накладывается действием — только в свой ход'); return; }
@@ -1122,9 +1175,38 @@ function openAttack(id) {
     }
     const left = way === 'action' ? (e.atk > 0 ? e.atk : per) : way === 'magic' ? A.beams || 1 : 1;
     app.closeModal();
-    aim = { from: id, charId: m.charId, atk: A, way, left };
+    aim = { from: id, charId: m.charId, atk: A, way, left, man, smite };
     renderAll();
   }));
+}
+// Безоружные приёмы 2024 вместо атаки: захват и толчок — цель (не больше чем на размер крупнее) делает спасбросок Силы или Ловкости
+const SPECIAL_ATK = [
+  { id: 'sp_grapple', special: 'grapple', n: '🤼 Захват', d: 'Безоружный удар: спасбросок Силы/Ловкости цели, иначе схвачена', rng: { reach: 5 } },
+  { id: 'sp_push', special: 'push', n: '↔ Толчок: оттолкнуть', d: 'Безоружный удар: спасбросок, иначе отлетает на 5 фт', rng: { reach: 5 } },
+  { id: 'sp_prone', special: 'prone', n: '⤓ Толчок: сбить с ног', d: 'Безоружный удар: спасбросок, иначе лежит ничком', rng: { reach: 5 } },
+];
+const pbCR = (cr) => { const v = crNum(cr ?? 0); return v >= 29 ? 9 : v >= 25 ? 8 : v >= 21 ? 7 : v >= 17 ? 6 : v >= 13 ? 5 : v >= 9 ? 4 : v >= 5 ? 3 : 2; };
+const crNum = (cr) => (String(cr).includes('/') ? 1 / +String(cr).split('/')[1] : +cr || 0);
+// СЛ захвата и толчка: 8 + мод. Силы + бонус мастерства; лучший спасбросок цели — Сила или Ловкость
+function grappleDC(t) {
+  if (t.kind === 'pc') return ((charOf(t) || {}).grapDC) || 10;
+  return 8 + abMod((t.ab || [])[0]) + pbCR(t.cr);
+}
+function bestStrDex(t) {
+  if (t.kind === 'pc') { const s = (charOf(t) || {}).svs || [0, 0]; return s[0] >= s[1] ? 'str' : 'dex'; }
+  const sv = t.sv || {};
+  return (+sv.str || 0) >= (+sv.dex || 0) ? 'str' : 'dex';
+}
+function specialAttack(a, tid) {
+  const me_ = game.tokens[a.from], T = game.tokens[tid], A = a.atk;
+  if (distFt(me_, T) > 5) { app.toast('Нужно стоять вплотную к цели'); return false; }
+  if ((T.size || 1) > (me_.size || 1) + 1) { app.toast('Цель слишком крупная — не больше чем на один размер больше вас'); return false; }
+  const dc = grappleDC(me_), abil = bestStrDex(T);
+  const fail = A.special === 'grapple' ? { n: 'Захвачен', ic: '🤼', cond: 'grappled', grab: a.from, gdc: dc }
+    : A.special === 'push' ? { n: 'Толчок', push: 1, once: true } : { n: 'Толчок', cond: 'prone', once: true };
+  saveRequest(tid, { n: `${me_.name}: ${A.n.replace(/^\S+\s/, '')}`, who: me_.name, abil, dc, fail, from: a.from });
+  addLog({ kind: 'act', who: me_.name, txt: `${A.n.replace(/^\S+\s/, '')} → ${T.name} (спасбросок ${AB_N[abil]} СЛ ${dc})` });
+  return true;
 }
 function attackTarget(tid) {
   const a = aim, me_ = game.tokens[a.from], T = game.tokens[tid], A = a.atk, r = A.rng;
@@ -1134,6 +1216,7 @@ function attackTarget(tid) {
   if (r.reach && d <= r.reach) ranged = false;
   else if (r.near) { if (d > r.far) { app.toast(`Слишком далеко: ${d} фт, предел ${r.far} фт`); return; } ranged = true; }
   else { app.toast(`Цель вне досягаемости: ${d} фт, досягаемость ${r.reach} фт`); return; }
+  if (A.special) { if (specialAttack(a, tid)) spendAttack(a, {}); return; }
   // Преимущество и помеха от обстановки (2024): состояние цели, Уклонение, дистанция, враг рядом со стрелком
   const adv = [], dis = [], tc = T.cond || [], incapT = incapTok(T);
   if (econ(tid).dodge && !incapT) dis.push('цель уклоняется');
@@ -1150,17 +1233,32 @@ function attackTarget(tid) {
     if (e.vex === tid) { adv.push('досаждение'); used.push(k); }
   });
   const ac = acOf(T, tid);
-  const ro = { target: T.name, ac, adv, dis, dice: fxDice(a.from), autoCrit: d <= 5 && (tc.includes('paralyzed') || tc.includes('unconscious')) };
+  // Скрытая атака: раз в ход; союзник атакующего (в сознании) рядом с целью
+  const allyNear = Object.entries(game.tokens).some(([k, o]) => k !== a.from && k !== tid && team(o) === team(me_) && !incapTok(o) && distFt(o, T) <= 5);
+  const ro = { target: T.name, ac, adv, dis, dice: fxDice(a.from), autoCrit: d <= 5 && (tc.includes('paralyzed') || tc.includes('unconscious')),
+    sneakOk: !econ(a.from).sa, allyNear, maneuver: a.man || '', smite: a.smite || '' };
   const res = a.npc ? npcAttackRoll(me_, A, ro) : app.mute(() => app.attack(a.charId, A.id, ro));
   if (!res) { aim = null; renderAll(); return; }
   if (used.length) R.update(ref(gpath('effects')), Object.fromEntries(used.map((k) => [k, null]))).catch(() => {});
   addLog({ kind: 'atk', who: me_.name, txt: A.n, tgt: tid, tgtName: T.name, total: res.total, nat: res.nat, ac, hit: res.hit, crit: res.crit,
-    dmg: res.dmg, dtype: res.type, detail: res.detail, dmgDetail: res.dmgDetail, way: WAYS[a.way],
+    dmg: res.dmg, dtype: res.type, detail: res.detail, dmgDetail: res.dmgDetail, way: WAYS[a.way] + ((res.extra || []).length ? ` · ${res.extra.join(', ')}` : ''),
     from: a.from, anim: A.spell ? 'bolt' : ranged ? (r.thrown ? 'throw' : 'arrow') : 'melee' });
+  // Приёмы превосходства: эффект при попадании (СЛ 8 + БМ + мод. Сил/Лов)
+  const R1 = inFight() ? (game.init.round || 1) + 1 : null, small = (T.size || 1) <= 2;
+  if (res.man === 'Подсечка' && small) saveRequest(tid, { n: 'Подсечка', who: me_.name, abil: 'str', dc: res.manDC, fail: { n: 'Подсечка', cond: 'prone', once: true } });
+  if (res.man === 'Толкающая атака' && small) saveRequest(tid, { n: 'Толкающая атака', who: me_.name, abil: 'str', dc: res.manDC, fail: { n: 'Толчок', push: 3, once: true }, from: a.from });
+  if (res.man === 'Устрашающая атака') saveRequest(tid, { n: 'Устрашающая атака', who: me_.name, abil: 'wis', dc: res.manDC, fail: { n: 'Испуг', ic: '😱', cond: 'frightened', until: R1 } });
+  if (res.man === 'Отвлекающий удар') addEffect(tid, { n: 'Отвлечён', ic: '👀', lit: true, by: user.uid, from: a.from, until: R1 });
+  if (res.man === 'Обезоруживающая атака') saveRequest(tid, { n: 'Обезоруживающая атака (роняет предмет)', who: me_.name, abil: 'str', dc: res.manDC });
+  if (res.man) a.man = '';
+  // «Отталкивающий взрыв»: цель Большая или меньше отлетает на 10 фт
+  if (res.repel && small) addEffect(tid, { n: 'Отталкивающий взрыв', push: 2, once: true, from: a.from, by: user.uid });
+  if (res.smite) a.smite = '';
   // Приёмы оружия (2024) и эффекты атак чудовищ
   const mk = res.mastery, round = inFight() ? game.init.round || 1 : 0;
   if (res.hit && mk === 'topple') saveRequest(tid, { n: 'Опрокидывание', who: me_.name, abil: 'con', dc: res.mdc, fail: { n: 'Опрокидывание', cond: 'prone', once: true } });
   if (res.hit && mk === 'sap') addEffect(tid, { n: 'Ослабление', ic: '💫', sap: true, by: user.uid, from: a.from });
+  if (res.hit && mk === 'push' && (T.size || 1) <= 2) addEffect(tid, { n: 'Толчок (приём)', push: 2, once: true, by: user.uid, from: a.from });
   if (res.hit && res.dmg && mk === 'vex') addEffect(a.from, { n: 'Досаждение', ic: '🎯', vex: tid, by: user.uid, from: a.from });
   if (res.hit && res.dmg && mk === 'slow') addEffect(tid, { n: 'Замедление (приём)', ic: '🐢', spd: -10, by: user.uid, from: a.from, until: round || null });
   if (!res.hit && mk === 'graze' && res.mmod > 0)
@@ -1170,8 +1268,12 @@ function attackTarget(tid) {
     if (A.on.save) saveRequest(tid, { n: `${me_.name}: ${A.n}`, who: me_.name, abil: A.on.save, dc: A.on.dc, fail, rep: A.on.rep ? { abil: A.on.save, dc: A.on.dc } : null, from: a.from });
     else addEffect(tid, { ...fail, by: user.uid, from: a.from });
   }
-  // Расход: первая атака тратит действие (остаток Дополнительной атаки — в atk), бонусное действие или реакцию
-  const upd = {};
+  spendAttack(a, { ...(res.sneak ? { sa: 1 } : {}), ...(res.smite ? { b: 1 } : {}) });
+}
+// Расход: первая атака тратит действие (остаток Дополнительной атаки — в atk), бонусное действие или реакцию;
+// extra — отметки хода (Скрытая атака была, Божественная кара заняла бонусное действие)
+function spendAttack(a, extra) {
+  const upd = { ...extra };
   if (a.way === 'action') { upd.a = 1; upd.atk = a.left - 1 || null; }
   if (a.way === 'magic') upd.a = 1;
   if (a.way === 'bonus') upd.b = 1;
@@ -1622,6 +1724,7 @@ const SPELL_FX = {
   'Cause Fear': { n: 1, up: 1, fail: { n: 'Страх', ic: '😱', cond: 'frightened' }, rep: true },
   'Hideous Laughter': { n: 1, fail: { n: 'Жуткий смех', ic: '😂', cond: 'incapacitated', cond2: 'prone' }, rep: true },
   "Tasha's Hideous Laughter": { n: 1, fail: { n: 'Жуткий смех', ic: '😂', cond: 'incapacitated', cond2: 'prone' }, rep: true },
+  'Thunderwave': { fail: { n: 'Волна грома', push: 2, once: true } },
   'Entangle': { fail: { n: 'Опутывание', ic: '🌿', cond: 'restrained' } },
   'Web': { fail: { n: 'Паутина', ic: '🕸', cond: 'restrained' } },
   'Grease': { fail: { n: 'Скольжение', cond: 'prone', once: true } },
@@ -1656,9 +1759,19 @@ function syncEffects() {
   Object.entries(eff).forEach(([k, e]) => {
     const t = game.tokens[e.tgt];
     if (!t || !ownsTarget(t)) return;
-    if (e.once) { // разовое состояние (сбит с ног): наложить и убрать эффект
-      if (!fxApplied.has(k)) { fxApplied.set(k, null); [e.cond, e.cond2].forEach((c) => setTokCond(e.tgt, c, true)); R.remove(ref(gpath(`effects/${k}`))).catch(() => {}); }
+    if (e.once) { // разовое: состояние (сбит с ног) или толчок — применить и убрать эффект
+      if (!fxApplied.has(k)) {
+        fxApplied.set(k, null);
+        [e.cond, e.cond2].forEach((c) => setTokCond(e.tgt, c, true));
+        if (e.push) pushToken(e.tgt, e.from, +e.push);
+        R.remove(ref(gpath(`effects/${k}`))).catch(() => {});
+      }
       return;
+    }
+    // Захват кончается, если схвативший недееспособен или цель оказалась дальше 5 фт
+    if (e.grab) {
+      const g = game.tokens[e.grab];
+      if (!g || incapTok(g) || distFt(g, t) > 5) { R.remove(ref(gpath(`effects/${k}`))).catch(() => {}); return; }
     }
     if (e.cond || e.cond2) live.set(k, { tid: e.tgt, conds: [e.cond, e.cond2].filter(Boolean) });
   });
@@ -1680,6 +1793,30 @@ function syncEffects() {
   const round = game.init && game.init.active ? game.init.round || 1 : 0;
   if (isDM() && round) Object.entries(eff).forEach(([k, e]) => { if (e.until && round > e.until && !drop.some(([x]) => x === k)) drop.push([k, e]); });
   if (drop.length) R.update(ref(gpath('effects')), Object.fromEntries(drop.map(([k]) => [k, null]))).catch(() => {});
+}
+// Толчок: на n клеток прочь от источника, пока не упрётся в стену, закрытую дверь, край поля или другое существо
+function pushToken(id, fromId, n) {
+  const t = game.tokens[id], src = fromId && game.tokens[fromId];
+  if (!t || !src || !n) return;
+  const sx = Math.sign(t.x - src.x), sy = Math.sign(t.y - src.y), s = t.size || 1;
+  if (!sx && !sy) return;
+  let x = t.x, y = t.y;
+  for (let i = 0; i < n; i++) {
+    const nx = x + sx, ny = y + sy;
+    if (nx < 0 || ny < 0 || nx + s > W() || ny + s > H()) break;
+    let blocked = false;
+    for (let dx = 0; dx < s; dx++) for (let dy = 0; dy < s; dy++) {
+      const k = `${nx + dx}_${ny + dy}`;
+      if ((game.map || {})[k] === 'wall' || doorShut(k)) blocked = true;
+      if (Object.entries(game.tokens).some(([oid, o]) => oid !== id && nx + dx >= o.x && nx + dx < o.x + (o.size || 1) && ny + dy >= o.y && ny + dy < o.y + (o.size || 1))) blocked = true;
+    }
+    if (blocked) break;
+    x = nx; y = ny;
+  }
+  if (x !== t.x || y !== t.y) {
+    R.update(ref(gpath(`tokens/${id}`)), { x, y }).catch(() => {});
+    addLog({ kind: 'act', who: t.name, txt: `отброшен на ${5 * Math.max(Math.abs(x - t.x), Math.abs(y - t.y))} фт` });
+  }
 }
 // Провал спасброска против заклинания или приёма: состояние / эффект на цель
 function applyFail(A, tid) {
@@ -2079,7 +2216,8 @@ function renderTools() {
       + '<button data-tbl="rest" title="Короткий или долгий отдых для всей группы">🏕 Отдых</button>'
       + (fogOn() ? t('reveal', '👁 Открыть', 'Кисть: открыть клетки для игроков') + t('conceal', '🌫 Скрыть', 'Кисть: закрыть клетки туманом')
         + `<button class="${fogPreview ? 'on' : ''}" data-tbl="fogPreview" title="Показать поле так, как его видят игроки">👁 Вид игроков</button>` : '') : ''}
-    ${!isDM() && !(hasMine && inFight()) ? t('place', hasMine ? '📍 Переставить меня' : '📍 Поставить персонажа', 'Нажмите на клетку') : ''}</div>`;
+    ${!isDM() && !(hasMine && inFight()) ? t('place', hasMine ? '📍 Переставить меня' : '📍 Поставить персонажа', 'Нажмите на клетку') : ''}
+    ${!isDM() && me() && me().charId && app.companions(me().charId).length ? `<button class="${tool === 'placeComp' ? 'on' : ''}" data-tbl="compPick" title="Поставить спутника из листа на поле">🐾 Спутник</button>` : ''}</div>`;
 }
 // Карточка хода: игроку — свой персонаж, мастеру — существо, чей сейчас ход
 function renderTurn() {
@@ -2130,6 +2268,13 @@ function renderTurn() {
       ${btn('stand', `⬆ Встать (${half} фт)`, 'Тратит половину скорости и снимает «Лежит ничком»', mv.prone && !dm && mv.speed > 0 && mv.left >= half)}
     </div>` : ''}
     ${e.dis || e.dodge ? `<div class="chips mt">${e.dis ? '<span class="chip on"><span>Отход</span></span>' : ''}${e.dodge ? '<span class="chip on"><span>Уклонение</span></span>' : ''}</div>` : ''}
+    ${(() => {
+      // Вырваться из захвата (действие) и «Щит» реакцией на только что пропущенное попадание
+      const grab = fxOf(id).find(([, f]) => f.grab), O = !dm && me() && me().charId ? app.combatOpts(me().charId) : {};
+      const shieldOk = !dm && (O.shieldSlots || []).length && !e.r && !mv.incap && lastHit && lastHit.tgt === id && Date.now() - lastHit.t < 90000 && lastHit.total < acOf(t, id) + 5;
+      return `${grab && turn && !e.a && !mv.incap ? `<div class="mt"><button data-tbl="escape" data-id="${id}" data-k="${grab[0]}">🤼 Вырваться (действие, СЛ ${grab[1].gdc})</button></div>` : ''}
+        ${shieldOk ? `<div class="mt"><button class="primary" data-tbl="shield" data-id="${id}" title="Реакция: +5 КД до начала вашего хода, тратит ячейку">🛡 «Щит»: отменить попадание (${lastHit.total} против КД ${acOf(t, id) + 5})</button></div>` : ''}`;
+    })()}
     ${turn && !dm ? '<div class="mt"><button class="primary" data-tbl="endTurn">✓ Закончить ход</button></div>' : ''}`;
 }
 function renderInit() {
@@ -2173,13 +2318,15 @@ function renderSide() {
       <div class="row gap wrap mt"><label>Сторона <select data-tbl-side>${[['enemy', 'враг'], ['neutral', 'нейтральный'], ['ally', 'союзник игроков']].map(([v, n]) => `<option value="${v}" ${(t.side || 'enemy') === v ? 'selected' : ''}>${n}</option>`).join('')}</select></label>
         <label class="check" title="На нуле хитов не умирает сразу, а делает спасброски от смерти, как персонажи"><input type="checkbox" data-tbl-ds ${t.dsOn ? 'checked' : ''}> Спасброски от смерти (босс, важный NPC)</label>
         <label>Опыт <input type="number" min="0" style="width:80px" data-tbl-xp value="${xpOf(t)}"></label></div>
+      ${fxOf(selId).some(([, f]) => f.grab) && !incapTok(t) ? `<div class="mt"><button data-tbl="npcEscape" data-id="${selId}">🤼 Вырваться из захвата</button></div>` : ''}
       ${aim && aim.from === selId || incapTok(t) ? '' : `<div class="mt"><button class="primary" data-tbl="npcAttack" data-id="${selId}" title="${inFight() && !isTurnOf(selId) ? 'Не его ход — атака реакцией (по возможности)' : ''}">⚔ Атака${inFight() && !isTurnOf(selId) ? ' реакцией' : ''}</button></div>`}
       <div class="row gap wrap mt"><input type="number" id="tblDmg" min="0" placeholder="0" style="width:70px"><button data-tbl="npcDmg">− Урон</button><button data-tbl="npcHeal">＋ Лечение</button></div>
       <div class="row gap wrap mt"><label class="check"><input type="checkbox" data-tbl-hidden ${t.hidden ? 'checked' : ''}> Скрыт от игроков</label>
       <button data-tbl="npcCopy">⧉ Копия</button><button data-tbl="npcInit">🎲 В инициативу</button></div>
       <div class="muted small mt">Бонусы спасбросков (бросаются автоматически):</div>
       <div class="sv-grid">${Object.entries(AB_N).map(([k]) => `<label>${{ str: 'СИЛ', dex: 'ЛОВ', con: 'ТЕЛ', int: 'ИНТ', wis: 'МДР', cha: 'ХАР' }[k]}<input type="number" data-tbl-sv="${k}" value="${+((t.sv || {})[k]) || 0}"></label>`).join('')}</div>` : ''}
-    ${t.kind === 'pc' && mine ? '<p class="muted small">Хиты и состояния меняются в вашем листе — на поле они обновятся сами.</p>' : ''}
+    ${t.kind === 'pc' && mine ? `<p class="muted small">${t.comp ? 'Хиты спутника — в его карточке в листе (вкладка «Бой»).' : 'Хиты и состояния меняются в вашем листе — на поле они обновятся сами.'}</p>` : ''}
+    ${dm || mine ? `<div class="row gap wrap mt"><label class="btn-file">🖼 Портрет<input type="file" accept="image/*" data-tbl-img hidden></label>${t.img ? '<button class="ghost" data-tbl="imgDel">убрать портрет</button>' : ''}</div>` : ''}
     ${dm || mine ? `<div class="mt"><button class="danger" data-tbl="tokDel">Убрать с поля</button></div>` : ''}`;
 }
 function renderMembers() {
@@ -2246,6 +2393,42 @@ async function onClick(e) {
       if (r.res !== 'revive') setTimeout(() => { if (isTurnOf(id)) nextTurn(); }, 1500);
     }
     else if (a === 'chatSend') sendChat();
+    else if (a === 'escape' || a === 'npcEscape') {
+      // Вырваться из захвата: игрок — Атлетика или Акробатика из листа, существо — к20 + лучший из мод. Сил/Лов
+      const id = b.dataset.id, t = game.tokens[id], g = fxOf(id).find(([, f]) => f.grab);
+      if (!t || !g) return;
+      let ok, txt;
+      if (a === 'escape') { const r = app.mute(() => app.escape(me().charId, g[1].gdc)); if (!r) return; ok = r.ok; txt = `${r.skill} ${r.total}`; }
+      else { const bon = Math.max(abMod((t.ab || [])[0]), abMod((t.ab || [])[1])), d = die(20); ok = d + bon >= g[1].gdc; txt = `к20 [${d}] ${fmtMod(bon)} = ${d + bon}`; }
+      if (ok) await R.remove(ref(gpath(`effects/${g[0]}`)));
+      if (inFight()) await R.update(ref(gpath(`econ/${id}`)), { a: 1 });
+      addLog({ kind: 'act', who: t.name, txt: `вырваться из захвата (СЛ ${g[1].gdc}): ${txt} — ${ok ? 'свободен' : 'не вышло'}` });
+    }
+    else if (a === 'shield') {
+      const id = b.dataset.id, t = game.tokens[id], m = me(), O = app.combatOpts(m.charId);
+      if (!O.shieldSlots.length || !lastHit) return;
+      app.castShield(m.charId, O.shieldSlots[0].key);
+      if (inFight()) await R.update(ref(gpath(`econ/${id}`)), { r: 1 });
+      await addEffect(id, { n: 'Щит', ic: '🛡', ac: 5, untilTurn: id, by: user.uid, from: id });
+      // Попадание с новым КД — промах: урон возвращается
+      if (lastHit.dmg) app.heal(m.charId, lastHit.dmg);
+      addLog({ kind: 'act', who: t.name, txt: `🛡 «Щит» реакцией: +5 КД — попадание (${lastHit.total}) отменено${lastHit.dmg ? `, ${lastHit.dmg} урона не получено` : ''}` });
+      lastHit = null;
+    }
+    else if (a === 'compPick') {
+      const list = app.companions(me().charId), pick = (id) => { compPlace = id; tool = 'placeComp'; renderTools(); app.toast('🐾 Нажмите на клетку, куда поставить спутника'); };
+      if (list.length === 1) pick(list[0].id);
+      else {
+        app.openModal(`<h2>🐾 Спутник на поле</h2><div class="list">${list.map((p) => `<button class="atk-pick" data-cmp="${p.id}"><b>${esc(p.n)}</b><span class="muted small">${esc(p.kind)} · ${p.hp}/${p.hpMax} хитов</span></button>`).join('')}</div>
+          <div class="modal-actions"><button data-act="closeModal">Отмена</button></div>`);
+        $$('[data-cmp]').forEach((x) => x.addEventListener('click', () => { app.closeModal(); pick(x.dataset.cmp); }));
+      }
+    }
+    else if (a === 'imgDel') {
+      const t = game.tokens[selId], m = me();
+      if (t && t.kind === 'pc' && !t.comp && m && t.owner === user.uid) app.setPortrait(m.charId, '');
+      await R.update(ref(gpath(`tokens/${selId}`)), { img: null });
+    }
     else if (a === 'scenes') sceneDialog();
     else if (a === 'rest') restDialog();
     else if (a === 'mapCfg') mapDialog();
@@ -2283,6 +2466,14 @@ async function onClick(e) {
 document.addEventListener('click', (e) => { if (e.target.closest('#tab-table')) onClick(e); });
 document.addEventListener('change', (e) => {
   if (e.target.matches('[data-tbl-hidden]') && game && selId) R.update(ref(gpath(`tokens/${selId}`)), { hidden: e.target.checked });
+  if (e.target.matches('[data-tbl-img]') && game && selId && e.target.files[0]) {
+    const id = selId, t = game.tokens[id], m = me();
+    portraitFrom(e.target.files[0]).then((img) => {
+      // Портрет своего персонажа сохраняется в листе — он будет и в других играх
+      if (t && t.kind === 'pc' && !t.comp && m && t.owner === user.uid) app.setPortrait(m.charId, img);
+      return R.update(ref(gpath(`tokens/${id}`)), { img });
+    }).catch(() => app.toast('Не удалось прочитать картинку'));
+  }
   if (e.target.matches('[data-tbl-secret]')) dmSecret = e.target.checked;
   if (e.target.matches('[data-tbl-share]')) ls.set('dnd55-share-rolls', e.target.checked ? '1' : '0');
   if (e.target.matches('[data-tbl-light]') && game && selId) {
