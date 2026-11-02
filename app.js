@@ -213,7 +213,34 @@ window.dndApp = {
     return { name: c.info.name || 'Без имени', cls: classLabel(c), hp: +cb.hp || 0, hpMax: +cb.hpMax || 1, temp: +cb.temp || 0, ac: +cb.ac || 10,
       cond: [...cb.conditions, ...(cb.exhaustion ? [`истощение ${cb.exhaustion}`] : [])], conc: cb.conc || '', speed: curSpeed(c), init: initBonus(c), size: c.info.size || 'Средний',
       // Рывок и Отход бонусным действием: Хитрое действие плута, Шаг ветра / Терпеливая оборона монаха
-      bonus: clsLvl(c, 'Плут') >= 2 || clsLvl(c, 'Монах') >= 2 ? ['dash', 'dis'] : [] };
+      bonus: clsLvl(c, 'Плут') >= 2 || clsLvl(c, 'Монах') >= 2 ? ['dash', 'dis'] : [], atks: attacksPerAction(c) };
+  },
+  attacks(id) { const c = state.chars[id]; return c ? tableAttacks(c) : []; },
+  // Атака по цели со стола: бросок с преимуществом/помехой от обстановки, при попадании — урон (крит удваивает кости)
+  attack(id, atkId, o = {}) {
+    if (!state.chars[id]) return null;
+    if (state.current !== id) { state.current = id; render(); }
+    const c = ch(), A = tableAttacks(c).find((x) => x.id === atkId), a = findById(c.attacks, atkId);
+    if (!A) return null;
+    let res = null;
+    tracked(`атака: ${A.n}`, () => {
+      if (!spendAmmo(c, a)) return;
+      const r = rollD20(`${A.n} → ${o.target || 'цель'}`, A.bonus, { attack: true, kind: 'attack', weapon: !A.spell, adv: o.adv, dis: o.dis, ac: o.ac });
+      const hit = r.nat !== 1 && (r.crit || r.total >= o.ac);
+      const crit = hit && (r.crit || !!o.autoCrit);
+      let d = null;
+      if (hit) d = rollDice(`${crit ? 'КРИТ ' : ''}Урон: ${A.n}${A.type ? ` (${A.type})` : ''}`, A.cantrip ? withMod(crit ? scaleDice(A.dice, 2) : A.dice, A.mod) : dmgExpr(c, a, crit));
+      ammoWarn(c, a);
+      res = { total: r.total, nat: r.nat, detail: r.detail, hit, crit, dmg: d ? Math.max(0, d.total) : 0, dmgDetail: d ? d.detail : '', type: A.type };
+    });
+    save(); render();
+    return res;
+  },
+  takeDamage(id, n) {
+    if (!state.chars[id] || !(n > 0)) return;
+    if (state.current !== id) state.current = id;
+    tracked('урон', () => applyDamage(n));
+    save(); render();
   },
   setCond(id, k, on) {
     const c = state.chars[id];
@@ -582,6 +609,9 @@ function rollD20(label, bonus, opts = {}) {
   }
   // Преимущество и помеха: ручной выбор + источники из листа. Хотя бы одно и того и другого — обычный бросок.
   const src = autoAdv(c, opts);
+  // Источники со стола: состояние цели, дистанция, враг рядом при дальнобойной атаке
+  if (opts.adv) src.adv.push(...opts.adv);
+  if (opts.dis) src.dis.push(...opts.dis);
   if (advMode === 1) src.adv.push('выбрано вручную');
   if (advMode === -1) src.dis.push('выбрано вручную');
   const mode = src.adv.length && !src.dis.length ? 1 : src.dis.length && !src.adv.length ? -1 : 0;
@@ -604,11 +634,12 @@ function rollD20(label, bonus, opts = {}) {
   let cls = nat >= critAt && opts.attack ? 'crit' : nat === 20 ? 'crit' : nat === 1 ? 'fumble' : '';
   let extra = '';
   if (opts.dc != null) { extra = total >= opts.dc ? ' ✔ успех' : ' ✘ провал'; }
+  if (opts.attack && opts.ac != null) extra = total >= opts.ac ? ' — попадание' : ' — промах';
   if (opts.attack && nat >= critAt) extra = ' — КРИТ!';
   if (opts.attack && nat === 1) extra = ' — промах';
   logRoll(label + extra, total, detail, cls);
   setAdv(0);
-  return { total, nat };
+  return { total, nat, crit: !!opts.attack && nat >= critAt, detail };
 }
 function rollDice(label, expr) {
   const r = evalDice(expr);
@@ -1964,6 +1995,44 @@ function renderMasteryPick() {
 const ammoItem = (c, a) => (a.ammo ? c.items.find((i) => i.n.toLowerCase().startsWith(a.ammo.toLowerCase().trim()) && +i.qty > 0)
   || c.items.find((i) => i.n.toLowerCase().startsWith(a.ammo.toLowerCase().trim())) : null);
 const ammoLeft = (c, a) => { const it = ammoItem(c, a); return it ? +it.qty || 0 : 0; };
+// Списать боеприпас перед атакой; false — боеприпасов нет
+function spendAmmo(c, a) {
+  if (!a || !a.ammo) return true;
+  const it = ammoItem(c, a);
+  if (!it || +it.qty <= 0) { toast(`🏹 Нет боеприпасов «${esc(a.ammo)}» в инвентаре — добавьте их из каталога`, 'fumble'); return false; }
+  it.qty = +it.qty - 1;
+  c.combat.ammoSpent = { ...(c.combat.ammoSpent || {}), [it.id]: ((c.combat.ammoSpent || {})[it.id] || 0) + 1 };
+  return true;
+}
+function ammoWarn(c, a) { if (a && a.ammo) { const left = ammoLeft(c, a); if (left <= 5) toast(`🏹 ${esc(a.ammo)}: осталось ${left}`); } }
+
+/* ---------- Атаки для игрового стола ---------- */
+// Дистанция: reach — досягаемость в ближнем бою (0 — только дальнобойная); near/far — обычная и максимальная дальность
+function atkRange(range, spell) {
+  const s = String(range || '');
+  if (spell) { const n = parseInt(s); return /касан/i.test(s) || !n ? { reach: 5 } : { reach: 0, near: n, far: n }; }
+  const rng = s.match(/(\d+)\s*\/\s*(\d+)/), reach = s.match(/^\s*(\d+)\s*фт/);
+  if (rng && !/бросок/i.test(s)) return { reach: 0, near: +rng[1], far: +rng[2] };
+  return { reach: reach ? +reach[1] : 5, ...(rng ? { near: +rng[1], far: +rng[2], thrown: true } : {}) };
+}
+// Заговоры с броском атаки (Огненный снаряд, Луч холода…): урон растёт на 5, 11 и 17 уровнях.
+// У Мистического заряда растёт не урон, а число лучей — каждый луч отдельная атака.
+const tableCantrip = (s) => +s.l === 0 && s.f && /атак\S* заклинани/i.test(s.x || '');
+const cantripTier = (c) => 1 + (lvl(c) >= 5) + (lvl(c) >= 11) + (lvl(c) >= 17);
+const dmgWord = (x) => (String(x || '').match(/урона\s+([а-яё]+(?:\s+полем)?)/i) || [])[1] || '';
+// Сколько атак даёт действие «Атака» (Дополнительная атака)
+const attacksPerAction = (c) => Math.max(1, ...classList(c).map((e) => (e.cls === 'Воин' ? (e.lvl >= 20 ? 4 : e.lvl >= 11 ? 3 : e.lvl >= 5 ? 2 : 1)
+  : ['Варвар', 'Монах', 'Паладин', 'Следопыт'].includes(e.cls) && e.lvl >= 5 ? 2 : 1)));
+function tableAttacks(c) {
+  return [
+    ...c.attacks.map((a) => ({ id: a.id, n: a.n, bonus: attackBonus(c, a), dmg: dmgExpr(c, a), type: a.type || '', rng: atkRange(a.range, a.ability === 'spell'),
+      spell: a.ability === 'spell', ammo: a.ammo ? ammoLeft(c, a) : null, ammoName: a.ammo || '', mastery: masteryActive(c, a) && MASTERY[a.mastery] ? MASTERY[a.mastery].n : '' })),
+    ...c.spells.filter(tableCantrip).map((s) => {
+      const beams = s.e === 'Eldritch Blast' ? cantripTier(c) : 1, dice = beams > 1 ? s.f : scaleDice(s.f, cantripTier(c)), mod = s.addMod ? spellMod(c) : 0;
+      return { id: 'sp:' + s.id, n: s.n, bonus: spellAtk(c), dmg: withMod(dice, mod), dice, mod, type: dmgWord(s.x), rng: atkRange(s.r, true), spell: true, cantrip: true, beams };
+    }),
+  ];
+}
 
 /* ---------- Действия ---------- */
 let pendingConc = 0;
@@ -2258,14 +2327,9 @@ const ACT = {
   delAttack(el) { const c = ch(), a = findById(c.attacks, el.dataset.id); if (confirmBox(`Удалить атаку «${a.n}»?`)) c.attacks = c.attacks.filter((x) => x !== a); },
   atkRoll(el) {
     const c = ch(), a = findById(c.attacks, el.dataset.id);
-    if (a.ammo) {
-      const it = ammoItem(c, a);
-      if (!it || +it.qty <= 0) { toast(`🏹 Нет боеприпасов «${esc(a.ammo)}» в инвентаре — добавьте их из каталога`, 'fumble'); return; }
-      it.qty = +it.qty - 1;
-      c.combat.ammoSpent = { ...(c.combat.ammoSpent || {}), [it.id]: ((c.combat.ammoSpent || {})[it.id] || 0) + 1 };
-    }
+    if (!spendAmmo(c, a)) return;
     rollD20(`Атака: ${a.n}`, attackBonus(c, a), { attack: true, kind: 'attack', weapon: a.ability !== 'spell' });
-    if (a.ammo) { const left = ammoLeft(c, a); if (left <= 5) toast(`🏹 ${esc(a.ammo)}: осталось ${left}`); }
+    ammoWarn(c, a);
   },
   // После боя можно найти половину потраченных боеприпасов (округление вниз)
   recoverAmmo() {

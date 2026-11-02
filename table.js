@@ -19,6 +19,8 @@ let FB = null, R = null, db = null, user = null;
 let game = null; // { id, code, meta, members, tokens, map, init }
 let unsubs = [];
 let tool = 'move', zoom = 1, selId = null;
+let aim = null; // выбор цели атаки: { from, charId, atk, way, left }
+const openedAt = Date.now(); // уведомления — только о событиях после открытия страницы
 let drag = null; // перетаскивание токена / панорама / рисование
 const ls = { get: (k) => { try { return localStorage.getItem(k); } catch (e) { return null; } }, set: (k, v) => { try { localStorage.setItem(k, v); } catch (e) { /* приватный режим */ } } };
 const ref = (p) => R.ref(db, p);
@@ -80,7 +82,7 @@ async function joinGame(code, charId) {
 function subscribe(gid, code) {
   unsubs.forEach((u) => u());
   unsubs = [];
-  game = { id: gid, code, meta: null, members: {}, tokens: {}, map: {}, init: null, econ: {} };
+  game = { id: gid, code, meta: null, members: {}, tokens: {}, map: {}, init: null, econ: {}, log: {} };
   ls.set(GAME_KEY, JSON.stringify({ id: gid, code, uid: user.uid }));
   const lost = (e) => { if (String(e && e.code).includes('PERMISSION')) { app.toast('Нет доступа к игре — возможно, вас исключили'); leaveLocal(); renderAll(); } };
   const on = (p, fn) => unsubs.push(R.onValue(ref(gpath(p)), (s) => { if (game && game.id === gid) { fn(s.val()); renderAll(); } }, lost));
@@ -90,6 +92,7 @@ function subscribe(gid, code) {
   on('map', (v) => { game.map = v || {}; drawTerrain(); });
   on('init', (v) => { game.init = v; checkMyTurn(); });
   on('econ', (v) => { game.econ = v || {}; });
+  on('log', (v) => { game.log = v || {}; applyLog(); notifyLog(); });
   // Присутствие: онлайн, пока открыта вкладка
   unsubs.push(R.onValue(ref('.info/connected'), (s) => {
     if (!s.val() || !game) return;
@@ -106,7 +109,7 @@ function tryRejoin() {
 function leaveLocal() {
   unsubs.forEach((u) => u());
   unsubs = [];
-  game = null; selId = null;
+  game = null; selId = null; aim = null;
   ls.set(GAME_KEY, '');
 }
 async function leaveGame() {
@@ -290,6 +293,8 @@ function onDown(e) {
     }
   }
   if (tool === 'enemy') { newEnemyDialog(p.x, p.y); return; }
+  // Выбор цели атаки: нажатие на чужой токен — атака; по пустому месту и своему токену — как обычно
+  if (aim && tokEl && tokEl.dataset.tok !== aim.from) { attackTarget(tokEl.dataset.tok); return; }
   if (TERRAIN[tool] || tool === 'erase') {
     drag = { kind: 'paint', pending: {} };
     paintAt(p);
@@ -322,8 +327,18 @@ function onDown(e) {
   try { $('#tblBoard').setPointerCapture(e.pointerId); } catch (err) { /* указатель уже отпущен */ }
   e.preventDefault();
 }
+function aimHint(e) {
+  const tokEl = e.target.closest && e.target.closest('[data-tok]'), from = game.tokens[aim.from];
+  const T = tokEl && tokEl.dataset.tok !== aim.from && game.tokens[tokEl.dataset.tok];
+  if (!T || !from) { hint('', e); return; }
+  const d = distFt(from, T), r = aim.atk.rng;
+  hint(r.reach && d <= r.reach ? `${d} фт — ближний бой` : r.near && d <= r.far ? `${d} фт${d > r.near ? ' — большая дистанция (помеха)' : ''}` : `${d} фт — не достать`, e);
+}
 function onMove(e) {
-  if (!drag) return;
+  if (!drag) {
+    if (aim && game) { if (e.target.closest && e.target.closest('#tblBoard')) aimHint(e); else $('#tblHint').hidden = true; }
+    return;
+  }
   const p = cellAt(e);
   if (drag.kind === 'pan') {
     const w = $('#tblWrap');
@@ -342,6 +357,11 @@ function onMove(e) {
     else if (d == null) txt = isDM() ? 'путь закрыт' : 'не хватает скорости';
     else if (!drag.counted) txt = `${d} фт`;
     else txt = d <= drag.left ? `${d} фт · останется ${drag.left - d}` : `${d} фт — не хватает ${d - drag.left} фт${isDM() ? '' : ', нужен Рывок'}`;
+    // Предупреждение заранее: уход из досягаемости врага без Отхода
+    if (drag.counted && d != null && txt && !drag.occ.has(`${tx}_${ty}`) && !econ(drag.id).dis) {
+      const t = game.tokens[drag.id], oa = foesNear({ ...t, x: drag.sx, y: drag.sy }, drag.id).filter(([, o]) => distFt({ ...t, x: tx, y: ty }, o) > 5);
+      if (t && oa.length) txt += ` · ⚠ атака по возможности: ${oa.map(([, o]) => o.name).join(', ')}`;
+    }
     hint(txt, e);
   }
 }
@@ -373,7 +393,10 @@ function onUp(e) {
         renderTokens();
         return;
       }
-      if (d.counted) upd[`econ/${d.id}/move`] = (econ(d.id).move || 0) + (cost != null ? cost : 5 * Math.max(Math.abs(x - d.sx), Math.abs(y - d.sy)));
+      if (d.counted) {
+        upd[`econ/${d.id}/move`] = (econ(d.id).move || 0) + (cost != null ? cost : 5 * Math.max(Math.abs(x - d.sx), Math.abs(y - d.sy)));
+        checkOpportunity(d.id, { ...t, x, y }, d.sx, d.sy);
+      }
     }
     t.x = x; t.y = y;
     renderTokens();
@@ -427,7 +450,8 @@ function nextTurn() {
   const l = initList();
   if (!l.length) return;
   let turn = (game.init.turn || 0) + 1, round = game.init.round || 1;
-  if (turn >= l.length) { turn = 0; round += 1; }
+  if (turn >= l.length) { turn = 0; round += 1; addLog({ kind: 'sys', txt: `Раунд ${round}` }); }
+  aim = null;
   R.update(ref(gpath()), { 'init/turn': turn, 'init/round': round, [`econ/${l[turn].tokenId || l[turn].id}`]: null });
 }
 
@@ -466,6 +490,154 @@ async function econAct(a, id, k) {
     if (m && m.charId) app.setCond(m.charId, 'prone', false);
   }
   await R.update(ref(gpath(`econ/${id}`)), upd);
+  const ACT_LOG = { dash: 'Рывок', dashB: 'Рывок (бонусное действие)', dis: 'Отход', disB: 'Отход (бонусное действие)', dodge: 'Уклонение', stand: 'встаёт' };
+  if (ACT_LOG[a]) addLog({ kind: 'act', who: t.name, txt: ACT_LOG[a] });
+}
+
+/* ---------- Журнал ---------- */
+// games/{id}/log/{key}: { t, by, kind: atk | act | oa | sys, who, txt, … }; для атак — цель, бросок, урон.
+// Урон применяет клиент владельца цели (мастер — существам, игрок — своему персонажу) и ставит applied.
+const LOG_MAX = 80;
+function addLog(e) {
+  const k = R.push(ref(gpath('log'))).key;
+  R.set(ref(gpath(`log/${k}`)), { ...e, t: Date.now(), by: user.uid }).catch(() => {});
+  const keys = Object.keys(game.log || {});
+  if (keys.length >= LOG_MAX) {
+    const old = keys.sort((a, b) => (game.log[a].t || 0) - (game.log[b].t || 0)).slice(0, keys.length - LOG_MAX + 1);
+    R.update(ref(gpath('log')), Object.fromEntries(old.map((x) => [x, null]))).catch(() => {});
+  }
+}
+const logList = () => Object.entries(game.log || {}).map(([k, e]) => ({ k, ...e })).sort((a, b) => (b.t || 0) - (a.t || 0));
+const applying = new Set();
+function applyLog() {
+  if (!game || !user) return;
+  logList().forEach((e) => {
+    const t = e.tgt && game.tokens[e.tgt];
+    if (!e.dmg || e.applied || !t || applying.has(e.k)) return;
+    if (t.kind === 'npc' ? !isDM() : t.owner !== user.uid) return;
+    applying.add(e.k);
+    const upd = { [`log/${e.k}/applied`]: true };
+    if (t.kind === 'npc') {
+      const hp = Math.max(0, (+t.hp || 0) - e.dmg);
+      upd[`tokens/${e.tgt}/hp`] = hp;
+      if (hp === 0 && (+t.hp || 0) > 0) upd[`log/${e.k}/down`] = true;
+    } else {
+      const m = me();
+      if (m && m.charId) app.takeDamage(m.charId, e.dmg);
+    }
+    R.update(ref(gpath()), upd).catch(() => applying.delete(e.k));
+  });
+}
+// Всплывающие уведомления о том, что касается меня: атаки по моему персонажу, возможность атаки по возможности
+const notified = new Set();
+function notifyLog() {
+  if (!game || !user) return;
+  logList().forEach((e) => {
+    if ((e.t || 0) < openedAt || e.by === user.uid || notified.has(e.k)) return;
+    notified.add(e.k);
+    const t = e.tgt && game.tokens[e.tgt];
+    if (e.kind === 'atk' && t && t.owner === user.uid && t.kind === 'pc')
+      app.toast(`🗡 ${esc(e.who)} атакует вас: ${e.hit ? `${e.crit ? 'КРИТ! ' : ''}попадание, <b>${e.dmg}</b> урона` : 'промах'}`, e.hit ? 'fumble' : '');
+    if (e.kind === 'oa' && (e.foes || []).some((id) => game.tokens[id] && canMove(game.tokens[id])))
+      app.toast(`⚠ ${esc(e.txt)}`, 'crit');
+  });
+}
+function renderLog() {
+  const box = $('#tblLog');
+  if (!box) return;
+  const dm = isDM();
+  $('#tblLogClear').hidden = !dm;
+  box.innerHTML = logList().slice(0, 40).map((e) => {
+    const time = e.t ? new Date(e.t).toLocaleTimeString('ru', { hour: '2-digit', minute: '2-digit' }) : '';
+    if (e.kind === 'atk') {
+      const res = e.hit ? `<b class="lg-hit">${e.crit ? 'КРИТ! ' : 'попадание'}</b> · <b>${e.dmg}</b> ${esc(e.dtype || 'урона')}` : '<b class="lg-miss">промах</b>';
+      return `<div class="lg atk ${e.hit ? 'hit' : 'miss'}"><div><b>${esc(e.who)}</b> → <b>${esc(e.tgtName)}</b>: ${esc(e.txt)}</div>
+        <div><span class="lg-roll">${e.total}</span>${dm && e.ac ? ` против КД ${e.ac}` : ''} — ${res}${e.down ? ' · ☠ повержен' : ''}</div>
+        <div class="muted small">${esc(e.detail || '')}${e.dmgDetail ? ` · урон: ${esc(e.dmgDetail)}` : ''}${e.way ? ` · ${esc(e.way)}` : ''} · ${time}</div></div>`;
+    }
+    return `<div class="lg ${e.kind}"><div>${e.who ? `<b>${esc(e.who)}</b>: ` : ''}${esc(e.txt)}</div><div class="muted small">${time}</div></div>`;
+  }).join('') || '<p class="muted small">Здесь появятся атаки и действия участников.</p>';
+}
+
+/* ---------- Атака по цели ---------- */
+// Расстояние между существами (фт): по ближайшим клеткам, диагональ — тоже 5 фт
+function distFt(a, b) {
+  const as = a.size || 1, bs = b.size || 1;
+  const dx = Math.max(0, a.x - (b.x + bs - 1), b.x - (a.x + as - 1)), dy = Math.max(0, a.y - (b.y + bs - 1), b.y - (a.y + as - 1));
+  return 5 * Math.max(dx, dy);
+}
+const incapTok = (t) => (t.hpMax && (+t.hp || 0) <= 0) || (t.cond || []).some((k) => INCAP.includes(k));
+const hostile = (a, b) => a.kind !== b.kind;
+// Враги рядом (5 фт), способные действовать
+const foesNear = (t, id) => Object.entries(game.tokens).filter(([k, o]) => k !== id && hostile(t, o) && !incapTok(o) && !(o.hidden && !isDM()) && distFt(t, o) <= 5);
+const WAYS = { action: 'действие «Атака»', magic: 'действие «Магия»', bonus: 'бонусное действие', reaction: 'реакция' };
+function openAttack(id) {
+  const t = game.tokens[id], m = me(), e = econ(id), turn = isTurnOf(id);
+  if (!t || !m || !m.charId) return;
+  const atks = app.attacks(m.charId), per = (app.summary(m.charId) || {}).atks || 1;
+  const ways = [];
+  if (turn && (e.atk > 0 || !e.a)) ways.push(['action', e.atk > 0 ? `Действие «Атака» — осталось атак: ${e.atk}` : `Действие «Атака»${per > 1 ? ` (${per} атаки)` : ''}`]);
+  if (turn && !e.b) ways.push(['bonus', 'Бонусное действие (второе оружие, Боевые искусства…)']);
+  if (!e.r) ways.push(['reaction', 'Реакция (атака по возможности)']);
+  if (!ways.length) { app.toast('Нет доступных действий для атаки'); return; }
+  const rng = (r) => (r.near ? `${r.reach ? `${r.reach} фт / бросок ` : ''}${r.near}${r.far > r.near ? `/${r.far}` : ''} фт` : `досягаемость ${r.reach} фт`);
+  app.openModal(`<h2>⚔ Атака</h2>
+    <div class="atk-ways">${ways.map(([k, n], i) => `<label class="check"><input type="radio" name="atkWay" value="${k}" ${i ? '' : 'checked'}> ${esc(n)}</label>`).join('')}</div>
+    <div class="list mt">${atks.map((a) => `<button class="atk-pick" data-atk="${esc(a.id)}" ${a.ammo === 0 ? 'disabled title="Нет боеприпасов"' : ''}>
+      <b>${esc(a.n)}</b><span class="muted small">${a.bonus >= 0 ? '+' : ''}${a.bonus} к попаданию · ${esc(a.dmg)} ${esc(a.type)}${a.beams > 1 ? ` ×${a.beams} луча` : ''} · ${rng(a.rng)}${a.ammo != null ? ` · 🏹 ${a.ammo}` : ''}${a.mastery ? ` · ⚔ ${esc(a.mastery)}` : ''}</span></button>`).join('') || '<p class="muted">В листе нет атак — добавьте оружие или заговор с атакой.</p>'}</div>
+    <p class="muted small">Затем нажмите на цель на поле. Преимущество и помеха (цель лежит, уклоняется, враг рядом с вами при выстреле, дальняя дистанция) учитываются сами.</p>
+    <div class="modal-actions"><button data-act="closeModal">Отмена</button></div>`);
+  $$('.atk-pick').forEach((b) => b.addEventListener('click', () => {
+    const A = atks.find((x) => x.id === b.dataset.atk);
+    let way = ($('input[name="atkWay"]:checked') || {}).value;
+    if (A.cantrip) {
+      if (!turn || e.atk > 0 || e.a) { app.toast(turn ? 'Заговор накладывается действием «Магия», а действие уже потрачено' : 'Заговор накладывается действием — только в свой ход'); return; }
+      way = 'magic';
+    }
+    const left = way === 'action' ? (e.atk > 0 ? e.atk : per) : way === 'magic' ? A.beams || 1 : 1;
+    app.closeModal();
+    aim = { from: id, charId: m.charId, atk: A, way, left };
+    renderAll();
+  }));
+}
+function attackTarget(tid) {
+  const a = aim, me_ = game.tokens[a.from], T = game.tokens[tid], A = a.atk, r = A.rng;
+  if (!me_ || !T) return;
+  const d = distFt(me_, T);
+  let ranged;
+  if (r.reach && d <= r.reach) ranged = false;
+  else if (r.near) { if (d > r.far) { app.toast(`Слишком далеко: ${d} фт, предел ${r.far} фт`); return; } ranged = true; }
+  else { app.toast(`Цель вне досягаемости: ${d} фт, досягаемость ${r.reach} фт`); return; }
+  // Преимущество и помеха от обстановки (2024): состояние цели, Уклонение, дистанция, враг рядом со стрелком
+  const adv = [], dis = [], tc = T.cond || [], incapT = incapTok(T);
+  if (econ(tid).dodge && !incapT) dis.push('цель уклоняется');
+  if (tc.includes('prone') || tc.includes('unconscious')) (d <= 5 ? adv : dis).push('цель лежит');
+  ['blinded', 'paralyzed', 'petrified', 'restrained', 'stunned'].forEach((k) => { if (tc.includes(k)) adv.push(`цель: ${condName(k).toLowerCase()}`); });
+  if (tc.includes('invisible')) dis.push('цель невидима');
+  if (ranged && d > r.near) dis.push('большая дистанция');
+  if (ranged && foesNear(me_, a.from).length) dis.push('враг рядом');
+  const res = app.attack(a.charId, A.id, { target: T.name, ac: +T.ac || 10, adv, dis, autoCrit: d <= 5 && (tc.includes('paralyzed') || tc.includes('unconscious')) });
+  if (!res) { aim = null; renderAll(); return; }
+  addLog({ kind: 'atk', who: me_.name, txt: A.n, tgt: tid, tgtName: T.name, total: res.total, nat: res.nat, ac: +T.ac || 10, hit: res.hit, crit: res.crit,
+    dmg: res.dmg, dtype: res.type, detail: res.detail, dmgDetail: res.dmgDetail, way: WAYS[a.way] });
+  // Расход: первая атака тратит действие (остаток Дополнительной атаки — в atk), бонусное действие или реакцию
+  const upd = {};
+  if (a.way === 'action') { upd.a = 1; upd.atk = a.left - 1 || null; }
+  if (a.way === 'magic') upd.a = 1;
+  if (a.way === 'bonus') upd.b = 1;
+  if (a.way === 'reaction') upd.r = 1;
+  if (inFight()) R.update(ref(gpath(`econ/${a.from}`)), upd).catch(() => {});
+  a.left -= 1;
+  if (a.left <= 0) aim = null;
+  renderAll();
+}
+// Атака по возможности: существо уходит из досягаемости врага без Отхода
+function checkOpportunity(id, t, fromX, fromY) {
+  if (econ(id).dis) return;
+  const before = { ...t, x: fromX, y: fromY };
+  const foes = foesNear(before, id).filter(([k, o]) => distFt(t, o) > 5 && !econ(k).r).map(([k]) => k);
+  if (!foes.length) return;
+  addLog({ kind: 'oa', who: '', foes, txt: `${t.name} покидает досягаемость: ${foes.map((k) => game.tokens[k].name).join(', ')} — можно атаку по возможности (реакция)` });
 }
 // Начало моего хода: уведомление и отсчёт эффектов в листе (раз за ход)
 function checkMyTurn() {
@@ -493,11 +665,29 @@ function renderAll() {
   renderTools();
   layoutBoard();
   if (!$('#tblTerrain').dataset.drawn || $('#tblTerrain').dataset.drawn !== game.id) { $('#tblTerrain').dataset.drawn = game.id; drawTerrain(); }
+  if (aim && (!inFight() || !game.tokens[aim.from])) aim = null;
+  if (aim) $('#tblBoard').dataset.tool = 'aim';
+  if (!drag) drawAimRange();
   renderTokens();
   renderTurn();
   renderInit();
   renderSide();
   renderMembers();
+  renderLog();
+}
+// Подсветка дальности выбранной атаки: досягаемость, обычная и максимальная дистанция
+function drawAimRange() {
+  const cv = $('#tblRange'), g = cv.getContext('2d');
+  g.clearRect(0, 0, cv.width, cv.height);
+  const from = aim && game.tokens[aim.from];
+  if (!from) return;
+  const r = aim.atk.rng;
+  for (let x = 0; x < W(); x++) for (let y = 0; y < H(); y++) {
+    const d = distFt(from, { x, y, size: 1 });
+    if (!d) continue;
+    const c = r.reach && d <= r.reach ? 'rgba(201,74,61,.25)' : r.near && d <= r.near ? 'rgba(91,143,201,.16)' : r.near && d <= r.far ? 'rgba(212,166,74,.10)' : null;
+    if (c) { g.fillStyle = c; g.fillRect(x * CELL + 1, y * CELL + 1, CELL - 2, CELL - 2); }
+  }
 }
 function renderLobby() {
   const lobby = $('#tblLobby');
@@ -550,6 +740,9 @@ function renderTurn() {
     : `<div class="small muted" style="margin-bottom:8px">Скорость ${mv.speed} фт — перемещение и действия в ваш ход, реакция доступна всегда</div>`}
     <div class="pips">${pip('a', 'Действие', 'Атака, заклинание, Рывок и т. п. — нажмите, когда потратите')}${pip('b', 'Бонусное', 'Нажмите, когда потратите бонусное действие')}${pip('r', 'Реакция', 'Атака по возможности, «Щит» и т. п.; восстанавливается в начале вашего хода')}</div>
     ${mv.incap ? '<p class="small warn-text">Недееспособен — не может совершать действия, бонусные действия и реакции.</p>' : ''}
+    ${e.atk > 0 ? `<div class="small mt">Дополнительная атака: осталось атак — <b>${e.atk}</b></div>` : ''}
+    ${aim && aim.from === id ? `<div class="aim-bar mt">🎯 Выберите цель для «${esc(aim.atk.n)}»${aim.left > 1 ? ` · атак: ${aim.left}` : ''}<button data-tbl="aimOff">${aim.way === 'action' && aim.left < ((app.summary(aim.charId) || {}).atks || 1) ? 'Готово' : 'Отмена'}</button></div>`
+      : !dm && !mv.incap && ((turn && (e.atk > 0 || !e.a || !e.b)) || !e.r) ? `<div class="mt"><button class="primary" data-tbl="attack" data-id="${id}">⚔ Атака${e.atk > 0 ? ` (ещё ${e.atk})` : !turn ? ' реакцией' : ''}</button></div>` : ''}
     ${canAct && turn ? `<div class="row gap wrap mt">
       ${btn('dash', '🏃 Рывок', 'Действие: ещё одна скорость перемещения на этот ход', !e.a && mv.speed > 0)}
       ${btn('dis', '↩ Отход', 'Действие: до конца хода ваше перемещение не провоцирует атаки по возможности', !e.a && !e.dis)}
@@ -630,9 +823,12 @@ async function onClick(e) {
     } else if (a === 'npcInit') {
       const t = game.tokens[selId];
       await R.set(ref(gpath(`init/list/${selId}`)), { name: t.name, roll: die(20) + (+t.init || 0), owner: user.uid, kind: 'npc', tokenId: selId });
-    } else if (a === 'startFight') await R.update(ref(gpath()), { 'init/active': true, 'init/round': 1, 'init/turn': 0, econ: null });
+    } else if (a === 'startFight') { await R.update(ref(gpath()), { 'init/active': true, 'init/round': 1, 'init/turn': 0, econ: null }); addLog({ kind: 'sys', txt: '⚔ Бой начался · раунд 1' }); }
     else if (a === 'next' || a === 'endTurn') nextTurn();
-    else if (a === 'endFight') { if (app.confirm('Закончить бой и очистить инициативу?')) await R.update(ref(gpath()), { init: null, econ: null }); }
+    else if (a === 'endFight') { if (app.confirm('Закончить бой и очистить инициативу?')) { await R.update(ref(gpath()), { init: null, econ: null }); addLog({ kind: 'sys', txt: 'Бой окончен' }); } }
+    else if (a === 'attack') openAttack(b.dataset.id);
+    else if (a === 'aimOff') { aim = null; hint(''); renderAll(); }
+    else if (a === 'logClear') { if (app.confirm('Очистить журнал для всех?')) await R.remove(ref(gpath('log'))); }
     else if (['eco', 'dash', 'dashB', 'dis', 'disB', 'dodge', 'stand'].includes(a)) await econAct(a, b.dataset.id, b.dataset.k);
     else if (a === 'initDel') await R.remove(ref(gpath(`init/list/${b.dataset.id}`)));
     else if (a === 'unsel') { selId = null; renderSide(); renderTokens(); }
@@ -657,6 +853,7 @@ document.addEventListener('click', (e) => { if (e.target.closest('#tab-table')) 
 document.addEventListener('change', (e) => {
   if (e.target.matches('[data-tbl-hidden]') && game && selId) R.update(ref(gpath(`tokens/${selId}`)), { hidden: e.target.checked });
 });
+document.addEventListener('keydown', (e) => { if (e.key === 'Escape' && aim) { aim = null; hint(''); renderAll(); } });
 const board = $('#tblBoard');
 board.addEventListener('pointerdown', onDown);
 // Движение и отпускание слушаем на всём окне: палец может «уйти» с поля или с токена во время перетаскивания
