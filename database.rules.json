@@ -1,0 +1,54 @@
+{
+  "rules": {
+    "codes": {
+      "$code": {
+        ".read": "auth != null",
+        ".write": "auth != null && (!data.exists() || root.child('games/' + data.val() + '/meta/dm').val() === auth.uid)"
+      }
+    },
+    "games": {
+      "$gameId": {
+        ".read": "auth != null && (root.child('games/' + $gameId + '/meta/dm').val() === auth.uid || root.child('games/' + $gameId + '/members/' + auth.uid).exists())",
+        ".write": "auth != null && root.child('games/' + $gameId + '/meta/dm').val() === auth.uid",
+        "meta": {
+          ".write": "auth != null && !data.exists()"
+        },
+        "members": {
+          "$uid": {
+            ".write": "auth != null && auth.uid === $uid && root.child('games/' + $gameId + '/meta').exists()"
+          }
+        },
+        "tokens": {
+          "$tokenId": {
+            ".write": "auth != null && $tokenId === 'pc_' + auth.uid && root.child('games/' + $gameId + '/members/' + auth.uid).exists() && (!newData.exists() || (newData.child('owner').val() === auth.uid && newData.child('kind').val() === 'pc'))"
+          }
+        },
+        "init": {
+          "list": {
+            "$entry": {
+              ".write": "auth != null && $entry === auth.uid && root.child('games/' + $gameId + '/members/' + auth.uid).exists()"
+            }
+          },
+          "turn": {
+            ".write": "auth != null && root.child('games/' + $gameId + '/members/' + auth.uid).exists()"
+          },
+          "round": {
+            ".write": "auth != null && root.child('games/' + $gameId + '/members/' + auth.uid).exists()"
+          }
+        },
+        "map": {
+          ".write": false
+        },
+        "bgimg": {
+          ".write": false
+        },
+        "reveal": {
+          ".write": false
+        },
+        "$other": {
+          ".write": "auth != null && root.child('games/' + $gameId + '/members/' + auth.uid).exists()"
+        }
+      }
+    }
+  }
+}
