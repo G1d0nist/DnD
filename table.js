@@ -93,7 +93,7 @@ function subscribe(gid, code) {
   on('init', (v) => { game.init = v; checkMyTurn(); });
   on('econ', (v) => { game.econ = v || {}; });
   on('log', (v) => { game.log = v || {}; applyLog(); notifyLog(); });
-  on('areas', (v) => { game.areas = v || {}; drawAreas(); notifyAreas(); });
+  on('areas', (v) => { game.areas = v || {}; drawAreas(); notifyAreas(); autoNpcSaves(); });
   // Присутствие: онлайн, пока открыта вкладка
   unsubs.push(R.onValue(ref('.info/connected'), (s) => {
     if (!s.val() || !game) return;
@@ -840,18 +840,16 @@ function confirmCast() {
   if (!castInRange()) { app.toast(`Слишком далеко: дистанция ${cast.range} фт`); return; }
   const ids = areaTokens(A);
   if (A.shape === 'target' && !ids.length) return;
-  const tok = (id) => game.tokens[id];
+  // Область задевает всех, кто в ней, включая союзников — выбирать цели нельзя
+  const tok = (id) => game.tokens[id], src = cast.caster && tok(cast.caster);
+  const allies = src ? ids.filter((id) => tok(id).kind === src.kind) : [];
   app.openModal(`<h2>✨ ${esc(I.n)}</h2>
     <p class="small">${I.save ? `Спасбросок <b>${AB_N[I.save]}</b>, СЛ <b>${I.dc}</b>` : 'Без спасброска'}${I.f ? ` · ${esc(I.f)} ${esc(I.dtype || '')}${I.save ? (I.half ? ', половина при успехе' : ', при успехе — без урона') : ''}` : ''}</p>
-    ${ids.length ? `<div class="atk-ways">${ids.map((id) => `<label class="check"><input type="checkbox" data-tg="${id}" checked> ${esc(tok(id).name)}${tok(id).kind === 'pc' ? ' <span class="muted small">(персонаж)</span>' : ''}</label>`).join('')}</div>
-      <p class="muted small">Снимите галочку с тех, кого заклинание не затрагивает (союзники для «Духовных стражей» и т. п.).</p>` : '<p class="muted">В области никого нет.</p>'}
+    ${ids.length ? `<p>Задевает: ${ids.map((id) => `<b class="${allies.includes(id) ? 'warn-text' : ''}">${esc(tok(id).name)}${allies.includes(id) ? ' (союзник!)' : ''}</b>`).join(', ')}</p>
+      ${allies.length ? '<p class="small warn-text">⚠ В области союзники — они тоже получат урон.</p>' : ''}` : '<p class="muted">В области никого нет.</p>'}
     <div class="modal-actions"><button id="cBack">Назад</button><button class="primary" id="cOk">✨ Сотворить</button></div>`);
   $('#cBack').onclick = () => { app.closeModal(); if (A.shape === 'aura') cancelCast(); };
-  $('#cOk').onclick = () => {
-    const chosen = $$('[data-tg]').filter((x) => x.checked).map((x) => x.dataset.tg);
-    app.closeModal();
-    doCastArea(chosen);
-  };
+  $('#cOk').onclick = () => { app.closeModal(); doCastArea(ids); };
 }
 function doCastArea(chosen) {
   const A = cast.area, I = cast.info, c = cast;
@@ -897,7 +895,18 @@ function saveMine(k, tid) {
   addLog({ kind: 'save', who: t.name, txt: `${A.n}: спасбросок ${AB_N[A.abil]} ${r.total} — ${r.ok ? 'успех' : 'провал'}${dmg ? `, ${dmg} ${A.dtype || 'урона'}` : ', без урона'}`, detail: r.detail });
   finishArea(k, [tid]);
 }
-// Мастер бросает за всех существ в области: бонус спасброска (запоминается в токене), автопровал и преимущество/помеха от состояний
+// Спасброски существ бросает браузер мастера автоматически, как только они попали в область; итог — в журнале.
+// Бонус спасброска — из токена (sv), автопровал и преимущество/помеха — от состояний
+const npcSaving = new Set();
+function autoNpcSaves() {
+  if (!game || !isDM()) return;
+  Object.entries(game.areas || {}).forEach(([k, A]) => {
+    const key = `${k}:${A.dmgDetail || ''}:${Object.keys(A.tg || {}).join(',')}`;
+    if (npcSaving.has(key) || !Object.entries(A.tg || {}).some(([id, v]) => !v.done && game.tokens[id] && game.tokens[id].kind === 'npc')) return;
+    npcSaving.add(key);
+    saveNpcs(k);
+  });
+}
 function saveNpcs(k) {
   const A = game.areas[k];
   if (!A || !isDM()) return;
@@ -905,9 +914,7 @@ function saveNpcs(k) {
   if (!ids.length) return;
   const upd = {}, parts = [];
   ids.forEach((id) => {
-    const t = game.tokens[id], cond = t.cond || [], inp = $(`[data-sv="${k}_${id}"]`);
-    const bonus = inp ? +inp.value || 0 : +((t.sv || {})[A.abil]) || 0;
-    upd[`tokens/${id}/sv/${A.abil}`] = bonus;
+    const t = game.tokens[id], cond = t.cond || [], bonus = +((t.sv || {})[A.abil]) || 0;
     let ok, total, note = '';
     if ((A.abil === 'str' || A.abil === 'dex') && ((t.hpMax && (+t.hp || 0) <= 0) || cond.some((x) => AUTO_FAIL_T.includes(x)))) { ok = false; total = '—'; note = ' (автопровал)'; }
     else {
@@ -953,18 +960,13 @@ function renderSaves() {
   Object.entries(game.areas || {}).sort((a, b) => (a[1].t || 0) - (b[1].t || 0)).forEach(([k, A]) => {
     const pend = Object.entries(A.tg || {}).filter(([id, v]) => !v.done && game.tokens[id]);
     const mine = pend.filter(([id]) => game.tokens[id].kind === 'pc' && game.tokens[id].owner === user.uid);
-    const npcs = dm ? pend.filter(([id]) => game.tokens[id].kind === 'npc') : [];
     const own = dm || A.by === user.uid;
     let html = `<div class="sv-area"><div class="row between"><b style="color:${A.color}">${esc(A.n)}</b><span>
       ${own && A.keep && A.abil ? `<button class="ghost" data-tbl="areaAgain" data-k="${k}" title="Сработать снова: новый урон и спасброски">⟳</button>` : ''}
       ${own ? `<button class="ghost" data-tbl="areaDel" data-k="${k}" title="Убрать с поля">✕</button>` : ''}</span></div>`;
     if (A.abil) html += `<div class="muted small">Спасбросок ${AB_N[A.abil]} СЛ ${A.dc}${A.dmg ? ` · ${A.dmg} ${esc(A.dtype || 'урона')}${A.half ? ', половина при успехе' : ''}` : ''}</div>`;
     mine.forEach(([id]) => { html += `<div class="row between mt"><span>${esc(game.tokens[id].name)}</span><button class="primary" data-tbl="saveMine" data-k="${k}" data-id="${id}">🎲 Спасбросок</button></div>`; });
-    if (npcs.length) {
-      html += `${npcs.map(([id]) => `<div class="sv-row"><span>${esc(game.tokens[id].name)}</span><label class="muted small">бонус <input type="number" data-sv="${k}_${id}" value="${+((game.tokens[id].sv || {})[A.abil]) || 0}"></label></div>`).join('')}
-        <button class="primary mt" data-tbl="saveNpc" data-k="${k}">🎲 Бросить за существ (${npcs.length})</button>`;
-    }
-    const waiting = pend.filter(([id]) => !mine.some(([x]) => x === id) && !npcs.some(([x]) => x === id));
+    const waiting = pend.filter(([id]) => !mine.some(([x]) => x === id));
     if (waiting.length) html += `<div class="muted small mt">Ждём: ${waiting.map(([id]) => esc(game.tokens[id].name)).join(', ')}</div>`;
     rows.push(html + '</div>');
   });
@@ -1132,7 +1134,9 @@ function renderSide() {
     ${(t.cond || []).length ? `<div class="chips mt">${t.cond.map((c) => `<span class="chip on"><span>${esc(c)}</span></span>`).join('')}</div>` : ''}
     ${dm && t.kind === 'npc' ? `<div class="row gap wrap mt"><input type="number" id="tblDmg" min="0" placeholder="0" style="width:70px"><button data-tbl="npcDmg">− Урон</button><button data-tbl="npcHeal">＋ Лечение</button></div>
       <div class="row gap wrap mt"><label class="check"><input type="checkbox" data-tbl-hidden ${t.hidden ? 'checked' : ''}> Скрыт от игроков</label>
-      <button data-tbl="npcCopy">⧉ Копия</button><button data-tbl="npcInit">🎲 В инициативу</button></div>` : ''}
+      <button data-tbl="npcCopy">⧉ Копия</button><button data-tbl="npcInit">🎲 В инициативу</button></div>
+      <div class="muted small mt">Бонусы спасбросков (бросаются автоматически):</div>
+      <div class="sv-grid">${Object.entries(AB_N).map(([k]) => `<label>${{ str: 'СИЛ', dex: 'ЛОВ', con: 'ТЕЛ', int: 'ИНТ', wis: 'МДР', cha: 'ХАР' }[k]}<input type="number" data-tbl-sv="${k}" value="${+((t.sv || {})[k]) || 0}"></label>`).join('')}</div>` : ''}
     ${t.kind === 'pc' && mine ? '<p class="muted small">Хиты и состояния меняются в вашем листе — на поле они обновятся сами.</p>' : ''}
     ${dm || mine ? `<div class="mt"><button class="danger" data-tbl="tokDel">Убрать с поля</button></div>` : ''}`;
 }
@@ -1187,7 +1191,6 @@ async function onClick(e) {
     else if (a === 'spell') openCast(b.dataset.id);
     else if (a === 'castOff') cancelCast();
     else if (a === 'saveMine') saveMine(b.dataset.k, b.dataset.id);
-    else if (a === 'saveNpc') saveNpcs(b.dataset.k);
     else if (a === 'areaAgain') areaAgain(b.dataset.k);
     else if (a === 'areaDel') await R.remove(ref(gpath(`areas/${b.dataset.k}`)));
     else if (a === 'logClear') { if (app.confirm('Очистить журнал для всех?')) await R.remove(ref(gpath('log'))); }
@@ -1214,6 +1217,7 @@ async function onClick(e) {
 document.addEventListener('click', (e) => { if (e.target.closest('#tab-table')) onClick(e); });
 document.addEventListener('change', (e) => {
   if (e.target.matches('[data-tbl-hidden]') && game && selId) R.update(ref(gpath(`tokens/${selId}`)), { hidden: e.target.checked });
+  if (e.target.matches('[data-tbl-sv]') && game && selId) R.update(ref(gpath(`tokens/${selId}/sv`)), { [e.target.dataset.tblSv]: +e.target.value || 0 });
 });
 document.addEventListener('keydown', (e) => {
   if (e.key !== 'Escape') return;
