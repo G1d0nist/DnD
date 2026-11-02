@@ -294,7 +294,7 @@ button.stat:hover { border-color: var(--gold); }
 .tbl-sizer { position: relative; }
 .tbl-board { position: absolute; left: 0; top: 0; transform-origin: 0 0; user-select: none; touch-action: none; }
 .tbl-board canvas { position: absolute; left: 0; top: 0; pointer-events: none; }
-.tbl-board[data-tool="wall"], .tbl-board[data-tool="difficult"], .tbl-board[data-tool="water"], .tbl-board[data-tool="erase"], .tbl-board[data-tool="enemy"], .tbl-board[data-tool="place"] { cursor: crosshair; }
+.tbl-board[data-tool="wall"], .tbl-board[data-tool="difficult"], .tbl-board[data-tool="water"], .tbl-board[data-tool="erase"], .tbl-board[data-tool="reveal"], .tbl-board[data-tool="conceal"], .tbl-board[data-tool="enemy"], .tbl-board[data-tool="place"] { cursor: crosshair; }
 #tblTokens { position: absolute; inset: 0; }
 .tok { position: absolute; transition: left .35s ease, top .35s ease; cursor: default; touch-action: none; }
 .tok * { touch-action: none; }

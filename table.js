@@ -20,7 +20,11 @@ let game = null; // { id, code, meta, members, tokens, map, init }
 let unsubs = [];
 let tool = 'move', zoom = 1, selId = null;
 let freeMove = false; // мастер: двигать без ограничений (толчок, перенос тела)
+let bgImg = null, bgSrc = ''; // карта-подложка
+let fogVis = null, fogPreview = false, seenTimer = null; // туман войны: видимые клетки, «вид игроков» у мастера
 let aim = null; // выбор цели атаки: { from, charId, atk, way, left }
+let cast = null; // размещение области: { area, info, caster, charId, slotKey, dm }
+let ruler = null; // линейка: { x0, y0, x1, y1 } — клетки
 const openedAt = Date.now(); // уведомления — только о событиях после открытия страницы
 let drag = null; // перетаскивание токена / панорама / рисование
 const ls = { get: (k) => { try { return localStorage.getItem(k); } catch (e) { return null; } }, set: (k, v) => { try { localStorage.setItem(k, v); } catch (e) { /* приватный режим */ } } };
@@ -83,11 +87,14 @@ async function joinGame(code, charId) {
 function subscribe(gid, code) {
   unsubs.forEach((u) => u());
   unsubs = [];
-  game = { id: gid, code, meta: null, members: {}, tokens: {}, map: {}, init: null, econ: {}, log: {}, areas: {} };
+  game = { id: gid, code, meta: null, members: {}, tokens: {}, map: {}, init: null, econ: {}, log: {}, areas: {}, reveal: {}, seen: {} };
   ls.set(GAME_KEY, JSON.stringify({ id: gid, code, uid: user.uid }));
   const lost = (e) => { if (String(e && e.code).includes('PERMISSION')) { app.toast('Нет доступа к игре — возможно, вас исключили'); leaveLocal(); renderAll(); } };
   const on = (p, fn) => unsubs.push(R.onValue(ref(gpath(p)), (s) => { if (game && game.id === gid) { fn(s.val()); renderAll(); } }, lost));
-  on('meta', (v) => { if (!v) { app.toast('Игра завершена мастером'); leaveLocal(); } else game.meta = v; });
+  on('meta', (v) => { if (!v) { app.toast('Игра завершена мастером'); leaveLocal(); } else { game.meta = v; drawTerrain(); } });
+  on('bgimg', (v) => { loadBg(v && v.data); });
+  on('reveal', (v) => { game.reveal = v || {}; });
+  on('seen', (v) => { game.seen = v || {}; });
   on('members', (v) => { game.members = v || {}; });
   on('tokens', (v) => { game.tokens = v || {}; cleanupInit(); });
   on('map', (v) => { game.map = v || {}; drawTerrain(); });
@@ -111,7 +118,7 @@ function tryRejoin() {
 function leaveLocal() {
   unsubs.forEach((u) => u());
   unsubs = [];
-  game = null; selId = null; aim = null; cast = null; ruler = null;
+  game = null; selId = null; aim = null; cast = null; ruler = null; bgImg = null; bgSrc = '';
   ls.set(GAME_KEY, '');
 }
 async function leaveGame() {
@@ -173,21 +180,44 @@ function layoutBoard() {
   b.style.transform = `scale(${zoom})`;
   $('#tblSizer').style.width = w * zoom + 'px';
   $('#tblSizer').style.height = h * zoom + 'px';
-  ['#tblTerrain', '#tblAreas', '#tblRange', '#tblFxCv'].forEach((s) => { const cv = $(s); if (cv.width !== w || cv.height !== h) { cv.width = w; cv.height = h; } });
+  ['#tblTerrain', '#tblAreas', '#tblRange', '#tblFog', '#tblFxCv'].forEach((s) => { const cv = $(s); if (cv.width !== w || cv.height !== h) { cv.width = w; cv.height = h; } });
   $('#tblZoom').textContent = Math.round(zoom * 100) + '%';
+}
+/* ---------- Карта-подложка ---------- */
+// Картинка хранится в games/{id}/bgimg/data (уменьшенный JPEG в base64 или ссылка), настройки — meta.bg:
+// w — ширина карты в клетках, ox/oy — сдвиг в пикселях поля, op — непрозрачность, grid — показывать сетку
+
+const BGDEF = { w: 0, ox: 0, oy: 0, op: 1, grid: true };
+const bgSet = () => ({ ...BGDEF, ...((game && game.meta && game.meta.bg) || {}) });
+function loadBg(src) {
+  if (!src) { bgImg = null; bgSrc = ''; drawTerrain(); return; }
+  if (src === bgSrc) return;
+  bgSrc = src;
+  const img = new Image();
+  img.onload = () => { if (bgSrc === src) { bgImg = img; drawTerrain(); } };
+  img.onerror = () => app.toast('Не удалось загрузить карту-подложку');
+  img.src = src;
 }
 function drawTerrain() {
   if (!game) return;
-  const cv = $('#tblTerrain'), g = cv.getContext('2d');
+  const cv = $('#tblTerrain'), g = cv.getContext('2d'), bg = bgSet();
   layoutBoard();
   g.clearRect(0, 0, cv.width, cv.height);
   g.fillStyle = '#1f1b16';
   g.fillRect(0, 0, cv.width, cv.height);
+  if (bgImg) {
+    const w = (bg.w || W()) * CELL, h = (w * bgImg.naturalHeight) / bgImg.naturalWidth;
+    g.globalAlpha = bg.op;
+    g.drawImage(bgImg, bg.ox, bg.oy, w, h);
+    g.globalAlpha = 1;
+  }
+  // Поверх карты местность полупрозрачная — чтобы рисунок оставался виден
   Object.entries(game.map || {}).forEach(([k, type]) => {
     const [x, y] = k.split('_').map(Number), T = TERRAIN[type];
     if (!T) return;
-    g.fillStyle = T.color;
+    g.fillStyle = bgImg && type === 'wall' ? 'rgba(40,30,22,.55)' : T.color;
     g.fillRect(x * CELL, y * CELL, CELL, CELL);
+    if (bgImg && type === 'wall') { g.strokeStyle = 'rgba(255,190,120,.45)'; g.strokeRect(x * CELL + 1.5, y * CELL + 1.5, CELL - 3, CELL - 3); }
     if (type === 'difficult') { // штриховка
       g.strokeStyle = 'rgba(200,150,70,.5)';
       g.beginPath();
@@ -195,11 +225,130 @@ function drawTerrain() {
       g.stroke();
     }
   });
-  g.strokeStyle = 'rgba(255,255,255,.07)';
-  g.beginPath();
-  for (let x = 0; x <= W(); x++) { g.moveTo(x * CELL + 0.5, 0); g.lineTo(x * CELL + 0.5, cv.height); }
-  for (let y = 0; y <= H(); y++) { g.moveTo(0, y * CELL + 0.5); g.lineTo(cv.width, y * CELL + 0.5); }
-  g.stroke();
+  if (!bgImg || bg.grid) {
+    g.strokeStyle = bgImg ? 'rgba(0,0,0,.35)' : 'rgba(255,255,255,.07)';
+    g.beginPath();
+    for (let x = 0; x <= W(); x++) { g.moveTo(x * CELL + 0.5, 0); g.lineTo(x * CELL + 0.5, cv.height); }
+    for (let y = 0; y <= H(); y++) { g.moveTo(0, y * CELL + 0.5); g.lineTo(cv.width, y * CELL + 0.5); }
+    g.stroke();
+  }
+}
+// Уменьшить картинку до 2400 пикселей по большей стороне и сжать в JPEG — чтобы быстро грузилась у всех
+function shrinkImage(file) {
+  return new Promise((ok, fail) => {
+    const url = URL.createObjectURL(file), img = new Image();
+    img.onload = () => {
+      const k = Math.min(1, 2400 / Math.max(img.naturalWidth, img.naturalHeight)), cv = document.createElement('canvas');
+      cv.width = Math.round(img.naturalWidth * k); cv.height = Math.round(img.naturalHeight * k);
+      cv.getContext('2d').drawImage(img, 0, 0, cv.width, cv.height);
+      URL.revokeObjectURL(url);
+      ok({ data: cv.toDataURL('image/jpeg', 0.82), w: cv.width, h: cv.height });
+    };
+    img.onerror = () => { URL.revokeObjectURL(url); fail(new Error('не картинка')); };
+    img.src = url;
+  });
+}
+function mapDialog() {
+  const bg = bgSet(), fog = fogSet();
+  app.openModal(`<h2>🗺 Карта и туман войны</h2>
+    <h3>Карта-подложка</h3>
+    <div class="form-grid"><label style="grid-column:1/-1">Картинка с компьютера<input type="file" id="mFile" accept="image/*"></label>
+      <label style="grid-column:1/-1">…или ссылка на картинку<input id="mUrl" placeholder="https://…/map.jpg" value="${esc(bgSrc.startsWith('data:') ? '' : bgSrc)}"></label>
+      <label>Ширина карты, клеток<input type="number" id="mW" min="1" value="${bg.w || W()}"></label>
+      <label>Непрозрачность<input type="range" id="mOp" min="0.2" max="1" step="0.05" value="${bg.op}"></label>
+      <label>Сдвиг вправо, px<input type="number" id="mOx" value="${bg.ox}"></label><label>Сдвиг вниз, px<input type="number" id="mOy" value="${bg.oy}"></label>
+      <label class="check"><input type="checkbox" id="mGrid" ${bg.grid ? 'checked' : ''}> Сетка поверх карты</label>
+      <label class="check"><input type="checkbox" id="mFit" checked> Подогнать поле под карту</label>
+      <label>Поле, клеток в ширину<input type="number" id="mBw" min="5" max="80" value="${W()}"></label><label>…в высоту<input type="number" id="mBh" min="5" max="80" value="${H()}"></label></div>
+    <p class="muted small">Подгонка: посчитайте, сколько клеток по 5 фт помещается на карте в ширину, и укажите это число. Сдвигом совместите линии сетки с картой. Стены рисуйте по стенам карты — они закрывают обзор в тумане.</p>
+    ${bgSrc ? '<button class="danger" id="mDel">Убрать карту</button>' : ''}
+    <h3 class="mt">Туман войны</h3>
+    <div class="form-grid"><label>Режим<select id="fMode">${[['off', 'выключен'], ['vision', 'обзор персонажей + открытое мастером'], ['manual', 'только открытое мастером']].map(([v, n]) => `<option value="${v}" ${fog.mode === v ? 'selected' : ''}>${n}</option>`).join('')}</select></label>
+      <label>Дальность обзора, фт<input type="number" id="fSight" step="5" min="5" value="${fog.sight}"></label></div>
+    <p class="muted small">Обзор: игроки видят клетки в пределах дальности от своих персонажей и союзников, стены его перекрывают. Увиденное остаётся на карте приглушённым, но существ там не видно. Кисти «👁 Открыть» и «🌫 Скрыть» в инструментах открывают и закрывают клетки вручную.</p>
+    <button id="fReset">Забыть разведанное игроками</button>
+    <div class="modal-actions"><button data-act="closeModal">Отмена</button><button class="primary" id="mOk">Сохранить</button></div>`);
+  $('#mOk').onclick = async () => {
+    const upd = { 'meta/fog': { mode: $('#fMode').value, sight: Math.max(5, +$('#fSight').value || 60) } };
+    let iw = 0, ih = 0;
+    const file = $('#mFile').files[0], url = $('#mUrl').value.trim();
+    try {
+      if (file) {
+        const r = await shrinkImage(file);
+        if (r.data.length > 6e6) { app.toast('Картинка слишком большая даже после сжатия — возьмите поменьше'); return; }
+        upd.bgimg = { data: r.data }; iw = r.w; ih = r.h;
+      } else if (url && url !== bgSrc) upd.bgimg = { data: url };
+    } catch (e) { app.toast('Не удалось прочитать картинку'); return; }
+    const mw = Math.max(1, +$('#mW').value || W());
+    upd['meta/bg'] = { w: mw, ox: +$('#mOx').value || 0, oy: +$('#mOy').value || 0, op: +$('#mOp').value || 1, grid: $('#mGrid').checked };
+    // Размер поля: вручную или по пропорциям карты
+    let bw = Math.max(5, Math.min(80, +$('#mBw').value || W())), bh = Math.max(5, Math.min(80, +$('#mBh').value || H()));
+    const ratio = iw ? ih / iw : bgImg ? bgImg.naturalHeight / bgImg.naturalWidth : 0;
+    if ($('#mFit').checked && ratio) { bw = Math.min(80, mw); bh = Math.max(5, Math.min(80, Math.ceil(mw * ratio))); }
+    upd['meta/w'] = bw; upd['meta/h'] = bh;
+    app.closeModal();
+    await R.update(ref(gpath()), upd).catch((err) => app.toast(`Не удалось сохранить: ${esc(err.code || err.message)}`));
+  };
+  if ($('#mDel')) $('#mDel').onclick = async () => { app.closeModal(); await R.update(ref(gpath()), { bgimg: null, 'meta/bg': null }); };
+  $('#fReset').onclick = async () => { if (app.confirm('Забыть всё, что игроки разведали?')) { await R.remove(ref(gpath('seen'))); app.toast('Разведанное сброшено'); } };
+}
+
+/* ---------- Туман войны ---------- */
+// meta.fog: { mode: off | vision | manual, sight — дальность обзора, фт }. games/{id}/reveal — клетки, открытые мастером;
+// games/{id}/seen — клетки, которые персонажи уже видели (приглушены, существа там скрыты)
+
+const fogSet = () => ({ mode: 'off', sight: 60, ...((game && game.meta && game.meta.fog) || {}) });
+const fogOn = () => fogSet().mode !== 'off';
+// Видимость клетки из точки: луч не должен проходить через стену (сама стена видна)
+function lineClear(x0, y0, x1, y1) {
+  const dx = x1 - x0, dy = y1 - y0, n = Math.ceil(Math.hypot(dx, dy) * 3);
+  for (let i = 1; i < n; i++) {
+    const cx = Math.floor(x0 + (dx * i) / n), cy = Math.floor(y0 + (dy * i) / n);
+    if (cx === Math.floor(x1) && cy === Math.floor(y1)) return true;
+    if ((game.map || {})[`${cx}_${cy}`] === 'wall') return false;
+  }
+  return true;
+}
+// Что видит отряд: клетки в дальности обзора персонажей и союзников + открытые мастером
+function computeVision() {
+  const f = fogSet(), vis = new Set(Object.keys(game.reveal || {}));
+  if (f.mode === 'vision') {
+    const R2 = f.sight / 5;
+    Object.values(game.tokens || {}).filter((t) => team(t) === 'pc' && !isDead(t)).forEach((t) => {
+      const s = t.size || 1, ox = t.x + s / 2, oy = t.y + s / 2;
+      for (let x = Math.max(0, Math.floor(ox - R2 - 1)); x < Math.min(W(), Math.ceil(ox + R2 + 1)); x++)
+        for (let y = Math.max(0, Math.floor(oy - R2 - 1)); y < Math.min(H(), Math.ceil(oy + R2 + 1)); y++) {
+          const inside = x >= t.x && x < t.x + s && y >= t.y && y < t.y + s;
+          if (inside || (Math.hypot(x + 0.5 - ox, y + 0.5 - oy) <= R2 + 0.5 && lineClear(ox, oy, x + 0.5, y + 0.5))) vis.add(`${x}_${y}`);
+        }
+    });
+  }
+  return vis;
+}
+// Существо скрыто туманом от игрока: ни одна его клетка сейчас не видна (свои и союзники видны всегда)
+function fogHides(t) {
+  if (!fogVis || (isDM() && !fogPreview) || team(t) === 'pc') return false;
+  const s = t.size || 1;
+  for (let dx = 0; dx < s; dx++) for (let dy = 0; dy < s; dy++) if (fogVis.has(`${t.x + dx}_${t.y + dy}`)) return false;
+  return true;
+}
+function drawFog() {
+  const cv = $('#tblFog'), g = cv.getContext('2d');
+  g.clearRect(0, 0, cv.width, cv.height);
+  fogVis = fogOn() ? computeVision() : null;
+  if (!fogVis) return;
+  const player = !isDM() || fogPreview, seen = game.seen || {};
+  for (let x = 0; x < W(); x++) for (let y = 0; y < H(); y++) {
+    const k = `${x}_${y}`;
+    if (fogVis.has(k)) continue;
+    g.fillStyle = player ? (seen[k] ? 'rgba(10,8,6,.62)' : '#0a0806') : seen[k] ? 'rgba(0,0,0,.18)' : 'rgba(0,0,0,.42)';
+    g.fillRect(x * CELL, y * CELL, CELL, CELL);
+  }
+  // Игрок запоминает увиденное — общая разведка отряда
+  if (!isDM() && fogSet().mode === 'vision') {
+    const fresh = [...fogVis].filter((k) => !seen[k]);
+    if (fresh.length) { clearTimeout(seenTimer); seenTimer = setTimeout(() => R.update(ref(gpath('seen')), Object.fromEntries(fresh.map((k) => [k, 1]))).catch(() => {}), 400); }
+  }
 }
 // Клетки, занятые другими существами: сквозь союзника, недееспособного или существо на 2+ размера больше/меньше пройти можно
 // (это труднопроходимая местность), сквозь врага — нельзя. Закончить перемещение в занятой клетке нельзя.
@@ -249,7 +398,7 @@ function renderTokens() {
   const box = $('#tblTokens'), cur = currentEntry();
   const seen = new Set();
   Object.entries(game.tokens || {}).forEach(([id, t]) => {
-    if (t.hidden && !isDM()) return;
+    if ((t.hidden && !isDM()) || fogHides(t)) return;
     seen.add(id);
     let el = box.querySelector(`[data-tok="${id}"]`);
     if (!el) { el = document.createElement('div'); el.className = 'tok'; el.dataset.tok = id; box.appendChild(el); }
@@ -306,8 +455,8 @@ function onDown(e) {
   }
   // Выбор цели атаки: нажатие на чужой токен — атака; по пустому месту и своему токену — как обычно
   if (aim && tokEl && tokEl.dataset.tok !== aim.from) { attackTarget(tokEl.dataset.tok); return; }
-  if (TERRAIN[tool] || tool === 'erase') {
-    drag = { kind: 'paint', pending: {} };
+  if (TERRAIN[tool] || tool === 'erase' || tool === 'reveal' || tool === 'conceal') {
+    drag = { kind: 'paint', pending: {}, root: tool === 'reveal' || tool === 'conceal' };
     paintAt(p);
   } else if (tool === 'ruler') {
     ruler = { x0: p.x, y0: p.y, x1: p.x, y1: p.y };
@@ -400,7 +549,7 @@ function onUp(e) {
   hint('');
   if (d.kind === 'ruler') { ruler = null; drawRuler(); return; }
   if (d.kind === 'paint') {
-    if (Object.keys(d.pending).length) R.update(ref(gpath('map')), d.pending).catch((err) => app.toast(`Не удалось сохранить карту: ${esc(err.code || err.message)}`));
+    if (Object.keys(d.pending).length) R.update(ref(d.root ? gpath() : gpath('map')), d.pending).catch((err) => app.toast(`Не удалось сохранить карту: ${esc(err.code || err.message)}`));
   } else if (d.kind === 'token') {
     drawRange(null);
     const p = cellAt(e), t = game.tokens[d.id];
@@ -434,6 +583,16 @@ function onUp(e) {
 }
 function paintAt(p) {
   if (p.x < 0 || p.y < 0 || p.x >= W() || p.y >= H()) return;
+  // Кисти тумана: «Открыть» — клетка видна всем, «Скрыть» — закрыта, разведанное там тоже забывается
+  if (tool === 'reveal' || tool === 'conceal') {
+    const k = `${p.x}_${p.y}`, on = tool === 'reveal';
+    if (!!(game.reveal || {})[k] === on && (on || !(game.seen || {})[k])) return;
+    game.reveal = { ...(game.reveal || {}) };
+    if (on) game.reveal[k] = 1; else { delete game.reveal[k]; game.seen = { ...(game.seen || {}) }; delete game.seen[k]; drag.pending[`seen/${k}`] = null; }
+    drag.pending[`reveal/${k}`] = on ? 1 : null;
+    drawFog();
+    return;
+  }
   const k = `${p.x}_${p.y}`, v = tool === 'erase' ? null : tool;
   if ((game.map || {})[k] === (v || undefined)) return;
   game.map = { ...(game.map || {}) };
@@ -887,8 +1046,8 @@ const AB_N = { str: 'Силы', dex: 'Ловкости', con: 'Телослож�
 const SHAPE_N = { sphere: 'сфера', cone: 'конус', line: 'линия', cube: 'куб', aura: 'вокруг себя', target: 'одна цель' };
 const CONE_HALF = Math.atan(0.5); // ширина конуса равна расстоянию от точки начала
 const AUTO_FAIL_T = ['paralyzed', 'stunned', 'unconscious', 'petrified'];
-let cast = null; // размещение области: { area, info, caster, charId, slotKey, dm }
-let ruler = null; // линейка: { x0, y0, x1, y1 } — клетки
+
+
 const DMG_COLOR = [[/огн|огонь/, '#e0703a'], [/холод/, '#6fb7e8'], [/электр|молни/, '#b9a6ff'], [/звук|гром/, '#8f9ccf'], [/кислот/, '#8bc34a'],
   [/яд/, '#6fae3a'], [/излуч/, '#f0d36a'], [/некрот/, '#9b6fd1'], [/псих/, '#d07ab0'], [/силов/, '#b07ae0']];
 const colorFor = (dtype) => (DMG_COLOR.find(([re]) => re.test(String(dtype || '').toLowerCase())) || [0, '#d4a64a'])[1];
@@ -1248,7 +1407,7 @@ function fxShape(A) {
 }
 function tokCenter(id) {
   const t = game.tokens[id];
-  if (!t || (t.hidden && !isDM())) return null;
+  if (!t || (t.hidden && !isDM()) || fogHides(t)) return null;
   const s = (t.size || 1) * CELL;
   return { x: t.x * CELL + s / 2, y: t.y * CELL + s / 2, s };
 }
@@ -1378,6 +1537,7 @@ function renderAll() {
   if (aim) $('#tblBoard').dataset.tool = 'aim';
   if (cast) $('#tblBoard').dataset.tool = 'aim';
   if (!drag) drawAimRange();
+  drawFog();
   drawAreas();
   renderTokens();
   renderTurn();
@@ -1430,7 +1590,10 @@ function renderTools() {
   $('#tblTools').innerHTML = `<div class="seg">${t('move', '✋ Двигать', 'Перетаскивайте токены, по пустому месту — прокрутка')}${t('ruler', '📏 Линейка', 'Протяните, чтобы измерить расстояние')}
     ${isDM() ? t('wall', '▮ Стена') + t('difficult', '▦ Трудная') + t('water', '≈ Вода') + t('erase', '⌫ Ластик') + t('enemy', '＋ Существо', 'Нажмите на клетку, чтобы поставить врага или NPC из бестиария')
       + t('area', '◯ Область', 'Область со спасброском: дыхание, ловушка… Конус и линия — от выделенного существа')
-      + `<button class="${freeMove ? 'on' : ''}" data-tbl="freeMove" title="Двигать любые токены без учёта хода и скорости (толчок, перенос тела). То же — перетаскивание с Shift">🔓 Свободно</button>` : ''}
+      + `<button class="${freeMove ? 'on' : ''}" data-tbl="freeMove" title="Двигать любые токены без учёта хода и скорости (толчок, перенос тела). То же — перетаскивание с Shift">🔓 Свободно</button>`
+      + `<button data-tbl="mapCfg" title="Карта-подложка, размер поля, туман войны">🗺 Карта и туман</button>`
+      + (fogOn() ? t('reveal', '👁 Открыть', 'Кисть: открыть клетки для игроков') + t('conceal', '🌫 Скрыть', 'Кисть: закрыть клетки туманом')
+        + `<button class="${fogPreview ? 'on' : ''}" data-tbl="fogPreview" title="Показать поле так, как его видят игроки">👁 Вид игроков</button>` : '') : ''}
     ${!isDM() && !(hasMine && inFight()) ? t('place', hasMine ? '📍 Переставить меня' : '📍 Поставить персонажа', 'Нажмите на клетку') : ''}</div>`;
 }
 // Карточка хода: игроку — свой персонаж, мастеру — существо, чей сейчас ход
@@ -1592,6 +1755,8 @@ async function onClick(e) {
       addLog({ kind: 'death', who: t.name, txt: `спасбросок от смерти ${r.total} — ${RES[r.res]} (успехи ${r.s}/3, провалы ${r.f}/3)${r.s >= 3 ? ' — стабилизирован' : ''}${r.f >= 3 ? ' — погибает' : ''}` });
       if (r.res !== 'revive') setTimeout(() => { if (isTurnOf(id)) nextTurn(); }, 1500);
     }
+    else if (a === 'mapCfg') mapDialog();
+    else if (a === 'fogPreview') { fogPreview = !fogPreview; renderAll(); }
     else if (a === 'freeMove') { freeMove = !freeMove; renderTools(); app.toast(freeMove ? '🔓 Свободное перемещение: токены двигаются без учёта хода и скорости' : 'Свободное перемещение выключено'); }
     else if (a === 'castOff') cancelCast();
     else if (a === 'saveMine') saveMine(b.dataset.k, b.dataset.id);
