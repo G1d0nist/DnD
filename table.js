@@ -99,8 +99,10 @@ function subscribe(gid, code) {
   on('doors', (v) => { game.doors = v || {}; drawTerrain(); });
   on('effects', (v) => { game.effects = v || {}; syncEffects(); });
   on('xp', (v) => { game.xp = v || {}; });
+  on('scenes', (v) => { game.scenes = v || {}; });
+  on('rest', (v) => { game.rest = v; handleRest(); });
   on(`xpAward/${user.uid}`, (v) => { game.award = v; applyXp(); });
-  on('members', (v) => { game.members = v || {}; syncEffects(); applyXp(); });
+  on('members', (v) => { game.members = v || {}; syncEffects(); applyXp(); handleRest(); });
   on('tokens', (v) => { game.tokens = v || {}; cleanupInit(); syncEffects(); awardKills(); });
   on('map', (v) => { game.map = v || {}; drawTerrain(); });
   on('init', (v) => { game.init = v; checkMyTurn(); checkNpcTurn(); cleanupInit(); syncEffects(); });
@@ -1018,15 +1020,49 @@ function notifyLog() {
       app.toast(`🗡 ${esc(e.who)} атакует вас: ${e.hit ? `${e.crit ? 'КРИТ! ' : ''}попадание, <b>${e.dmg}</b> урона` : 'промах'}`, e.hit ? 'fumble' : '');
     if (e.kind === 'oa' && (e.foes || []).some((id) => game.tokens[id] && canMove(game.tokens[id])))
       app.toast(`⚠ ${esc(e.txt)}`, 'crit');
+    if (e.kind === 'chat') app.toast(`💬 <b>${esc(e.who)}</b>: ${esc(e.txt)}`);
   });
+}
+// Чат и броски: сообщение, «/r 2d6+3» — бросок на всех; броски из листа уходят в журнал, если включено
+const myName = () => (isDM() ? 'Мастер' : (game.tokens[`pc_${user.uid}`] || {}).name || ((me() || {}).char || {}).name || user.displayName || 'Игрок');
+const shareRolls = () => ls.get('dnd55-share-rolls') !== '0';
+let dmSecret = false;
+function sendChat() {
+  const inp = $('#tblChat'), txt = (inp.value || '').trim();
+  if (!txt || !game) return;
+  inp.value = '';
+  const m = txt.match(/^\/(?:r|к|бросок)\s+(.+)$/i);
+  if (m) {
+    const r = rollExpr(m[1]);
+    if (!r.detail) { app.toast('Не понял формулу броска — пример: /r 1d20+5'); return; }
+    addLog({ kind: 'roll', who: myName(), txt: m[1], total: r.total, detail: r.detail, ...(isDM() && dmSecret ? { dmOnly: true } : {}) });
+    return;
+  }
+  addLog({ kind: 'chat', who: myName(), txt: txt.slice(0, 400) });
+}
+document.addEventListener('dnd-roll', (ev) => {
+  if (!game || !user || !game.meta || !shareRolls()) return;
+  const d = ev.detail || {};
+  addLog({ kind: 'roll', who: myName(), txt: d.label, total: d.total, detail: d.detail, cls: d.cls || '', ...(isDM() && dmSecret ? { dmOnly: true } : {}) });
+});
+function renderChatBar() {
+  const bar = $('#tblChatOpts');
+  if (!bar) return;
+  bar.innerHTML = isDM()
+    ? `<label class="check small" title="Броски мастера (из листа, кубиков и /r) видны только ему"><input type="checkbox" data-tbl-secret ${dmSecret ? 'checked' : ''}> 🙈 Скрытые броски</label>`
+    : `<label class="check small" title="Проверки, спасброски и урон из листа появляются в общем журнале"><input type="checkbox" data-tbl-share ${shareRolls() ? 'checked' : ''}> 🎲 Мои броски из листа — в журнал</label>`;
 }
 function renderLog() {
   const box = $('#tblLog');
   if (!box) return;
   const dm = isDM();
   $('#tblLogClear').hidden = !dm;
-  box.innerHTML = logList().slice(0, 40).map((e) => {
+  // Скрытые броски мастера видит только мастер
+  box.innerHTML = logList().filter((e) => dm || !e.dmOnly).slice(0, 40).map((e) => {
     const time = e.t ? new Date(e.t).toLocaleTimeString('ru', { hour: '2-digit', minute: '2-digit' }) : '';
+    if (e.kind === 'chat') return `<div class="lg chat"><div><b>${esc(e.who)}</b>: ${esc(e.txt)}</div><div class="muted small">${time}</div></div>`;
+    if (e.kind === 'roll') return `<div class="lg roll ${e.cls || ''}${e.dmOnly ? ' secret' : ''}"><div>🎲 <b>${esc(e.who)}</b> — ${esc(e.txt)}: <span class="lg-roll">${e.total}</span>${e.dmOnly ? ' <span class="muted small">(скрыто)</span>' : ''}</div>
+      <div class="muted small">${esc(e.detail || '')} · ${time}</div></div>`;
     if (e.kind === 'atk') {
       const res = e.hit ? `<b class="lg-hit">${e.crit ? 'КРИТ! ' : 'попадание'}</b> · <b>${e.dmg}</b> ${esc(e.dtype || 'урона')}` : '<b class="lg-miss">промах</b>';
       return `<div class="lg atk ${e.hit ? 'hit' : 'miss'}"><div><b>${esc(e.who)}</b> → <b>${esc(e.tgtName)}</b>: ${esc(e.txt)}</div>
@@ -1115,7 +1151,7 @@ function attackTarget(tid) {
   });
   const ac = acOf(T, tid);
   const ro = { target: T.name, ac, adv, dis, dice: fxDice(a.from), autoCrit: d <= 5 && (tc.includes('paralyzed') || tc.includes('unconscious')) };
-  const res = a.npc ? npcAttackRoll(me_, A, ro) : app.attack(a.charId, A.id, ro);
+  const res = a.npc ? npcAttackRoll(me_, A, ro) : app.mute(() => app.attack(a.charId, A.id, ro));
   if (!res) { aim = null; renderAll(); return; }
   if (used.length) R.update(ref(gpath('effects')), Object.fromEntries(used.map((k) => [k, null]))).catch(() => {});
   addLog({ kind: 'atk', who: me_.name, txt: A.n, tgt: tid, tgtName: T.name, total: res.total, nat: res.nat, ac, hit: res.hit, crit: res.crit,
@@ -1374,8 +1410,8 @@ function confirmCast() {
 function doCastArea(chosen) {
   const A = cast.area, I = cast.info, c = cast;
   let roll = null;
-  if (c.charId) { roll = app.castArea(c.charId, I.id, c.slotKey); if (!roll) { cancelCast(); return; } }
-  else if (I.f) roll = app.rollFormula(I.f, I.n);
+  if (c.charId) { roll = app.mute(() => app.castArea(c.charId, I.id, c.slotKey)); if (!roll) { cancelCast(); return; } }
+  else if (I.f) roll = app.mute(() => app.rollFormula(I.f, I.n));
   const src = c.caster && game.tokens[c.caster], F = I.fxDef || null, names = chosen.map((id) => game.tokens[id].name).join(', ');
   const lvlTxt = roll && roll.castLvl > I.l ? ` (${roll.castLvl} ур.)` : '', who = src ? src.name : 'Мастер';
   const spend = () => { if ((c.charId || c.npcAct != null) && inFight()) R.update(ref(gpath(`econ/${c.caster}`)), { [I.act === 'bonus' ? 'b' : I.act === 'reaction' ? 'r' : 'a']: 1 }).catch(() => {}); };
@@ -1430,7 +1466,7 @@ function saveMine(k, tid) {
   const A = game.areas[k], t = game.tokens[tid], m = me();
   if (!A || !t || !m || !m.charId || !(A.tg || {})[tid] || A.tg[tid].done) return;
   const dexAdv = A.abil === 'dex' && (econ(tid).dodge || fxOf(tid).some(([, e]) => e.dexAdv));
-  const r = app.rollSave(m.charId, A.abil, A.dc, { label: A.n, adv: dexAdv ? ['Уклонение / Ускорение'] : [], dice: fxDice(tid) });
+  const r = app.mute(() => app.rollSave(m.charId, A.abil, A.dc, { label: A.n, adv: dexAdv ? ['Уклонение / Ускорение'] : [], dice: fxDice(tid) }));
   if (!r) return;
   const dmg = saveDmg(A, r.ok, (app.summary(m.charId) || {}).evasion);
   R.update(ref(gpath(`areas/${k}/tg/${tid}`)), { done: true, ok: r.ok, roll: r.total, dmg }).catch(() => {});
@@ -1493,7 +1529,7 @@ function areaAgain(k) {
   const A = game.areas[k];
   if (!A) return;
   // Для заклинаний с выбором целей снова срабатывает только по врагам заклинателя
-  const r = A.expr ? app.rollFormula(A.expr, A.n) : null, ids = areaTokens(A).filter((id) => !A.pick || !A.ck || team(game.tokens[id]) !== A.ck);
+  const r = A.expr ? app.mute(() => app.rollFormula(A.expr, A.n)) : null, ids = areaTokens(A).filter((id) => !A.pick || !A.ck || team(game.tokens[id]) !== A.ck);
   if (!ids.length) { app.toast('В области никого нет'); return; }
   R.update(ref(gpath(`areas/${k}`)), { dmg: r ? r.total : 0, dmgDetail: r ? r.detail : '', tg: Object.fromEntries(ids.map((id) => [id, { done: false }])) });
   addLog({ kind: 'area', who: A.who, txt: `⟳ ${A.n}${r ? ` — ${r.total} ${A.dtype || ''}` : ''} · цели: ${ids.map((id) => game.tokens[id].name).join(', ')}`, detail: r ? r.detail : '', fx: fxShape(A) });
@@ -1743,6 +1779,99 @@ function applyXp() {
   if (level) setTimeout(() => { app.toast('⬆ Достаточно опыта для нового уровня!', 'crit'); app.openLevelUp(m.charId); }, 600);
 }
 
+/* ---------- Сцены ---------- */
+// games/{id}/scenes/{sid}: { n, t } — список (его видят все); games/{id}/sceneData/{sid} — снимок поля: размер, карта, двери, свет,
+// туман, картинка, существа мастера и места персонажей. Его читает только мастер при переключении. meta.scene — текущая сцена
+function sceneSnap() {
+  const npcs = {}, pcs = {}, m = game.meta || {};
+  Object.entries(game.tokens || {}).forEach(([id, t]) => { if (t.kind === 'npc') npcs[id] = t; else pcs[id] = { x: t.x, y: t.y }; });
+  return { w: W(), h: H(), bg: m.bg || null, fog: m.fog || null, map: game.map || null, doors: game.doors || null, lights: game.lights || null,
+    reveal: game.reveal || null, seen: game.seen || null, bgimg: bgSrc ? { data: bgSrc } : null, npcs, pcs };
+}
+// Сохранить текущее поле в его сцену (или в новую «Сцена N»)
+function saveScene() {
+  const m = game.meta || {}, sid = m.scene || R.push(ref(gpath('scenes'))).key;
+  const name = ((game.scenes || {})[sid] || {}).n || `Сцена ${Object.keys(game.scenes || {}).length + 1}`;
+  return R.update(ref(gpath()), { [`sceneData/${sid}`]: sceneSnap(), [`scenes/${sid}`]: { n: name, t: Date.now() }, 'meta/scene': sid }).then(() => sid);
+}
+// Перейти в сцену: текущая сохраняется, поле заменяется снимком; бой заканчивается, персонажи встают на свои места в той сцене
+async function loadScene(sid, empty, name) {
+  await saveScene();
+  const snap = empty ? { w: 30, h: 20 } : (await R.get(ref(gpath(`sceneData/${sid}`)))).val() || {};
+  const upd = { map: snap.map || null, doors: snap.doors || null, lights: snap.lights || null, reveal: snap.reveal || null, seen: snap.seen || null,
+    bgimg: snap.bgimg || null, 'meta/w': snap.w || 30, 'meta/h': snap.h || 20, 'meta/bg': snap.bg || null, 'meta/fog': snap.fog || null, 'meta/scene': sid,
+    areas: null, init: null, econ: null };
+  Object.entries(game.tokens || {}).forEach(([id, t]) => {
+    if (t.kind === 'npc') { upd[`tokens/${id}`] = null; return; }
+    const p = (snap.pcs || {})[id], w = snap.w || 30, h = snap.h || 20;
+    upd[`tokens/${id}/x`] = p ? p.x : Math.min(t.x, w - 1); upd[`tokens/${id}/y`] = p ? p.y : Math.min(t.y, h - 1);
+  });
+  Object.entries(snap.npcs || {}).forEach(([id, t]) => { upd[`tokens/${id}`] = t; });
+  Object.entries(game.effects || {}).forEach(([k, e]) => { if (!game.tokens[e.tgt] || game.tokens[e.tgt].kind === 'npc') upd[`effects/${k}`] = null; });
+  await R.update(ref(gpath()), upd);
+  addLog({ kind: 'sys', txt: `🎬 Сцена: ${name || ((game.scenes || {})[sid] || {}).n || 'новая'}` });
+}
+function sceneDialog() {
+  const cur = (game.meta || {}).scene, list = Object.entries(game.scenes || {}).sort((a, b) => (a[1].t || 0) - (b[1].t || 0));
+  app.openModal(`<h2>🎬 Сцены</h2>
+    <p class="muted small">Сцена — отдельное поле со своей картой, стенами, дверями, светом, туманом и существами. При переходе текущая сохраняется сама, бой заканчивается.</p>
+    <div class="list">${list.map(([id, s]) => `<div class="li"><div class="li-head"><span class="li-title">${esc(s.n)}${id === cur ? ' <span class="tag g">сейчас</span>' : ''}</span>
+      <span class="btns">${id === cur ? '' : `<button class="primary" data-scn="go" data-id="${id}">Перейти</button>`}<button class="ghost" data-scn="ren" data-id="${id}" title="Переименовать">✎</button>
+      ${id === cur ? '' : `<button class="ghost" data-scn="del" data-id="${id}" title="Удалить">✕</button>`}</span></div></div>`).join('') || '<p class="muted small">Сцен пока нет — текущее поле сохранится как первая.</p>'}</div>
+    <div class="row gap wrap mt"><input id="scnName" placeholder="Название новой сцены" style="flex:1"><button data-scn="new">＋ Новая пустая сцена</button></div>
+    <div class="modal-actions"><button data-scn="save">💾 Сохранить текущую</button><button class="primary" data-act="closeModal">Готово</button></div>`);
+  $$('[data-scn]').forEach((b) => b.addEventListener('click', async () => {
+    const k = b.dataset.scn, id = b.dataset.id;
+    try {
+      if (k === 'go') {
+        if (inFight() && !app.confirm('Идёт бой. Перейти в другую сцену и закончить бой?')) return;
+        app.closeModal(); await loadScene(id);
+      } else if (k === 'new') {
+        const n = $('#scnName').value.trim() || `Сцена ${Object.keys(game.scenes || {}).length + 2}`, nid = R.push(ref(gpath('scenes'))).key;
+        app.closeModal();
+        await R.set(ref(gpath(`scenes/${nid}`)), { n, t: Date.now() });
+        await loadScene(nid, true, n);
+      } else if (k === 'ren') {
+        const n = prompt('Название сцены', (game.scenes[id] || {}).n || '');
+        if (n && n.trim()) { await R.update(ref(gpath(`scenes/${id}`)), { n: n.trim() }); app.closeModal(); sceneDialog(); }
+      } else if (k === 'del') {
+        if (!app.confirm(`Удалить сцену «${(game.scenes[id] || {}).n}»?`)) return;
+        await R.update(ref(gpath()), { [`scenes/${id}`]: null, [`sceneData/${id}`]: null }); app.closeModal(); sceneDialog();
+      } else if (k === 'save') { await saveScene(); app.toast('💾 Сцена сохранена'); app.closeModal(); sceneDialog(); }
+    } catch (err) { app.toast(`Не удалось: ${esc(err.code || err.message)}`); }
+  }));
+}
+
+/* ---------- Отдых для всей группы ---------- */
+// games/{id}/rest: { kind: short | long, id, t } — объявляет мастер; браузер каждого игрока применяет его один раз
+function restDialog() {
+  app.openModal(`<h2>🏕 Отдых</h2>
+    <p class="small"><b>Короткий</b> (1 час): у каждого игрока откроется окно костей хитов; восстановятся ресурсы короткого отдыха.<br>
+    <b>Долгий</b> (8 часов): у всех восстановятся хиты, ячейки, ресурсы и кости хитов; бой и эффекты заклинаний заканчиваются.</p>
+    <label class="check"><input type="checkbox" id="rNpc"> Существам на поле тоже восстановить хиты (при долгом отдыхе)</label>
+    <div class="modal-actions"><button data-act="closeModal">Отмена</button><button data-rest="short">☕ Короткий отдых</button><button class="primary" data-rest="long">🌙 Долгий отдых</button></div>`);
+  $$('[data-rest]').forEach((b) => b.addEventListener('click', async () => {
+    const kind = b.dataset.rest, healNpc = $('#rNpc').checked, upd = { rest: { kind, id: R.push(ref(gpath('rest'))).key, t: Date.now() } };
+    if (kind === 'long') {
+      Object.assign(upd, { init: null, econ: null, effects: null });
+      if (healNpc) Object.entries(game.tokens).forEach(([id, t]) => { if (t.kind === 'npc' && !isDead(t)) Object.assign(upd, { [`tokens/${id}/hp`]: t.hpMax, [`tokens/${id}/dsS`]: null, [`tokens/${id}/dsF`]: null }); });
+    }
+    app.closeModal();
+    await R.update(ref(gpath()), upd);
+    addLog({ kind: 'sys', txt: kind === 'long' ? '🌙 Долгий отдых: 8 часов' : '☕ Короткий отдых: 1 час' });
+  }));
+}
+function handleRest() {
+  const m = me(), v = game && game.rest;
+  if (!v || !m || !m.charId || isDM()) return;
+  const key = `dnd55-rest-${game.id}`;
+  if (ls.get(key) === v.id) return;
+  ls.set(key, v.id);
+  if (Date.now() - (v.t || 0) > 30 * 60 * 1000) return; // давнее объявление — не повторять
+  if (v.kind === 'long') { app.longRest(m.charId); app.toast('🌙 Мастер объявил долгий отдых — всё восстановлено', 'crit'); }
+  else { app.toast('☕ Мастер объявил короткий отдых — потратьте кости хитов', 'crit'); app.shortRest(m.charId); }
+}
+
 /* ---------- Анимации ---------- */
 // Запускаются у всех участников по новым записям журнала: снаряд или удар → число урона над целью,
 // вспышка области, ☠ при гибели. Записи, бывшие до открытия страницы, не анимируются.
@@ -1896,6 +2025,7 @@ function renderAll() {
   renderSide();
   renderMembers();
   renderLog();
+  renderChatBar();
   renderSaves();
   renderCastBar();
 }
@@ -1945,6 +2075,8 @@ function renderTools() {
       + t('area', '◯ Область', 'Область со спасброском: дыхание, ловушка… Конус и линия — от выделенного существа')
       + `<button class="${freeMove ? 'on' : ''}" data-tbl="freeMove" title="Двигать любые токены без учёта хода и скорости (толчок, перенос тела). То же — перетаскивание с Shift">🔓 Свободно</button>`
       + `<button data-tbl="mapCfg" title="Карта-подложка, размер поля, туман войны">🗺 Карта и туман</button>`
+      + `<button data-tbl="scenes" title="Несколько полей: таверна, подземелье, логово — переключение одной кнопкой">🎬 Сцены${(game.meta || {}).scene && (game.scenes || {})[game.meta.scene] ? `: ${esc(game.scenes[game.meta.scene].n)}` : ''}</button>`
+      + '<button data-tbl="rest" title="Короткий или долгий отдых для всей группы">🏕 Отдых</button>'
       + (fogOn() ? t('reveal', '👁 Открыть', 'Кисть: открыть клетки для игроков') + t('conceal', '🌫 Скрыть', 'Кисть: закрыть клетки туманом')
         + `<button class="${fogPreview ? 'on' : ''}" data-tbl="fogPreview" title="Показать поле так, как его видят игроки">👁 Вид игроков</button>` : '') : ''}
     ${!isDM() && !(hasMine && inFight()) ? t('place', hasMine ? '📍 Переставить меня' : '📍 Поставить персонажа', 'Нажмите на клетку') : ''}</div>`;
@@ -2080,7 +2212,7 @@ async function onClick(e) {
     } else if (a === 'leave') await leaveGame();
     else if (a === 'zoomIn' || a === 'zoomOut') { zoom = Math.max(0.4, Math.min(2, +(zoom + (a === 'zoomIn' ? 0.2 : -0.2)).toFixed(1))); layoutBoard(); }
     else if (a === 'rollInit') {
-      const m = me(), roll = app.rollInit(m.charId), s = app.summary(m.charId);
+      const m = me(), roll = app.mute(() => app.rollInit(m.charId)), s = app.summary(m.charId);
       await R.set(ref(gpath(`init/list/${user.uid}`)), { name: s.name, roll, owner: user.uid, kind: 'pc', tokenId: `pc_${user.uid}` });
     } else if (a === 'rollNpc') {
       const upd = {};
@@ -2106,13 +2238,16 @@ async function onClick(e) {
       // Спасбросок от смерти из листа; после него ход заканчивается (при 20 — персонаж в сознании и ходит дальше)
       const m = me(), id = b.dataset.id, t = game.tokens[id];
       if (!m || !m.charId || !t) return;
-      const r = app.deathSave(m.charId);
+      const r = app.mute(() => app.deathSave(m.charId));
       if (!r) return;
       await R.update(ref(gpath(`econ/${id}`)), { ds: 1 });
       const RES = { revive: 'натуральная 20 — приходит в себя с 1 хитом!', fail2: 'натуральная 1 — два провала', ok: 'успех', fail: 'провал' };
       addLog({ kind: 'death', who: t.name, txt: `спасбросок от смерти ${r.total} — ${RES[r.res]} (успехи ${r.s}/3, провалы ${r.f}/3)${r.s >= 3 ? ' — стабилизирован' : ''}${r.f >= 3 ? ' — погибает' : ''}` });
       if (r.res !== 'revive') setTimeout(() => { if (isTurnOf(id)) nextTurn(); }, 1500);
     }
+    else if (a === 'chatSend') sendChat();
+    else if (a === 'scenes') sceneDialog();
+    else if (a === 'rest') restDialog();
     else if (a === 'mapCfg') mapDialog();
     else if (a === 'fogPreview') { fogPreview = !fogPreview; renderAll(); }
     else if (a === 'freeMove') { freeMove = !freeMove; renderTools(); app.toast(freeMove ? '🔓 Свободное перемещение: токены двигаются без учёта хода и скорости' : 'Свободное перемещение выключено'); }
@@ -2148,6 +2283,8 @@ async function onClick(e) {
 document.addEventListener('click', (e) => { if (e.target.closest('#tab-table')) onClick(e); });
 document.addEventListener('change', (e) => {
   if (e.target.matches('[data-tbl-hidden]') && game && selId) R.update(ref(gpath(`tokens/${selId}`)), { hidden: e.target.checked });
+  if (e.target.matches('[data-tbl-secret]')) dmSecret = e.target.checked;
+  if (e.target.matches('[data-tbl-share]')) ls.set('dnd55-share-rolls', e.target.checked ? '1' : '0');
   if (e.target.matches('[data-tbl-light]') && game && selId) {
     const i = +e.target.value, [b, d] = (LIGHTS[i][0] || '').split('/').map(Number);
     R.update(ref(gpath(`tokens/${selId}`)), { lt: i ? { b, d, i } : null }).catch((err) => app.toast(`Не удалось: ${esc(err.code || err.message)}`));
@@ -2158,6 +2295,7 @@ document.addEventListener('change', (e) => {
   if (e.target.matches('[data-tbl-sv]') && game && selId) R.update(ref(gpath(`tokens/${selId}/sv`)), { [e.target.dataset.tblSv]: +e.target.value || 0 });
 });
 document.addEventListener('keydown', (e) => {
+  if (e.key === 'Enter' && e.target.id === 'tblChat') { e.preventDefault(); sendChat(); return; }
   if (e.key !== 'Escape') return;
   if (cast) cancelCast();
   else if (aim) { aim = null; hint(''); renderAll(); }

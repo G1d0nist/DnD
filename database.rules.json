@@ -51,6 +51,15 @@
         "xp": {
           ".write": false
         },
+        "scenes": {
+          ".write": false
+        },
+        "sceneData": {
+          ".write": false
+        },
+        "rest": {
+          ".write": false
+        },
         "xpAward": {
           "$uid": {
             ".write": "auth != null && auth.uid === $uid"

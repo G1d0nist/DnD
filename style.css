@@ -509,3 +509,10 @@ button.stat:hover { border-color: var(--gold); }
 .cp-row { display: flex; gap: 8px; align-items: flex-start; padding: 6px 8px; border-radius: 7px; border: 1px solid var(--line); background: var(--bg2); }
 .cp-row input { margin-top: 3px; }
 .cp-row.off { opacity: .5; }
+.chat-row { display: flex; gap: 6px; }
+.chat-row input { flex: 1; min-width: 0; }
+.lg.chat { border-left-color: var(--gold); }
+.lg.roll { border-left-color: #6fb7e8; }
+.lg.roll.crit .lg-roll { color: #7ddc7d; }
+.lg.roll.fumble .lg-roll { color: #f3b1a8; }
+.lg.secret { opacity: .75; border-left-style: dashed; }

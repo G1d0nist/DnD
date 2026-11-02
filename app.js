@@ -226,6 +226,11 @@ window.dndApp = {
     return c.spells.filter((s) => +s.l === 0 || s.prep || s.always).map((s) => ({ s, a: spellArea(s) || (extra.includes(s.e) ? plain(s) : null) })).filter((x) => x.a)
       .map(({ s, a }) => ({ id: s.id, e: s.e || '', n: s.n, l: +s.l, f: s.f || '', u: s.u || '', addMod: !!s.addMod, cn: !!s.cn, dur: s.d || '', dc: spellDCFor(c, s), slots: slotOptions(c, s), ...a }));
   },
+  // Выполнить fn без отправки бросков в общий журнал (стол пишет туда сам)
+  mute(fn) { rollMute++; try { return fn(); } finally { rollMute--; } },
+  // Отдых, объявленный мастером на столе
+  longRest(id) { if (!state.chars[id]) return; if (state.current !== id) state.current = id; tracked('долгий отдых', () => doLongRest(ch())); save(); render(); },
+  shortRest(id) { if (!state.chars[id]) return; if (state.current !== id) { state.current = id; render(); } ACT.shortRest(); },
   // Опыт со стола; canLevel — хватает на следующий уровень
   addXp(id, n) {
     const c = state.chars[id];
@@ -854,11 +859,15 @@ function rollDice(label, expr) {
   logRoll(label, r.total, `${expr}: ${r.detail}`);
   return r;
 }
+// rollMute > 0 — бросок сделан столом (атака, спасбросок), он сам пишет его в общий журнал
+let rollMute = 0;
 function logRoll(label, total, detail, cls = '') {
   rollLog.unshift({ label, total, detail, cls, t: new Date().toLocaleTimeString('ru', { hour: '2-digit', minute: '2-digit' }) });
   rollLog.length = Math.min(rollLog.length, 60);
   renderLog();
   toast(`<b class="big">${total}</b>${esc(label)}<div class="rd">${esc(detail)}</div>`, cls);
+  // Остальные броски из листа (проверки, спасброски, урон) стол может показать всем
+  if (!rollMute) document.dispatchEvent(new CustomEvent('dnd-roll', { detail: { label, total, detail, cls } }));
 }
 function renderLog() {
   $('#rollLog').innerHTML = rollLog.map((r) => `<div class="roll ${r.cls}"><div class="rt"><span>${esc(r.label)}</span><b>${r.total}</b></div><div class="rd">${esc(r.detail)} · ${r.t}</div></div>`).join('') || '<div class="muted small">Бросков пока не было</div>';
@@ -2425,6 +2434,18 @@ function doDeathSave(c) {
   if (cb.deathF >= 3) toast('☠ Три провала — персонаж погиб', 'fumble');
   return { nat, total, res, s: cb.deathS, f: cb.deathF };
 }
+function doLongRest(c) {
+  const cb = c.combat;
+  cb.hp = cb.hpMax; cb.temp = 0; cb.hdUsed = 0; cb.hdUsedBy = {}; cb.deathS = 0; cb.deathF = 0;
+  cb.exhaustion = Math.max(0, cb.exhaustion - 1);
+  cb.conditions = cb.conditions.filter((k) => k !== 'unconscious');
+  c.effects = []; endConc(c); pendingConc = 0;
+  c.shape = null;
+  c.slots.forEach((s) => { s.used = 0; }); c.pact.used = 0;
+  c.resources.forEach((r) => { if (r.recharge !== 'none') r.used = 0; });
+  (c.companions || []).forEach((p) => { p.hp = p.hpMax; });
+  toast('🌙 Долгий отдых завершён — всё восстановлено');
+}
 function applyHeal(n) {
   const cb = ch().combat;
   if (n <= 0) return;
@@ -2699,14 +2720,7 @@ const ACT = {
   },
   longRest() {
     if (!confirmBox('Завершить долгий отдых? Восстановятся хиты, все кости хитов, ячейки и ресурсы; истощение уменьшится на 1.')) return;
-    const c = ch(), cb = c.combat;
-    cb.hp = cb.hpMax; cb.temp = 0; cb.hdUsed = 0; cb.hdUsedBy = {}; cb.deathS = 0; cb.deathF = 0;
-    cb.exhaustion = Math.max(0, cb.exhaustion - 1);
-    cb.conditions = cb.conditions.filter((k) => k !== 'unconscious');
-    c.effects = []; endConc(c); pendingConc = 0;
-    c.slots.forEach((s) => { s.used = 0; }); c.pact.used = 0;
-    c.resources.forEach((r) => { if (r.recharge !== 'none') r.used = 0; });
-    toast('🌙 Долгий отдых завершён — всё восстановлено');
+    doLongRest(ch());
   },
   applyClass() {
     const c = ch(), name = c.info.cls.trim();
