@@ -590,3 +590,12 @@ button.stat:hover { border-color: var(--gold); }
 .tbl-tools select[data-tbl-brush].on { border-color: var(--gold); color: var(--gold2); }
 .tbl-board[data-tool="tree"], .tbl-board[data-tool="rock"], .tbl-board[data-tool="bush"], .tbl-board[data-tool="road"], .tbl-board[data-tool="sand"],
 .tbl-board[data-tool="bridge"], .tbl-board[data-tool="furn"], .tbl-board[data-tool="floor"] { cursor: crosshair; }
+/* Группы инструментов стола */
+.tbl-tools { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 14px; }
+.tgroup { display: flex; align-items: center; gap: 6px; }
+.tg-l { font-size: 11px; color: var(--muted); text-transform: uppercase; letter-spacing: .05em; white-space: nowrap; }
+@media (max-width: 760px) {
+  .tbl-tools { flex-wrap: nowrap; overflow-x: auto; max-width: calc(100vw - 40px); scrollbar-width: thin; }
+  .tbl-tools .seg { overflow: visible; max-width: none; }
+  .tgroup { flex: 0 0 auto; }
+}

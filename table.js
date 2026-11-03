@@ -29,6 +29,7 @@ const PALETTE = ['#d4a64a', '#5b8fc9', '#5a9e5a', '#9b6fd1', '#c97a3d', '#3db0a8
 let FB = null, R = null, db = null, user = null;
 let game = null; // { id, code, meta, members, tokens, map, init }
 let unsubs = [];
+let myGames = null, myGamesLoading = false; // мастер: свои сохранённые игры (users/{uid}/games) для лобби
 let tool = 'move', zoom = 1, selId = null;
 let freeMove = false; // мастер: двигать без ограничений (толчок, перенос тела)
 let bgImg = null, bgSrc = ''; // карта-подложка
@@ -61,7 +62,7 @@ function boot() {
     const was = user && user.uid;
     user = u;
     if (!u) leaveLocal();
-    else if (was !== u.uid) { if (game) { unsubs.forEach((f) => f()); unsubs = []; game = null; selId = null; } tryRejoin(); }
+    else if (was !== u.uid) { if (game) { unsubs.forEach((f) => f()); unsubs = []; game = null; selId = null; } myGames = null; tryRejoin(); setTimeout(syncBestiary, 0); }
     renderAll();
   });
 }
@@ -84,8 +85,24 @@ async function createGame(name) {
   if (!code) throw new Error('не удалось выдать код');
   await R.set(ref(`games/${gid}/meta`), { dm: user.uid, name: name || 'Новая игра', code, w: 30, h: 20, created: R.serverTimestamp() });
   await R.set(ref(`games/${gid}/members/${user.uid}`), { name: user.displayName || user.email, role: 'dm', online: true });
+  await R.set(ref(`users/${user.uid}/games/${gid}`), { n: name || 'Новая игра', code, t: Date.now() }).catch(() => {});
+  myGames = null;
   subscribe(gid, code);
   app.toast(`🗺 Игра создана. Код: <b>${code}</b> — отправьте его игрокам`, 'crit');
+}
+// Мастер: список своих игр — чтобы продолжить приключение после выхода
+async function loadMyGames() {
+  if (!user || !R || myGamesLoading) return;
+  myGamesLoading = true;
+  try { myGames = (await R.get(ref(`users/${user.uid}/games`))).val() || {}; } catch (e) { myGames = {}; }
+  myGamesLoading = false;
+  if (!game) renderLobby();
+}
+async function deleteGame(gid, code) {
+  await R.remove(ref(`codes/${code}`)).catch(() => {});
+  await R.remove(ref(`games/${gid}`)).catch(() => {});
+  await R.remove(ref(`users/${user.uid}/games/${gid}`)).catch(() => {});
+  myGames = null;
 }
 async function joinGame(code, charId) {
   code = String(code || '').trim().toUpperCase();
@@ -105,7 +122,13 @@ function subscribe(gid, code) {
   ls.set(GAME_KEY, JSON.stringify({ id: gid, code, uid: user.uid }));
   const lost = (e) => { if (String(e && e.code).includes('PERMISSION')) { app.toast('Нет доступа к игре — возможно, вас исключили'); leaveLocal(); renderAll(); } };
   const on = (p, fn) => unsubs.push(R.onValue(ref(gpath(p)), (s) => { if (game && game.id === gid) { fn(s.val()); renderAll(); } }, lost));
-  on('meta', (v) => { if (!v) { app.toast('Игра завершена мастером'); leaveLocal(); } else { game.meta = v; drawTerrain(); } });
+  // Мастер: игра в списке «Мои игры» (и для игр, созданных раньше, чем появился список)
+  let indexed = false;
+  on('meta', (v) => {
+    if (!v) { app.toast('Игра завершена мастером'); if (user) R.remove(ref(`users/${user.uid}/games/${gid}`)).catch(() => {}); leaveLocal(); return; }
+    game.meta = v; drawTerrain();
+    if (!indexed && user && v.dm === user.uid) { indexed = true; R.update(ref(`users/${user.uid}/games/${gid}`), { n: v.name || 'Игра', code: v.code || code, t: Date.now() }).catch(() => {}); R.update(ref(gpath(`members/${user.uid}`)), { online: true }).catch(() => {}); }
+  });
   on('bgimg', (v) => { loadBg(v && v.data); });
   on('reveal', (v) => { game.reveal = v || {}; });
   on('seen', (v) => { game.seen = v || {}; });
@@ -149,12 +172,27 @@ function leaveLocal() {
 }
 async function leaveGame() {
   if (isDM()) {
-    if (!app.confirm('Завершить игру для всех? Поле, токены и инициатива будут удалены.')) return;
+    // Игра сохраняется целиком: сцены, поле, существа, сундуки, материалы, добыча — продолжить можно из лобби
     const { id, code } = game;
-    leaveLocal();
-    // Сначала код (правило проверяет, что вы мастер этой игры), затем сама игра
-    await R.remove(ref(`codes/${code}`)).catch(() => {});
-    await R.remove(ref(`games/${id}`));
+    app.openModal(`<div><h2>Выйти из игры</h2>
+      <p>Игра <b>${esc((game.meta || {}).name || '')}</b> сохранится: сцены, поле, существа, сундуки, материалы и добыча. Продолжить её можно в лобби, в «📂 Мои игры»; игроки вернутся по тому же коду <b>${esc(code)}</b>.</p>
+      <div class="modal-actions"><button data-act="closeModal">Отмена</button><button class="danger" id="lgDel">🗑 Удалить навсегда</button><button class="primary" id="lgKeep">💾 Сохранить и выйти</button></div></div>`);
+    $('#lgKeep').onclick = async () => {
+      app.closeModal();
+      await saveScene().catch(() => {});
+      await R.update(ref(gpath(`members/${user.uid}`)), { online: false }).catch(() => {});
+      await R.update(ref(`users/${user.uid}/games/${id}`), { n: (game.meta || {}).name || 'Игра', code, t: Date.now() }).catch(() => {});
+      leaveLocal(); myGames = null; renderAll();
+      app.toast('💾 Игра сохранена — продолжить можно в лобби, «📂 Мои игры»', 'crit');
+    };
+    $('#lgDel').onclick = async () => {
+      if (!app.confirm('Удалить игру навсегда? Сцены, существа и всё на поле пропадут.')) return;
+      app.closeModal();
+      leaveLocal();
+      await deleteGame(id, code);
+      renderAll();
+    };
+    return;
   } else {
     if (!app.confirm('Покинуть игру? Ваш токен уберётся с поля.')) return;
     const id = game.id;
@@ -815,7 +853,23 @@ function BEST() {
     .sort((a, b) => crNum(a.cr) - crNum(b.cr) || String(a.n).localeCompare(String(b.n), 'ru'));
   return monCache;
 }
-function saveCustomMons(list) { ls.set('dnd55-bestiary', JSON.stringify(list)); monCache = null; }
+// Своё бестиарие мастера хранится и в браузере, и в аккаунте (users/{uid}/bestiary) — одно и то же на всех устройствах
+function saveCustomMons(list) {
+  ls.set('dnd55-bestiary', JSON.stringify(list)); monCache = null;
+  if (user && R) R.set(ref(`users/${user.uid}/bestiary`), list).catch(() => {});
+}
+// При входе: объединить копию из аккаунта и из браузера (одно существо — более свежая правка, поле t)
+async function syncBestiary() {
+  if (!user || !R) return;
+  try {
+    const remote = (await R.get(ref(`users/${user.uid}/bestiary`))).val();
+    const list = Array.isArray(remote) ? remote.filter(Boolean) : remote ? Object.values(remote) : [], byE = new Map();
+    [...list, ...customMons()].forEach((m) => { if (!m || !m.e) return; const o = byE.get(m.e); if (!o || (+m.t || 0) >= (+o.t || 0)) byE.set(m.e, m); });
+    const merged = [...byE.values()];
+    ls.set('dnd55-bestiary', JSON.stringify(merged)); monCache = null;
+    if (JSON.stringify(merged) !== JSON.stringify(list)) await R.set(ref(`users/${user.uid}/bestiary`), merged);
+  } catch (e) { /* нет сети или прав — остаётся копия в браузере */ }
+}
 // Атаки существа → формат стола (досягаемость и дальность)
 function npcAttacks(t) {
   return (t.atk || []).map((a, i) => {
@@ -2822,7 +2876,7 @@ function monEditor(src, tokenId, done) {
     const cleanActs = acts.filter((a) => String(a.n || '').trim()).map((a) => ({ n: String(a.n).trim(), shape: a.shape || 'sphere', size: +a.size || 5, save: a.save || 'dex', dc: +a.dc || 10,
       f: a.f || '', dtype: a.dtype || '', half: a.half !== false, rech: +a.rech || 0, ...(+a.sp ? { sp: +a.sp } : {}) }));
     const hpTxt = $('#meHp').value.trim() || '1', leg = +$('#meLeg').value || 0, lr = +$('#meLr').value || 0, cs = +$('#meCs').value || 0, sdc = +$('#meSdc').value || 0;
-    const mon = { n: $('#meN').value.trim() || 'Существо', e: (src && src.e) || `custom_${Date.now().toString(36)}`, cr: $('#meCr').value, size: $('#meSz').value, ac: +$('#meAc').value || 10, hp: hpTxt,
+    const mon = { n: $('#meN').value.trim() || 'Существо', e: (src && src.e) || `custom_${Date.now().toString(36)}`, t: Date.now(), cr: $('#meCr').value, size: $('#meSz').value, ac: +$('#meAc').value || 10, hp: hpTxt,
       speed: $('#meSp').value.trim() || '30', ab: abv, sv: Object.fromEntries(ABK.filter((k, i) => svAll[k] !== abMod(abv[i])).map((k) => [k, svAll[k]])), multi: Math.max(1, +$('#meMu').value || 1),
       atk: cleanAtk, x: $('#meX').value.trim(), acts: cleanActs, ...(leg ? { leg } : {}), ...(lr ? { lr } : {}), ...(cs ? { cs } : {}), ...(sdc ? { sdc } : {}) };
     mon.type = $('#meType').value || 'monstrosity';
@@ -2979,6 +3033,7 @@ function genDialog() {
     <div class="form-grid"><label style="grid-column:1/-1">Шаблон<select id="gT"><optgroup label="Местность">${group('terrain')}</optgroup><optgroup label="Локации">${group('location')}</optgroup></select></label>
       <label>Ширина, клеток<input type="number" id="gW" min="12" max="80"></label><label>Высота, клеток<input type="number" id="gH" min="10" max="80"></label>
       <label>Густота<input type="range" id="gD" min="0" max="1" step="0.05" value="${st.d != null ? st.d : 0.3}"></label>
+      <label id="gVBox">Вариант<select id="gV"></select></label>
       <label>Освещение${sel('gA', AMB_N)}</label><label>Туман войны${sel('gF', FOG_N)}</label>
       <label class="check"><input type="checkbox" id="gRoad"> Дорога</label>
       <label class="check"><input type="checkbox" id="gChest"> Сундуки с добычей</label></div>
@@ -2991,7 +3046,7 @@ function genDialog() {
       <label>Название сцены<input id="gName"></label><label class="check"><input type="checkbox" id="gNpc" checked> Убрать существ с поля</label></div>
     <p class="muted small">Персонажи встанут у входа (синяя точка). Сундуки получат добычу по уровню, в подземельях и пещерах — иногда с замком и ловушкой. Существ и NPC пока ставьте сами или конструктором столкновений.</p>
     <div class="modal-actions"><button data-act="closeModal">Отмена</button><button class="primary" id="gOk">Создать</button></div></div>`);
-  const opts = () => ({ w: +$('#gW').value, h: +$('#gH').value, density: +$('#gD').value, road: $('#gRoad').checked, chests: $('#gChest').checked, seed: genSeed });
+  const opts = () => ({ w: +$('#gW').value, h: +$('#gH').value, density: +$('#gD').value, road: $('#gRoad').checked, chests: $('#gChest').checked, variant: $('#gV').value, seed: genSeed });
   // Шаблон задаёт размер, дорогу, сундуки, свет и туман по умолчанию
   const setTpl = () => {
     tpl = $('#gT').value;
@@ -3000,6 +3055,8 @@ function genDialog() {
     $('#gRoad').closest('label').hidden = t.kind !== 'terrain';
     $('#gA').value = probe.amb; $('#gF').value = probe.fog; $('#popPeace').checked = !!t.peaceful;
     $('#gName').value = t.n.replace(/^\S+\s/, '');
+    $('#gVBox').hidden = !t.variants;
+    $('#gV').innerHTML = `<option value="">случайно</option>${(t.variants || []).map(([v, n]) => `<option value="${v}">${n}</option>`).join('')}`;
   };
   const draw = () => {
     res = MAPGEN.generate(tpl, opts());
@@ -3016,7 +3073,7 @@ function genDialog() {
     ls.set('dnd55-gen', JSON.stringify({ tpl, d: +$('#gD').value }));
   };
   $('#gT').onchange = () => { setTpl(); draw(); };
-  ['#gW', '#gH', '#gD', '#gRoad', '#gChest'].forEach((s) => $(s).addEventListener('change', draw));
+  ['#gW', '#gH', '#gD', '#gRoad', '#gChest', '#gV'].forEach((s) => $(s).addEventListener('change', draw));
   $('#gRe').onclick = () => { genSeed = Math.floor(Math.random() * 1e9); draw(); };
   $('#gOk').onclick = () => { const P = popOptsRead(); genApply({ ...res, tpl }, { lvl: P.lvl, amb: $('#gA').value, fog: $('#gF').value, asScene: $('#gScene').checked,
     name: $('#gName').value.trim() || T[tpl].n.replace(/^\S+\s/, ''), clearNpc: $('#gNpc').checked, peaceful: !!T[tpl].peaceful, pop: $('#gPop').checked ? P : null }); };
@@ -3075,6 +3132,9 @@ async function genApply(res, o) {
 const TPL_ENV = { forest: ['forest'], river: ['forest', 'grassland', 'swamp'], mountains: ['mountain'], plains: ['grassland'], swamp: ['swamp'], desert: ['desert'], coast: ['coast'],
   dungeon: ['dungeon'], cave: ['underdark'], castle: ['urban', 'dungeon'], city: ['urban'], village: ['urban', 'forest', 'grassland'], tavern: ['urban'] };
 const DIFF_N = ['низкая', 'умеренная', 'высокая'];
+// Банды лагерей
+const FACTION = { goblin: ['Goblin', 'Goblin Boss', 'Hobgoblin', 'Hobgoblin Captain', 'Bugbear', 'Worg', 'Wolf'],
+  bandit: ['Bandit', 'Bandit Captain', 'Thug', 'Scout', 'Spy', 'Veteran', 'Berserker', 'Mastiff', 'Gladiator'] };
 const NAMES_M = ['Борислав', 'Ратибор', 'Велимир', 'Остап', 'Мирон', 'Гордей', 'Тихон', 'Святогор', 'Добрыня', 'Еремей', 'Фома', 'Лука', 'Аким', 'Игнат', 'Савва', 'Прохор', 'Демид',
   'Торгрим', 'Бруни', 'Таэрон', 'Элдрик', 'Корвин', 'Гаррет', 'Освин', 'Бальдур', 'Финн'];
 const NAMES_F = ['Милена', 'Ярина', 'Забава', 'Злата', 'Любава', 'Василиса', 'Агафья', 'Олеся', 'Дарина', 'Ведана', 'Марфа', 'Ульяна', 'Радмила', 'Есения', 'Аглая', 'Белослава',
@@ -3084,7 +3144,9 @@ const NICKS = [['Рыжий', 'Рыжая'], ['Кривой', 'Кривая'], [
   ['Медовый', 'Медовая'], ['Кузнецов', 'Кузнецова'], ['Мельников', 'Мельникова'], ['Длинный', 'Длинная']];
 const ROLE_F = { 'стражник': 'стражница', 'стражник у ворот': 'стражница у ворот', 'горожанин': 'горожанка', 'знатный горожанин': 'знатная горожанка', 'селянин': 'селянка',
   'трактирщик': 'трактирщица', 'посетитель': 'посетительница', 'торговец': 'торговка', 'бродячий торговец': 'бродячая торговка', 'лавочник': 'лавочница', 'жрец': 'жрица',
-  'послушник': 'послушница', 'карманник': 'карманница', 'дозорный': 'дозорная', 'охотник': 'охотница', 'знатный гость': 'знатная гостья', 'владелец замка': 'владелица замка', 'путник': 'путница' };
+  'послушник': 'послушница', 'карманник': 'карманница', 'дозорный': 'дозорная', 'охотник': 'охотница', 'знатный гость': 'знатная гостья', 'владелец замка': 'владелица замка', 'путник': 'путница',
+  'хозяин усадьбы': 'хозяйка усадьбы', 'кладовщик': 'кладовщица', 'рыбак': 'рыбачка', 'повар': 'повариха', 'садовник': 'садовница', 'отшельник': 'отшельница', 'постоялец': 'постоялица',
+  'гость замка': 'гостья замка', 'оружейник': 'оружейница', 'часовой': 'часовая', 'лесник': 'лесничая' };
 const ROLE_ONLY_F = ['кухарка', 'знахарка'];
 const TRAITS = ['ворчливый', 'любопытный', 'трусоватый', 'болтливый', 'подозрительный', 'добродушный', 'жадный', 'набожный', 'рассеянный', 'хвастливый', 'молчаливый', 'весёлый',
   'строгий', 'суеверный', 'услужливый', 'гордый', 'усталый', 'хитрый', 'простодушный', 'обидчивый', 'щедрый', 'вспыльчивый', 'мечтательный', 'недоверчивый к чужакам'];
@@ -3180,16 +3242,19 @@ function populate(L, o) {
   const all = BEST().filter((m) => m.cat !== 'npc' || env.includes('urban'));
   const inEnv = all.filter((m) => (m.env || []).some((e) => env.includes(e)));
   const pool = (cap) => { const p = inEnv.filter((m) => crNum(m.cr) <= cap); return p.length >= 3 ? p : all.filter((m) => crNum(m.cr) <= cap); };
-  const rooms = (L.rooms || []).filter((r) => !['entrance', 'cave', 'plaza'].includes(r.kind));
+  // Лагеря — первыми группами (банда своего лагеря); в остальные комнаты — по одной группе
+  const camps = (L.rooms || []).filter((r) => r.kind === 'camp');
+  const rooms = (L.rooms || []).filter((r) => !['entrance', 'cave', 'plaza', 'camp', 'hut', 'garden', 'pier', 'market', 'bar'].includes(r.kind));
   const bossRoom = rooms.find((r) => r.kind === 'boss');
   const auto = ['dungeon'].includes(L.tpl) ? Math.max(2, Math.min(6, Math.round(rooms.length / 2.5))) : L.tpl === 'cave' ? 3 : MAPGEN.TEMPLATES[L.tpl] && MAPGEN.TEMPLATES[L.tpl].kind === 'location' ? 3 : 2;
-  const groups = o.groups > 0 ? o.groups : auto, used = new Set(), centers = [], leads = new Set();
+  const groups = Math.max(camps.length, o.groups > 0 ? o.groups : auto), used = new Set(), centers = [], leads = new Set();
   for (let i = 0; i < groups; i++) {
     const boss = (L.tpl === 'dungeon' || L.tpl === 'cave') && i === groups - 1 && groups > 1;
-    const comp = encBuild(pool(lvl + (boss ? 3 : 1)), budget(boss ? 2 : o.diff), n * 2 + 2, leads);
+    const camp = camps[i], fpool = camp ? BEST().filter((m) => (FACTION[camp.faction] || []).includes(m.e) && crNum(m.cr) <= lvl + 2) : null;
+    const comp = encBuild(fpool && fpool.length ? fpool : pool(lvl + (boss ? 3 : 1)), budget(boss ? 2 : o.diff), n * 2 + 2, leads);
     if (!comp.length) continue;
     // Где: в комнате (босс — в дальнем зале), иначе — в стороне от входа
-    let room = boss && bossRoom && !used.has(bossRoom) ? bossRoom : null;
+    let room = camp || (boss && bossRoom && !used.has(bossRoom) ? bossRoom : null);
     if (!room && rooms.length) room = pickOne(rooms.filter((r) => !used.has(r) && r !== bossRoom)) || null;
     if (room) used.add(room);
     const c = room ? [room.x + Math.floor(room.w / 2), room.y + Math.floor(room.h / 2)] : F.far(L.start, Math.max(8, Math.floor(Math.max(L.w, L.h) / 3)), centers);
@@ -3208,30 +3273,45 @@ function populate(L, o) {
     });
     // В журнал — то, что действительно встало на поле
     const xp = placed.reduce((s, m) => s + crXp(m.cr), 0), got = comp.map(({ m }) => [m, placed.filter((x) => x === m).length]).filter(([, k]) => k);
-    if (placed.length) notes.push(`${boss ? '👑 ' : ''}${got.map(([m, k]) => `${m.n}${k > 1 ? ` ×${k}` : ''}`).join(' + ')} — ${xp} оп.${room ? ` (${room.kind === 'boss' ? 'дальний зал' : 'комната'})` : ''}`);
+    if (placed.length) notes.push(`${boss ? '👑 ' : ''}${got.map(([m, k]) => `${m.n}${k > 1 ? ` ×${k}` : ''}`).join(' + ')} — ${xp} оп.${room ? ` (${room.kind === 'boss' ? 'дальний зал' : room.kind === 'camp' ? `лагерь ${room.faction === 'goblin' ? 'гоблинов' : 'бандитов'}` : 'комната'})` : ''}`);
   }
+  // В жилой лачуге — отшельник или лесник, мирный
+  (L.rooms || []).filter((r) => r.kind === 'hut' && !r.abandoned).forEach((r) => {
+    const [e, role] = pickOne([['Druid', 'отшельник'], ['Commoner', 'лесник'], ['Acolyte', 'отшельник'], ['Scout', 'охотник']]), mon = BEST().find((m) => m.e === e), p = mon && F.near(r.x + 1, r.y + 1, 1, r, 4);
+    if (!p) return;
+    const N = npcName(role, new Set());
+    tokens[key()] = monToken(mon, `${N.name}, ${N.role}`, p[0], p[1], { side: 'neutral', dsOn: true, color: SIDE_COLOR.neutral, tr: `Характер: ${pickOne(TRAITS)}.` });
+    notes.push(`в лачуге: ${N.name} (${N.role})`);
+  });
   return { tokens, notes };
 }
 // Мирные локации: стража, жители, торговцы, жрецы — нейтральные NPC с именами и чертами характера
 const SHOP_N = { general: 'лавка: снаряжение и припасы', smith: 'кузница: оружие и доспехи', alchemist: 'алхимик: зелья и свитки' };
 function peacefulNpcs(L, F, tokens, notes, key) {
   const T = L.tpl, R_ = (lo, hi) => lo + Math.floor(Math.random() * (hi - lo + 1)), roomsOf = (k) => (L.rooms || []).filter((r) => r.kind === k);
-  const plan = T === 'city' ? [['Guard', 'стражник', R_(3, 4), 'road'], ['Veteran', 'капитан стражи', 1, 'plaza'], ['Commoner', 'горожанин', R_(6, 9), 'road'], ['Noble', 'знатный горожанин', 1, 'plaza'],
-    ['Priest', 'жрец', 1, 'temple'], ['Acolyte', 'послушник', 1, 'temple'], ['Commoner', 'трактирщик', 1, 'tavern'], ['Spy', 'карманник', chance(0.4) ? 1 : 0, 'road']]
-    : T === 'village' ? [['Commoner', 'селянин', Math.min(6, roomsOf('house').length), 'house'], ['Commoner', 'трактирщик', 1, 'tavern'], ['Guard', 'дозорный', R_(1, 2), 'road'],
+  // Кто где: [существо, роль, сколько, где — тип комнаты, 'road', 'gate', 'any' или сама комната]
+  const n_ = (k) => roomsOf(k).length;
+  const plan = T === 'city' ? [['Guard', 'стражник', R_(3, 5), 'road'], ['Veteran', 'капитан стражи', 1, 'plaza'], ['Commoner', 'горожанин', R_(6, 9), 'road'], ['Commoner', 'горожанин', R_(2, 4), 'house'],
+    ['Noble', 'знатный горожанин', 1, 'plaza'], ['Noble', 'хозяин усадьбы', Math.min(2, n_('manor')), 'manor'], ['Priest', 'жрец', 1, 'temple'], ['Acolyte', 'послушник', 1, 'temple'],
+    ['Commoner', 'трактирщик', n_('tavern'), 'tavern'], ['Commoner', 'кладовщик', Math.min(2, n_('warehouse')), 'warehouse'], ['Commoner', 'рыбак', Math.min(6, n_('pier') * 2), 'pier'],
+    ['Commoner', 'зазывала', n_('market') ? 1 : 0, 'market'], ['Spy', 'карманник', chance(0.5) ? 1 : 0, n_('market') ? 'market' : 'road']]
+    : T === 'village' ? [['Commoner', 'селянин', Math.min(6, n_('house')), 'house'], ['Commoner', 'трактирщик', 1, 'tavern'], ['Guard', 'дозорный', R_(1, 2), 'road'],
       ['Scout', 'охотник', 1, 'any'], ['Druid', 'знахарка', chance(0.4) ? 1 : 0, 'house'], ['Commoner', 'ребёнок', R_(0, 2), 'any']]
-    : T === 'castle' ? [['Guard', 'стражник у ворот', 2, 'gate'], ['Guard', 'стражник', R_(2, 4), 'any'], ['Guard', 'часовой', roomsOf('tower').length, 'tower'], ['Veteran', 'капитан', 1, 'any'],
-      ['Knight', 'рыцарь', 1, 'keep'], ['Noble', 'владелец замка', 1, 'keep'], ['Priest', 'капеллан', chance(0.5) ? 1 : 0, 'keep'], ['Commoner', 'слуга', R_(2, 3), 'any']]
-    : [['Commoner', 'трактирщик', 1, 'hall'], ['Commoner', 'посетитель', R_(4, 6), 'hall'], ['Thug', 'громила', chance(0.4) ? 1 : 0, 'hall'], ['Scout', 'путник', chance(0.5) ? 1 : 0, 'hall'],
-      ['Noble', 'знатный гость', chance(0.3) ? 1 : 0, 'room'], ['Commoner', 'кухарка', 1, 'kitchen']];
-  // Торговцы: в городе — по лавке на каждую, в деревне — лавочник, в замке — кузнец в казармах, в таверне — иногда бродячий торговец
-  const shops = T === 'city' ? roomsOf('shop').slice(0, 3).map((r, i) => ['Commoner', ['торговец', 'кузнец', 'алхимик'][i], 1, r, ['general', 'smith', 'alchemist'][i]])
-    : T === 'village' ? [['Commoner', 'лавочник', 1, 'house', 'general']] : T === 'castle' ? [['Commoner', 'кузнец', 1, 'barracks', 'smith']]
+    : T === 'castle' ? [['Guard', 'стражник у ворот', 2, 'gate'], ['Guard', 'стражник', R_(1, 3), 'any'], ['Guard', 'часовой', Math.min(6, n_('tower')), 'tower'], ['Guard', 'стражник', n_('barracks') * 2, 'barracks'],
+      ['Veteran', 'капитан', 1, n_('barracks') ? 'barracks' : 'any'], ['Knight', 'рыцарь', 1, 'hall'], ['Noble', 'владелец замка', 1, 'hall'], ['Noble', 'гость замка', chance(0.4) ? 1 : 0, 'chamber'],
+      ['Priest', 'капеллан', n_('chapel') ? 1 : 0, 'chapel'], ['Commoner', 'конюх', n_('stable') ? 1 : 0, 'stable'], ['Commoner', 'повар', n_('kitchen') ? 1 : 0, 'kitchen'],
+      ['Commoner', 'садовник', n_('garden') ? 1 : 0, 'garden'], ['Commoner', 'слуга', R_(2, 3), 'any']]
+    : [['Commoner', 'трактирщик', 1, n_('bar') ? 'bar' : 'hall'], ['Commoner', 'посетитель', R_(4, 7), 'hall'], ['Thug', 'громила', chance(0.4) ? 1 : 0, 'hall'], ['Scout', 'путник', chance(0.5) ? 1 : 0, 'hall'],
+      ['Noble', 'знатный гость', chance(0.4) ? 1 : 0, 'room'], ['Commoner', 'постоялец', R_(0, 2), 'room'], ['Commoner', 'кухарка', 1, 'kitchen'], ['Commoner', 'конюх', n_('stable') ? 1 : 0, 'stable']];
+  // Торговцы: в городе — в лавках и на рынке, в деревне — лавочник, в замке — кузнец в кузнице, в таверне — иногда бродячий торговец
+  const shops = T === 'city' ? [...roomsOf('shop').slice(0, 3).map((r, i) => ['Commoner', ['торговец', 'кузнец', 'алхимик'][i], 1, r, ['general', 'smith', 'alchemist'][i]]),
+    ...roomsOf('market').flatMap((r) => [['Commoner', 'торговец', 1, r, 'general'], ['Commoner', 'алхимик', 1, r, 'alchemist'], ...(chance(0.5) ? [['Commoner', 'оружейник', 1, r, 'smith']] : [])])]
+    : T === 'village' ? [['Commoner', 'лавочник', 1, 'house', 'general']] : T === 'castle' ? [['Commoner', 'кузнец', 1, n_('smithy') ? 'smithy' : 'barracks', 'smith']]
       : chance(0.4) ? [['Commoner', 'бродячий торговец', 1, 'hall', 'general']] : [];
   const big = T === 'city', place = (where, s) => {
     const room = typeof where === 'object' ? where : null;
     if (room) return F.near(room.x + Math.floor(room.w / 2), room.y + Math.floor(room.h / 2), s, room, 6);
-    if (where === 'gate') return F.near(L.start.x, L.start.y - 3, s, null, 6);
+    if (where === 'gate') return F.near(L.start.x, L.start.y, s, null, 9);
     if (['road', 'any'].includes(where)) { const list = F.cells(where === 'road' ? (v) => v === 'road' : (v) => !v || ['road', 'floor', 'sand', 'bridge'].includes(v)); const p = list.length ? pickOne(list) : null; if (p) F.take(p[0], p[1]); return p; }
     const rs = roomsOf(where);
     if (!rs.length) return null;
@@ -3561,7 +3641,7 @@ function renderAll() {
   if (!inGame) { renderLobby(); return; }
   $('#tblName').textContent = game.meta.name;
   $('#tblCode').textContent = `Код: ${game.code}`;
-  $('#tblLeave').textContent = isDM() ? 'Завершить игру' : 'Покинуть';
+  $('#tblLeave').textContent = isDM() ? '⏏ Выйти из игры' : 'Покинуть';
   renderTools();
   layoutBoard();
   if (!$('#tblTerrain').dataset.drawn || $('#tblTerrain').dataset.drawn !== game.id) { $('#tblTerrain').dataset.drawn = game.id; drawTerrain(); }
@@ -3658,7 +3738,13 @@ function renderLobby() {
   }
   const chars = Object.values(app.chars());
   const code = (urlCode || '').toUpperCase();
-  lobby.innerHTML = `<div class="grid g-combat">
+  if (myGames === null) loadMyGames();
+  const mine = Object.entries(myGames || {}).sort((a, b) => (b[1].t || 0) - (a[1].t || 0));
+  lobby.innerHTML = `${mine.length ? `<div class="card"><h2>📂 Мои игры</h2><div class="list">${mine.map(([gid, g]) => `<div class="enc-row"><span><b>${esc(g.n || 'Игра')}</b>
+      <span class="muted small">код ${esc(g.code || '')}${g.t ? ` · ${new Date(g.t).toLocaleDateString('ru')}` : ''}</span></span>
+      <span class="row gap"><button class="primary" data-tbl="resume" data-id="${esc(gid)}" data-code="${esc(g.code || '')}">▶ Продолжить</button><button class="ghost" data-tbl="gameDel" data-id="${esc(gid)}" data-code="${esc(g.code || '')}" title="Удалить игру">🗑</button></span></div>`).join('')}</div>
+      <p class="muted small">Игра продолжится с того места, где вы вышли: сцены, существа, сундуки и добыча на месте. Игроки подключаются по тому же коду.</p></div>` : ''}
+    <div class="grid g-combat">
     <div class="card"><h2>🎲 Подключиться к игре</h2>
       <label>Код от мастера<input id="tblJoinCode" maxlength="6" value="${esc(code)}" placeholder="Например, K7F2QX" style="text-transform:uppercase"></label>
       <label>Ваш персонаж<select id="tblJoinChar">${chars.map((c) => `<option value="${c.id}">${esc(c.info.name || 'Без имени')}${c.info.cls ? ` — ${esc(c.info.cls)}` : ''}</option>`).join('')}</select></label>
@@ -3673,26 +3759,31 @@ function renderTools() {
   const t = (k, label, title) => `<button class="${tool === k ? 'on' : ''}" data-tool="${k}" title="${title || ''}">${label}</button>`;
   const hasMine = user && game.tokens[`pc_${user.uid}`];
   $('#tblBoard').dataset.tool = tool; // курсор поля соответствует инструменту
-  $('#tblTools').innerHTML = `<div class="seg">${t('move', '✋ Двигать', 'Перетаскивайте токены, по пустому месту — прокрутка')}${t('ruler', '📏 Линейка', 'Протяните, чтобы измерить расстояние')}
-    ${isDM() ? t('wall', '▮ Стена') + t('difficult', '▦ Трудная') + t('water', '≈ Вода')
-      + `<select data-tbl-brush class="${['tree', 'rock', 'bush', 'road', 'sand', 'bridge', 'furn', 'floor'].includes(tool) ? 'on' : ''}" title="Другие кисти местности"><option value="">🖌 Кисть…</option>${['tree', 'rock', 'bush', 'road', 'sand', 'bridge', 'furn', 'floor'].map((k) => `<option value="${k}" ${tool === k ? 'selected' : ''}>${TERRAIN[k].ic} ${TERRAIN[k].n}</option>`).join('')}</select>`
-      + t('erase', '⌫ Ластик') + '<button data-tbl="gen" title="Создать местность или локацию по шаблону: лес, река, горы, подземелье, замок, город…">🎲 Генератор</button>' + t('enemy', '＋ Существо', 'Нажмите на клетку, чтобы поставить врага или NPC из бестиария')
-      + `<button class="${tool === 'encPlace' ? 'on' : ''}" data-tbl="enc" title="Собрать столкновение из бестиария, оценить сложность для группы и поставить его на поле">⚔ Столкновение</button>`
-      + t('door', '🚪 Дверь', 'Поставить или убрать дверь. Открыть — нажатием с «Двигать», запереть — с Shift')
-      + t('light', '💡 Свет', 'Поставить или убрать источник света (20 фт яркого + 20 тусклого)')
-      + t('chest', '🧰 Сундук', 'Поставить сундук с добычей по уровню, замком и ловушкой; нажатие на сундук — изменить')
-      + t('area', '◯ Область', 'Область со спасброском: дыхание, ловушка… Конус и линия — от выделенного существа')
-      + `<button class="${freeMove ? 'on' : ''}" data-tbl="freeMove" title="Двигать любые токены без учёта хода и скорости (толчок, перенос тела). То же — перетаскивание с Shift">🔓 Свободно</button>`
-      + `<button data-tbl="mapCfg" title="Карта-подложка, размер поля, туман войны">🗺 Карта и туман</button>`
-      + `<button data-tbl="scenes" title="Несколько полей: таверна, подземелье, логово — переключение одной кнопкой">🎬 Сцены${(game.meta || {}).scene && (game.scenes || {})[game.meta.scene] ? `: ${esc(game.scenes[game.meta.scene].n)}` : ''}</button>`
-      + '<button data-tbl="rest" title="Короткий или долгий отдых для всей группы">🏕 Отдых</button>'
-      + '<button data-tbl="bestiary" title="Свои существа: создать, изменить встроенное, перенести файлом">🐉 Бестиарий</button>'
-      + '<button data-tbl="pop" title="Расставить противников по уровню группы или мирных NPC с торговцами">👥 Заселить</button>'
-      + (fogOn() ? t('reveal', '👁 Открыть', 'Кисть: открыть клетки для игроков') + t('conceal', '🌫 Скрыть', 'Кисть: закрыть клетки туманом')
-        + `<button class="${fogPreview ? 'on' : ''}" data-tbl="fogPreview" title="Показать поле так, как его видят игроки">👁 Вид игроков</button>` : '') : ''}
-    ${!isDM() && !(hasMine && inFight()) ? t('place', hasMine ? '📍 Переставить меня' : '📍 Поставить персонажа', 'Нажмите на клетку') : ''}
-    ${!isDM() && me() && me().charId && app.companions(me().charId).length ? `<button class="${tool === 'placeComp' ? 'on' : ''}" data-tbl="compPick" title="Поставить спутника из листа на поле">🐾 Спутник</button>` : ''}
-    ${isDM() || hoMine().length ? `<button data-tbl="handouts" title="${isDM() ? 'Показать игрокам картинку, письмо или карту' : 'Что показывал мастер'}">📜 Материалы${!isDM() && hoMine().length ? ` (${hoMine().length})` : ''}</button>` : ''}</div>`;
+  const b = (a, label, title, on) => `<button class="${on ? 'on' : ''}" data-tbl="${a}" title="${title}">${label}</button>`;
+  const group = (name, html) => (html.trim() ? `<div class="tgroup"><span class="tg-l">${name}</span><div class="seg">${html}</div></div>` : '');
+  const brushes = ['tree', 'rock', 'bush', 'road', 'sand', 'bridge', 'furn', 'floor'];
+  const handouts = isDM() || hoMine().length ? b('handouts', `📜 Материалы${!isDM() && hoMine().length ? ` (${hoMine().length})` : ''}`, isDM() ? 'Показать игрокам картинку, письмо или карту' : 'Что показывал мастер') : '';
+  // Мастеру — группы: поле, карта (рисование и устройство), существа, игра; игроку — поле и свои кнопки
+  $('#tblTools').innerHTML = group('Поле', t('move', '✋ Двигать', 'Перетаскивайте токены, по пустому месту — прокрутка') + t('ruler', '📏 Линейка', 'Протяните, чтобы измерить расстояние')
+    + (!isDM() && !(hasMine && inFight()) ? t('place', hasMine ? '📍 Переставить меня' : '📍 Поставить персонажа', 'Нажмите на клетку') : '')
+    + (!isDM() && me() && me().charId && app.companions(me().charId).length ? b('compPick', '🐾 Спутник', 'Поставить спутника из листа на поле', tool === 'placeComp') : '')
+    + (isDM() ? '' : handouts))
+    + (!isDM() ? '' : group('Рисовать', t('wall', '▮ Стена') + t('difficult', '▦ Трудная') + t('water', '≈ Вода')
+      + `<select data-tbl-brush class="${brushes.includes(tool) ? 'on' : ''}" title="Другие кисти местности"><option value="">🖌 Кисть…</option>${brushes.map((k) => `<option value="${k}" ${tool === k ? 'selected' : ''}>${TERRAIN[k].ic} ${TERRAIN[k].n}</option>`).join('')}</select>`
+      + t('erase', '⌫ Ластик') + t('door', '🚪 Дверь', 'Поставить или убрать дверь. Открыть — нажатием с «Двигать», запереть — с Shift')
+      + t('light', '💡 Свет', 'Поставить или убрать источник света (20 фт яркого + 20 тусклого)') + t('chest', '🧰 Сундук', 'Поставить сундук с добычей по уровню, замком и ловушкой; нажатие на сундук — изменить')
+      + (fogOn() ? t('reveal', '👁 Открыть', 'Кисть: открыть клетки для игроков') + t('conceal', '🌫 Скрыть', 'Кисть: закрыть клетки туманом') : ''))
+    + group('Карта', b('gen', '🎲 Генератор', 'Создать местность или локацию по шаблону: лес, река, горы, подземелье, замок, город…')
+      + b('mapCfg', '🗺 Карта и туман', 'Карта-подложка, размер поля, туман войны')
+      + b('scenes', `🎬 Сцены${(game.meta || {}).scene && (game.scenes || {})[game.meta.scene] ? `: ${esc(game.scenes[game.meta.scene].n)}` : ''}`, 'Несколько полей: таверна, подземелье, логово — переключение одной кнопкой')
+      + (fogOn() ? b('fogPreview', '👁 Вид игроков', 'Показать поле так, как его видят игроки', fogPreview) : ''))
+    + group('Существа', t('enemy', '＋ Существо', 'Нажмите на клетку, чтобы поставить врага или NPC из бестиария')
+      + b('enc', '⚔ Столкновение', 'Собрать столкновение из бестиария, оценить сложность для группы и поставить его на поле', tool === 'encPlace')
+      + b('pop', '👥 Заселить', 'Расставить противников по уровню группы или мирных NPC с торговцами')
+      + b('bestiary', '🐉 Бестиарий', 'Свои существа: создать, изменить встроенное, перенести файлом')
+      + b('freeMove', '🔓 Свободно', 'Двигать любые токены без учёта хода и скорости (толчок, перенос тела). То же — перетаскивание с Shift', freeMove))
+    + group('Игра', t('area', '◯ Область', 'Область со спасброском: дыхание, ловушка… Конус и линия — от выделенного существа')
+      + b('rest', '🏕 Отдых', 'Короткий или долгий отдых для всей группы') + handouts));
 }
 // Карточка хода: игроку — свой персонаж, мастеру — существо, чей сейчас ход
 function renderTurn() {
@@ -3871,6 +3962,8 @@ async function onClick(e) {
       await navigator.clipboard.writeText(link).catch(() => {});
       app.toast(`🔗 Ссылка скопирована: ${esc(link)}`);
     } else if (a === 'leave') await leaveGame();
+    else if (a === 'resume') { subscribe(b.dataset.id, b.dataset.code); app.toast('▶ Игра продолжается — код для игроков: <b>' + esc(b.dataset.code) + '</b>', 'crit'); }
+    else if (a === 'gameDel') { if (app.confirm('Удалить игру навсегда? Сцены, существа и всё на поле пропадут.')) { await deleteGame(b.dataset.id, b.dataset.code); renderAll(); } }
     else if (a === 'zoomIn' || a === 'zoomOut') { zoom = Math.max(0.4, Math.min(2, +(zoom + (a === 'zoomIn' ? 0.2 : -0.2)).toFixed(1))); layoutBoard(); }
     else if (a === 'rollInit') {
       const m = me(), roll = app.mute(() => app.rollInit(m.charId)), s = app.summary(m.charId);
