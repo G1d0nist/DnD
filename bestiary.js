@@ -443,3 +443,37 @@ BESTIARY.forEach((m) => {
   // Существа с логовом и легендарными действиями охраняют сокровищницу
   if (m.leg && m.type !== 'celestial') m.hoard = true;
 });
+// Где водится — для автоматического заселения местности и локаций
+const HAB = {
+  forest: ['Wolf', 'Dire Wolf', 'Brown Bear', 'Black Bear', 'Boar', 'Giant Boar', 'Owlbear', 'Goblin', 'Goblin Boss', 'Hobgoblin', 'Hobgoblin Captain', 'Bugbear', 'Bandit', 'Bandit Captain',
+    'Thug', 'Dryad', 'Satyr', 'Sprite', 'Blink Dog', 'Green Hag', 'Werewolf', 'Wereboar', 'Werebear', 'Weretiger', 'Worg', 'Giant Spider', 'Ettercap', 'Giant Wolf Spider', 'Panther', 'Tiger',
+    'Treant', 'Giant Elk', 'Centaur', 'Unicorn', 'Green Dragon Wyrmling', 'Young Green Dragon', 'Adult Green Dragon', 'Ancient Green Dragon', 'Displacer Beast', 'Stirge', 'Giant Wasp',
+    'Swarm of Insects', 'Ogre', 'Troll', 'Ettin', 'Cultist', 'Cult Fanatic', 'Giant Centipede'],
+  grassland: ['Bandit', 'Bandit Captain', 'Thug', 'Gnoll', 'Giant Hyena', 'Lion', 'Centaur', 'Griffon', 'Hippogriff', 'Ankheg', 'Bulette', 'Gorgon', 'Hill Giant', 'Ogre', 'Orc', 'Orc War Chief',
+    'Worg', 'Giant Eagle', 'Allosaurus', 'Elephant', 'Rhinoceros', 'Cockatrice', 'Wereboar', 'Goblin', 'Hobgoblin', 'Hobgoblin Captain', 'Wyvern', 'Chimera', 'Manticore', 'Cultist',
+    'Giant Boar', 'Boar', 'Wolf', 'Gold Dragon Wyrmling', 'Young Gold Dragon', 'Ankylosaurus', 'Tyrannosaurus Rex', 'Berserker', 'Gladiator'],
+  mountain: ['Ogre', 'Hill Giant', 'Stone Giant', 'Frost Giant', 'Cloud Giant', 'Storm Giant', 'Orc', 'Orc War Chief', 'Goblin', 'Goblin Boss', 'Kobold', 'Griffon', 'Hippogriff', 'Giant Eagle',
+    'Giant Goat', 'Manticore', 'Wyvern', 'Roc', 'Chimera', 'Gargoyle', 'Red Dragon Wyrmling', 'Young Red Dragon', 'Adult Red Dragon', 'Ancient Red Dragon', 'Silver Dragon Wyrmling',
+    'Young Silver Dragon', 'Adult Silver Dragon', 'Copper Dragon Wyrmling', 'Young Copper Dragon', 'Adult Copper Dragon', 'Basilisk', 'Ettin', 'Troll', 'Winter Wolf', 'Polar Bear',
+    'White Dragon Wyrmling', 'Young White Dragon', 'Adult White Dragon', 'Ancient White Dragon', 'Air Elemental', 'Earth Elemental', 'Berserker', 'Harpy', 'Mammoth', 'Saber-Toothed Tiger'],
+  swamp: ['Lizardfolk', 'Crocodile', 'Giant Crocodile', 'Giant Frog', 'Giant Toad', 'Constrictor Snake', 'Giant Constrictor Snake', 'Venomous Snake', 'Giant Venomous Snake', 'Shambling Mound',
+    'Black Dragon Wyrmling', 'Young Black Dragon', 'Adult Black Dragon', 'Ancient Black Dragon', "Will-o'-Wisp", 'Green Hag', 'Troll', 'Ghoul', 'Ghast', 'Swarm of Insects', 'Stirge', 'Otyugh',
+    'Hydra', 'Wererat', 'Ochre Jelly', 'Bandit', 'Cultist', 'Zombie', 'Giant Spider'],
+  desert: ['Gnoll', 'Giant Hyena', 'Giant Scorpion', 'Mummy', 'Mummy Lord', 'Blue Dragon Wyrmling', 'Young Blue Dragon', 'Adult Blue Dragon', 'Ancient Blue Dragon', 'Brass Dragon Wyrmling',
+    'Young Brass Dragon', 'Adult Brass Dragon', 'Bandit', 'Bandit Captain', 'Thug', 'Air Elemental', 'Efreeti', 'Djinni', 'Fire Elemental', 'Salamander', 'Purple Worm', 'Bulette', 'Venomous Snake',
+    'Giant Venomous Snake', 'Swarm of Insects', 'Medusa', 'Lion', 'Skeleton', 'Cultist', 'Cult Fanatic', 'Wight', 'Ghoul'],
+  coast: ['Merfolk', 'Sahuagin', 'Sea Hag', 'Giant Crab', 'Reef Shark', 'Hunter Shark', 'Giant Shark', 'Killer Whale', 'Giant Octopus', 'Bandit', 'Bandit Captain', 'Thug', 'Bronze Dragon Wyrmling',
+    'Young Bronze Dragon', 'Adult Bronze Dragon', 'Water Elemental', 'Harpy', 'Dragon Turtle', 'Kraken', 'Lizardfolk', 'Giant Eagle', 'Zombie', 'Ghoul', 'Cultist'],
+  dungeon: ['Skeleton', 'Zombie', 'Ghoul', 'Ghast', 'Wight', 'Wraith', 'Specter', 'Shadow', 'Ghost', 'Mummy', 'Mummy Lord', 'Vampire Spawn', 'Vampire', 'Lich', 'Gelatinous Cube', 'Black Pudding',
+    'Gray Ooze', 'Ochre Jelly', 'Mimic', 'Rust Monster', 'Animated Armor', 'Flying Sword', 'Gargoyle', 'Kobold', 'Goblin', 'Goblin Boss', 'Hobgoblin', 'Hobgoblin Captain', 'Bugbear', 'Cultist',
+    'Cult Fanatic', 'Bandit', 'Bandit Captain', 'Thug', 'Minotaur', 'Giant Rat', 'Swarm of Rats', 'Giant Spider', 'Darkmantle', 'Imp', 'Quasit', 'Dretch', 'Lemure', 'Bearded Devil', 'Chain Devil',
+    'Bone Devil', 'Basilisk', 'Medusa', 'Doppelganger', 'Assassin', 'Flesh Golem', 'Clay Golem', 'Stone Golem', 'Iron Golem', 'Shield Guardian', 'Homunculus', 'Banshee', 'Ogre Zombie', 'Hell Hound',
+    'Night Hag', 'Succubus', 'Mage', 'Archmage', 'Priest', 'Death Dog', 'Ettin', 'Troll', 'Ogre', 'Orc', 'Orc War Chief', 'Gibbering Mouther', 'Otyugh', 'Spirit Naga', 'Glabrezu', 'Hezrou', 'Vrock'],
+  underdark: ['Giant Rat', 'Swarm of Bats', 'Giant Bat', 'Giant Spider', 'Phase Spider', 'Drow', 'Drider', 'Darkmantle', 'Cloaker', 'Roper', 'Grick', 'Gibbering Mouther', 'Chuul', 'Otyugh',
+    'Aboleth', 'Black Pudding', 'Gray Ooze', 'Ochre Jelly', 'Gelatinous Cube', 'Rust Monster', 'Kobold', 'Goblin', 'Goblin Boss', 'Bugbear', 'Troll', 'Ogre', 'Purple Worm', 'Xorn',
+    'Earth Elemental', 'Basilisk', 'Giant Centipede', 'Ghoul', 'Ghast', 'Shadow', 'Stirge', 'Swarm of Insects', 'Gargoyle', 'Mimic', 'Behir', 'Remorhaz'],
+  urban: ['Bandit', 'Bandit Captain', 'Thug', 'Cultist', 'Cult Fanatic', 'Spy', 'Assassin', 'Guard', 'Veteran', 'Knight', 'Noble', 'Priest', 'Mage', 'Wererat', 'Swarm of Rats', 'Giant Rat',
+    'Doppelganger', 'Imp', 'Vampire Spawn', 'Vampire', 'Gladiator', 'Berserker', 'Succubus', 'Rakshasa'],
+};
+const HAB_N = { forest: 'лес', grassland: 'равнины', mountain: 'горы и холмы', swamp: 'болота', desert: 'пустыня', coast: 'побережье', dungeon: 'подземелья и руины', underdark: 'пещеры', urban: 'города' };
+BESTIARY.forEach((m) => { m.env = Object.keys(HAB).filter((k) => HAB[k].includes(m.e)); });

@@ -2750,6 +2750,7 @@ function monEditor(src, tokenId, done) {
     <label class="mt">Особенности<textarea id="meX" rows="3">${esc(M.x || '')}</textarea></label>
     <div class="form-grid mt"><label>Вид существа<select id="meType">${opt(Object.keys(TYPE_N), M.type || 'monstrosity', (k) => TYPE_N[k])}</select></label>
       ${tokenId ? '' : `<label class="check"><input type="checkbox" id="meHoard" ${M.hoard ? 'checked' : ''}> Сокровищница (босс, логово)</label>`}</div>
+    ${tokenId || typeof HAB_N === 'undefined' ? '' : `<div class="muted small mt">Где водится (для «👥 Заселить» и генератора):</div><div class="row gap wrap">${Object.entries(HAB_N).map(([k, n]) => `<label class="check"><input type="checkbox" data-meenv="${k}" ${(M.env || []).includes(k) ? 'checked' : ''}> ${n}</label>`).join('')}</div>`}
     ${tokenId ? '<p class="muted small">Добыча этого существа — в его карточке («💰 Добыча» → ✎).</p>' : `<h3 class="mt">Добыча</h3>
       <label class="check"><input type="checkbox" id="meLRnd" ${LT.rnd !== false ? 'checked' : ''}> Случайная добыча по опасности и виду (бросается, когда существо появляется)</label>
       <div class="muted small mt">Всегда при нём:</div><div id="meLoot" class="loot-box"></div>
@@ -2829,6 +2830,7 @@ function monEditor(src, tokenId, done) {
       mon.cat = $('#meCat').value || '';
       if ($('#meBeast').checked) mon.beast = true;
       if ($('#meHoard').checked) mon.hoard = true;
+      mon.env = $$('[data-meenv]').filter((x) => x.checked).map((x) => x.dataset.meenv);
       mon.loot = { fixed: LT.items, gp: +LT.gp || 0, rnd: $('#meLRnd').checked };
     }
     const toBest = !tokenId || ($('#meToBest') || {}).checked;
@@ -2979,7 +2981,10 @@ function genDialog() {
       <label>Густота<input type="range" id="gD" min="0" max="1" step="0.05" value="${st.d != null ? st.d : 0.3}"></label>
       <label>Освещение${sel('gA', AMB_N)}</label><label>Туман войны${sel('gF', FOG_N)}</label>
       <label class="check"><input type="checkbox" id="gRoad"> Дорога</label>
-      <label class="check"><input type="checkbox" id="gChest"> Сундуки, уровень <input type="number" id="gLvl" min="1" max="20" value="${partyLevel()}" style="width:56px"></label></div>
+      <label class="check"><input type="checkbox" id="gChest"> Сундуки с добычей</label></div>
+    <h3 class="mt">Заселение</h3>
+    <div class="form-grid"><label class="check" style="grid-column:1/-1"><input type="checkbox" id="gPop" checked> Расставить противников по уровню группы (в мирных местах — NPC с именами и торговцами)</label>
+      ${popOptsHtml(Object.values(game.members || {}).filter((m) => m.role !== 'dm').length || 4, false)}</div>
     <div class="row between mt"><span class="muted small" id="gInfo"></span><button id="gRe">🎲 Другой вариант</button></div>
     <div class="gen-wrap"><canvas id="gPrev"></canvas></div>
     <div class="form-grid mt"><label class="check" style="grid-column:1/-1"><input type="checkbox" id="gScene" checked> Новой сценой — текущее поле сохранится в своей сцене, вернуться можно в «🎬 Сцены»</label>
@@ -2993,7 +2998,7 @@ function genDialog() {
     const t = T[tpl], probe = MAPGEN.generate(tpl, { seed: 1 });
     $('#gW').value = t.w; $('#gH').value = t.h; $('#gRoad').checked = !!t.road; $('#gChest').checked = !!t.chests;
     $('#gRoad').closest('label').hidden = t.kind !== 'terrain';
-    $('#gA').value = probe.amb; $('#gF').value = probe.fog;
+    $('#gA').value = probe.amb; $('#gF').value = probe.fog; $('#popPeace').checked = !!t.peaceful;
     $('#gName').value = t.n.replace(/^\S+\s/, '');
   };
   const draw = () => {
@@ -3013,8 +3018,8 @@ function genDialog() {
   $('#gT').onchange = () => { setTpl(); draw(); };
   ['#gW', '#gH', '#gD', '#gRoad', '#gChest'].forEach((s) => $(s).addEventListener('change', draw));
   $('#gRe').onclick = () => { genSeed = Math.floor(Math.random() * 1e9); draw(); };
-  $('#gOk').onclick = () => genApply(res, { lvl: Math.max(1, Math.min(20, +$('#gLvl').value || 1)), amb: $('#gA').value, fog: $('#gF').value, asScene: $('#gScene').checked,
-    name: $('#gName').value.trim() || T[tpl].n.replace(/^\S+\s/, ''), clearNpc: $('#gNpc').checked, peaceful: !!T[tpl].peaceful });
+  $('#gOk').onclick = () => { const P = popOptsRead(); genApply({ ...res, tpl }, { lvl: P.lvl, amb: $('#gA').value, fog: $('#gF').value, asScene: $('#gScene').checked,
+    name: $('#gName').value.trim() || T[tpl].n.replace(/^\S+\s/, ''), clearNpc: $('#gNpc').checked, peaceful: !!T[tpl].peaceful, pop: $('#gPop').checked ? P : null }); };
   setTpl(); draw();
 }
 async function genApply(res, o) {
@@ -3047,16 +3052,282 @@ async function genApply(res, o) {
     const [x, y] = spot();
     upd[`tokens/${id}/x`] = x; upd[`tokens/${id}/y`] = y; pcs[id] = { x, y };
   });
+  // План комнат и вход — для заселения сейчас и позже («👥 Заселить»)
+  const gen = { tpl: res.tpl, rooms: res.rooms, start: res.start };
+  upd['meta/gen'] = gen;
+  const P = o.pop ? populate({ w: res.w, h: res.h, cells: res.cells, doors: res.doors, rooms: res.rooms, start: res.start, tpl: res.tpl }, { ...o.pop, keep: Object.values(pcs).map((p) => [p.x, p.y]) }) : null;
+  if (P) Object.entries(P.tokens).forEach(([id, t]) => { upd[`tokens/${id}`] = t; });
   if (o.asScene) {
     const sid = key('scenes');
     upd['meta/scene'] = sid;
     upd[`scenes/${sid}`] = { n: o.name, t: Date.now() };
-    upd[`sceneData/${sid}`] = { w: res.w, h: res.h, fog, ground: res.ground || null, map: res.cells, doors: res.doors, lights, chests, npcs: {}, pcs };
+    upd[`sceneData/${sid}`] = { w: res.w, h: res.h, fog, ground: res.ground || null, gen, map: res.cells, doors: res.doors, lights, chests, npcs: P ? P.tokens : {}, pcs };
   }
+  if (P && P.notes.length) addLog({ kind: 'sys', dmOnly: true, txt: `👥 Заселено (${Object.keys(P.tokens).length}): ${P.notes.join('; ')}` });
   app.closeModal();
   await R.update(ref(gpath()), upd).catch((err) => app.toast(`Не удалось: ${esc(err.code || err.message)}`));
   addLog({ kind: 'sys', txt: `🗺 Новая местность: ${o.name}` });
   app.toast(`🗺 «${esc(o.name)}» готово${Object.keys(chests).length ? ` · сундуков: ${Object.keys(chests).length}` : ''}`, 'crit');
+}
+
+/* ---------- Заселение: противники по уровню группы и NPC ---------- */
+// Где искать существ для шаблона карты (метки env в бестиарии)
+const TPL_ENV = { forest: ['forest'], river: ['forest', 'grassland', 'swamp'], mountains: ['mountain'], plains: ['grassland'], swamp: ['swamp'], desert: ['desert'], coast: ['coast'],
+  dungeon: ['dungeon'], cave: ['underdark'], castle: ['urban', 'dungeon'], city: ['urban'], village: ['urban', 'forest', 'grassland'], tavern: ['urban'] };
+const DIFF_N = ['низкая', 'умеренная', 'высокая'];
+const NAMES_M = ['Борислав', 'Ратибор', 'Велимир', 'Остап', 'Мирон', 'Гордей', 'Тихон', 'Святогор', 'Добрыня', 'Еремей', 'Фома', 'Лука', 'Аким', 'Игнат', 'Савва', 'Прохор', 'Демид',
+  'Торгрим', 'Бруни', 'Таэрон', 'Элдрик', 'Корвин', 'Гаррет', 'Освин', 'Бальдур', 'Финн'];
+const NAMES_F = ['Милена', 'Ярина', 'Забава', 'Злата', 'Любава', 'Василиса', 'Агафья', 'Олеся', 'Дарина', 'Ведана', 'Марфа', 'Ульяна', 'Радмила', 'Есения', 'Аглая', 'Белослава',
+  'Хельга', 'Элариэль', 'Мирабель', 'Иветта', 'Сельма', 'Тамсин'];
+// Прозвища и роли — в мужском и женском роде
+const NICKS = [['Рыжий', 'Рыжая'], ['Кривой', 'Кривая'], ['Тихий', 'Тихая'], ['Хромой', 'Хромая'], ['Седой', 'Седая'], ['Весёлый', 'Весёлая'], ['из Заречья'], ['с Холма'],
+  ['Медовый', 'Медовая'], ['Кузнецов', 'Кузнецова'], ['Мельников', 'Мельникова'], ['Длинный', 'Длинная']];
+const ROLE_F = { 'стражник': 'стражница', 'стражник у ворот': 'стражница у ворот', 'горожанин': 'горожанка', 'знатный горожанин': 'знатная горожанка', 'селянин': 'селянка',
+  'трактирщик': 'трактирщица', 'посетитель': 'посетительница', 'торговец': 'торговка', 'бродячий торговец': 'бродячая торговка', 'лавочник': 'лавочница', 'жрец': 'жрица',
+  'послушник': 'послушница', 'карманник': 'карманница', 'дозорный': 'дозорная', 'охотник': 'охотница', 'знатный гость': 'знатная гостья', 'владелец замка': 'владелица замка', 'путник': 'путница' };
+const ROLE_ONLY_F = ['кухарка', 'знахарка'];
+const TRAITS = ['ворчливый', 'любопытный', 'трусоватый', 'болтливый', 'подозрительный', 'добродушный', 'жадный', 'набожный', 'рассеянный', 'хвастливый', 'молчаливый', 'весёлый',
+  'строгий', 'суеверный', 'услужливый', 'гордый', 'усталый', 'хитрый', 'простодушный', 'обидчивый', 'щедрый', 'вспыльчивый', 'мечтательный', 'недоверчивый к чужакам'];
+// Имя с прозвищем в нужном роде; used — уже выданные имена (без повторов в одном заселении)
+function npcName(role, used) {
+  const f = ROLE_ONLY_F.includes(role) || chance(0.45), list = (f ? NAMES_F : NAMES_M).filter((n) => !used.has(n));
+  const first = pickOne(list.length ? list : f ? NAMES_F : NAMES_M), nick = chance(0.35) ? pickOne(NICKS) : null;
+  used.add(first);
+  return { name: `${first}${nick ? ` ${f ? nick[1] || nick[0] : nick[0]}` : ''}`, role: f ? ROLE_F[role] || role : role };
+}
+const pickN = (arr, n) => arr.slice().sort(() => Math.random() - 0.5).slice(0, n);
+// Состав стычки на бюджет опыта: вожак из сильных подходящих, свита одного вида послабее, остаток — ещё такие же, как вожак
+function encBuild(pool, budget, maxN, avoid = new Set()) {
+  const xp = (m) => crXp(m.cr);
+  let cand = pool.filter((m) => xp(m) <= budget && xp(m) >= budget / 12);
+  if (!cand.length) cand = pool.filter((m) => xp(m) <= budget);
+  if (!cand.length) return [];
+  cand.sort((a, b) => xp(b) - xp(a));
+  // Разные вожаки у разных групп на одной карте, если есть из кого выбирать
+  if (cand.some((m) => !avoid.has(m.e))) cand = cand.filter((m) => !avoid.has(m.e));
+  const lead = pickOne(cand.slice(0, Math.max(1, Math.ceil(cand.length / 2)))), out = [{ m: lead, n: 1 }];
+  avoid.add(lead.e);
+  let left = budget - xp(lead), count = 1;
+  // Боссы (легендарные, с сокровищницей) — только поодиночке и никогда в свите
+  const solo = (m) => !!(m.leg || m.hoard);
+  // Свита — того же вида, что вожак (нежить с нежитью, гуманоиды с гуманоидами), если такие есть; у дракона — кто угодно, кроме драконов
+  // До двух видов свиты; сильных (дороже шестой части бюджета) — не больше трёх, остальных — не больше шести
+  for (let kinds = 0; kinds < 2 && left >= 10 && count < maxN && chance(kinds ? 0.5 : 0.75); kinds++) {
+    const fit = pool.filter((m) => m !== lead && !solo(m) && !out.some((o) => o.m === m) && xp(m) <= Math.min(left, xp(lead)) && xp(m) >= Math.max(10, left / 8)
+      && !(solo(lead) && m.type === lead.type));
+    const kin = solo(lead) ? [] : fit.filter((m) => m.type === lead.type), minions = kin.length ? kin : fit;
+    if (!minions.length) break;
+    const mm = pickOne(minions), k = Math.min(maxN - count, xp(mm) > budget / 6 ? 3 : 6, Math.floor(left / xp(mm)));
+    if (k <= 0) break;
+    out.push({ m: mm, n: k }); left -= k * xp(mm); count += k;
+  }
+  while (!solo(lead) && left >= xp(lead) && count < maxN) { out[0].n += 1; left -= xp(lead); count += 1; }
+  return out;
+}
+// Свободные клетки карты L ({ w, h, cells, doors }): не стена, не вода, не дверь и не занята
+function spotFinder(L) {
+  const taken = new Set();
+  const free = (x, y, s = 1) => {
+    for (let dy = 0; dy < s; dy++) for (let dx = 0; dx < s; dx++) {
+      const cx = x + dx, cy = y + dy, k = `${cx}_${cy}`, T = TERRAIN[(L.cells || {})[k]];
+      if (cx < 0 || cy < 0 || cx >= L.w || cy >= L.h || (T && T.block) || (L.cells || {})[k] === 'water' || (L.doors || {})[k] || taken.has(k)) return false;
+    }
+    return true;
+  };
+  const take = (x, y, s = 1) => { for (let dy = 0; dy < s; dy++) for (let dx = 0; dx < s; dx++) taken.add(`${x + dx}_${y + dy}`); };
+  const near = (x, y, s = 1, rect = null, maxR = 10) => {
+    for (let r = 0; r <= maxR; r++) for (let dy = -r; dy <= r; dy++) for (let dx = -r; dx <= r; dx++) {
+      if (Math.max(Math.abs(dx), Math.abs(dy)) !== r) continue;
+      const cx = x + dx, cy = y + dy;
+      if (rect && (cx < rect.x || cy < rect.y || cx + s > rect.x + rect.w || cy + s > rect.y + rect.h)) continue;
+      if (free(cx, cy, s)) { take(cx, cy, s); return [cx, cy]; }
+    }
+    return null;
+  };
+  // Случайная свободная клетка подальше от входа и от уже занятых групп
+  const far = (start, minD, others = []) => {
+    for (let t = 0; t < 400; t++) {
+      const x = Math.floor(Math.random() * L.w), y = Math.floor(Math.random() * L.h);
+      if (!free(x, y)) continue;
+      if (Math.max(Math.abs(x - start.x), Math.abs(y - start.y)) < minD - Math.floor(t / 80)) continue;
+      if (others.some(([ox, oy]) => Math.max(Math.abs(x - ox), Math.abs(y - oy)) < 6)) continue;
+      return [x, y];
+    }
+    return null;
+  };
+  const cells = (pred) => { const out = []; for (let y = 0; y < L.h; y++) for (let x = 0; x < L.w; x++) if (pred((L.cells || {})[`${x}_${y}`]) && free(x, y)) out.push([x, y]); return out; };
+  return { free, take, near, far, cells };
+}
+// Токен существа из бестиария с добычей; extra — сторона, имя роли, торговля
+function monToken(mon, name, x, y, extra = {}) {
+  const hp = avgExpr(mon.hp), size = SIZE_N[mon.size] || 1;
+  const t = { kind: 'npc', owner: user.uid, name, x, y, size, color: '#c94a3d', hp, hpMax: hp, ac: mon.ac, speed: parseInt(mon.speed) || 30, init: abMod(mon.ab[1]),
+    hidden: false, cond: [], side: 'enemy', dsOn: false, ...monStats(mon), xp: crXp(mon.cr), ...extra };
+  t.loot = genLoot(t);
+  return t;
+}
+// Заселить карту L ({ w, h, cells, doors, rooms, start, tpl }): o = { lvl, n, diff, groups, peaceful, hidden, keep: [[x, y]] }.
+// Возвращает токены { id: токен } и описание для журнала мастера
+function populate(L, o) {
+  const F = spotFinder(L), tokens = {}, notes = [], key = () => R.push(ref(gpath('tokens'))).key;
+  (o.keep || []).forEach(([x, y]) => F.take(x, y));
+  // Вокруг входа — пусто, чтобы бой не начинался с порога
+  for (let dy = -2; dy <= 2; dy++) for (let dx = -2; dx <= 2; dx++) F.take(L.start.x + dx, L.start.y + dy);
+  const env = TPL_ENV[L.tpl] || ['forest'], count = {};
+  const num = (n) => { count[n] = (count[n] || 0) + 1; return count[n]; };
+  if (o.peaceful) { peacefulNpcs(L, F, tokens, notes, key); return { tokens, notes }; }
+  const lvl = Math.max(1, Math.min(20, o.lvl)), n = Math.max(1, o.n), budget = (d) => n * ENC_BUDGET[lvl][d];
+  const all = BEST().filter((m) => m.cat !== 'npc' || env.includes('urban'));
+  const inEnv = all.filter((m) => (m.env || []).some((e) => env.includes(e)));
+  const pool = (cap) => { const p = inEnv.filter((m) => crNum(m.cr) <= cap); return p.length >= 3 ? p : all.filter((m) => crNum(m.cr) <= cap); };
+  const rooms = (L.rooms || []).filter((r) => !['entrance', 'cave', 'plaza'].includes(r.kind));
+  const bossRoom = rooms.find((r) => r.kind === 'boss');
+  const auto = ['dungeon'].includes(L.tpl) ? Math.max(2, Math.min(6, Math.round(rooms.length / 2.5))) : L.tpl === 'cave' ? 3 : MAPGEN.TEMPLATES[L.tpl] && MAPGEN.TEMPLATES[L.tpl].kind === 'location' ? 3 : 2;
+  const groups = o.groups > 0 ? o.groups : auto, used = new Set(), centers = [], leads = new Set();
+  for (let i = 0; i < groups; i++) {
+    const boss = (L.tpl === 'dungeon' || L.tpl === 'cave') && i === groups - 1 && groups > 1;
+    const comp = encBuild(pool(lvl + (boss ? 3 : 1)), budget(boss ? 2 : o.diff), n * 2 + 2, leads);
+    if (!comp.length) continue;
+    // Где: в комнате (босс — в дальнем зале), иначе — в стороне от входа
+    let room = boss && bossRoom && !used.has(bossRoom) ? bossRoom : null;
+    if (!room && rooms.length) room = pickOne(rooms.filter((r) => !used.has(r) && r !== bossRoom)) || null;
+    if (room) used.add(room);
+    const c = room ? [room.x + Math.floor(room.w / 2), room.y + Math.floor(room.h / 2)] : F.far(L.start, Math.max(8, Math.floor(Math.max(L.w, L.h) / 3)), centers);
+    if (!c) continue;
+    centers.push(c);
+    const placed = [];
+    comp.forEach(({ m, n: k }) => {
+      const s = SIZE_N[m.size] || 1;
+      for (let j = 0; j < k; j++) {
+        // Большим существам ищем место шире — в комнате, рядом с ней или в любом свободном углу карты
+        const p = F.near(c[0], c[1], s, room, room ? 6 : 10) || F.near(c[0], c[1], s, null, 14) || (() => { const f = F.far(L.start, 6, []); return f && F.near(f[0], f[1], s, null, 8); })();
+        if (!p) continue;
+        tokens[key()] = monToken(m, `${m.n} ${num(m.n)}`, p[0], p[1], { hidden: !!o.hidden });
+        placed.push(m);
+      }
+    });
+    // В журнал — то, что действительно встало на поле
+    const xp = placed.reduce((s, m) => s + crXp(m.cr), 0), got = comp.map(({ m }) => [m, placed.filter((x) => x === m).length]).filter(([, k]) => k);
+    if (placed.length) notes.push(`${boss ? '👑 ' : ''}${got.map(([m, k]) => `${m.n}${k > 1 ? ` ×${k}` : ''}`).join(' + ')} — ${xp} оп.${room ? ` (${room.kind === 'boss' ? 'дальний зал' : 'комната'})` : ''}`);
+  }
+  return { tokens, notes };
+}
+// Мирные локации: стража, жители, торговцы, жрецы — нейтральные NPC с именами и чертами характера
+const SHOP_N = { general: 'лавка: снаряжение и припасы', smith: 'кузница: оружие и доспехи', alchemist: 'алхимик: зелья и свитки' };
+function peacefulNpcs(L, F, tokens, notes, key) {
+  const T = L.tpl, R_ = (lo, hi) => lo + Math.floor(Math.random() * (hi - lo + 1)), roomsOf = (k) => (L.rooms || []).filter((r) => r.kind === k);
+  const plan = T === 'city' ? [['Guard', 'стражник', R_(3, 4), 'road'], ['Veteran', 'капитан стражи', 1, 'plaza'], ['Commoner', 'горожанин', R_(6, 9), 'road'], ['Noble', 'знатный горожанин', 1, 'plaza'],
+    ['Priest', 'жрец', 1, 'temple'], ['Acolyte', 'послушник', 1, 'temple'], ['Commoner', 'трактирщик', 1, 'tavern'], ['Spy', 'карманник', chance(0.4) ? 1 : 0, 'road']]
+    : T === 'village' ? [['Commoner', 'селянин', Math.min(6, roomsOf('house').length), 'house'], ['Commoner', 'трактирщик', 1, 'tavern'], ['Guard', 'дозорный', R_(1, 2), 'road'],
+      ['Scout', 'охотник', 1, 'any'], ['Druid', 'знахарка', chance(0.4) ? 1 : 0, 'house'], ['Commoner', 'ребёнок', R_(0, 2), 'any']]
+    : T === 'castle' ? [['Guard', 'стражник у ворот', 2, 'gate'], ['Guard', 'стражник', R_(2, 4), 'any'], ['Guard', 'часовой', roomsOf('tower').length, 'tower'], ['Veteran', 'капитан', 1, 'any'],
+      ['Knight', 'рыцарь', 1, 'keep'], ['Noble', 'владелец замка', 1, 'keep'], ['Priest', 'капеллан', chance(0.5) ? 1 : 0, 'keep'], ['Commoner', 'слуга', R_(2, 3), 'any']]
+    : [['Commoner', 'трактирщик', 1, 'hall'], ['Commoner', 'посетитель', R_(4, 6), 'hall'], ['Thug', 'громила', chance(0.4) ? 1 : 0, 'hall'], ['Scout', 'путник', chance(0.5) ? 1 : 0, 'hall'],
+      ['Noble', 'знатный гость', chance(0.3) ? 1 : 0, 'room'], ['Commoner', 'кухарка', 1, 'kitchen']];
+  // Торговцы: в городе — по лавке на каждую, в деревне — лавочник, в замке — кузнец в казармах, в таверне — иногда бродячий торговец
+  const shops = T === 'city' ? roomsOf('shop').slice(0, 3).map((r, i) => ['Commoner', ['торговец', 'кузнец', 'алхимик'][i], 1, r, ['general', 'smith', 'alchemist'][i]])
+    : T === 'village' ? [['Commoner', 'лавочник', 1, 'house', 'general']] : T === 'castle' ? [['Commoner', 'кузнец', 1, 'barracks', 'smith']]
+      : chance(0.4) ? [['Commoner', 'бродячий торговец', 1, 'hall', 'general']] : [];
+  const big = T === 'city', place = (where, s) => {
+    const room = typeof where === 'object' ? where : null;
+    if (room) return F.near(room.x + Math.floor(room.w / 2), room.y + Math.floor(room.h / 2), s, room, 6);
+    if (where === 'gate') return F.near(L.start.x, L.start.y - 3, s, null, 6);
+    if (['road', 'any'].includes(where)) { const list = F.cells(where === 'road' ? (v) => v === 'road' : (v) => !v || ['road', 'floor', 'sand', 'bridge'].includes(v)); const p = list.length ? pickOne(list) : null; if (p) F.take(p[0], p[1]); return p; }
+    const rs = roomsOf(where);
+    if (!rs.length) return null;
+    const r = pickOne(rs);
+    return F.near(r.x + Math.floor(r.w / 2), r.y + Math.floor(r.h / 2), s, r, 6);
+  };
+  const who = [], usedNames = new Set();
+  [...plan, ...shops].forEach(([e, role, k, where, shop]) => {
+    const mon = BEST().find((m) => m.e === e);
+    if (!mon) return;
+    for (let i = 0; i < k; i++) {
+      const p = place(where, SIZE_N[mon.size] || 1) || place('any', 1);
+      if (!p) continue;
+      const N = npcName(role, usedNames), trait = pickOne(TRAITS);
+      tokens[key()] = monToken(mon, `${N.name}, ${N.role}`, p[0], p[1], { side: 'neutral', dsOn: true, color: SIDE_COLOR.neutral, tr: `${mon.x ? `${mon.x} ` : ''}Характер: ${trait}.`,
+        ...(shop ? { shop: { kind: shop, items: shopStock(shop, big) } } : {}) });
+      who.push(`${N.name} (${N.role}${shop ? ', 🛒' : ''})`);
+    }
+  });
+  if (who.length) notes.push(`NPC: ${who.join(', ')}`);
+}
+// Цена товара в золоте из записи «5 зм», «2 см», «1 мм»
+const costGp = (s) => { const m = String(s || '').match(/([\d.,]+)\s*(зм|см|мм|эм|пм)/); return m ? +(parseFloat(m[1].replace(',', '.')) * { зм: 1, см: 0.1, мм: 0.01, эм: 0.5, пм: 10 }[m[2]]).toFixed(2) : 0; };
+const fmtPrice = (gp) => (gp >= 1 ? `${+gp.toFixed(2)} зм` : gp >= 0.1 ? `${Math.round(gp * 10)} см` : `${Math.round(gp * 100)} мм`);
+// Цена магического предмета по редкости (DMG 2024: 100 / 400 / 4000 / 40 000 / 200 000 зм), расходники — вдвое дешевле
+const RAR_PRICE = [100, 400, 4000, 40000, 200000];
+const magicPrice = (it) => { const p = RAR_PRICE[it.r] || 400; return it.n === 'Зелье лечения' ? 50 : /Свиток|Зелье/.test(it.n) ? p / 2 : p; };
+function shopStock(kind, big) {
+  const items = [], add = (L, price) => { if (L && price > 0 && !items.some((x) => x.n === L.n)) items.push({ ...L, price }); };
+  if (kind === 'general') pickN(GEAR.filter((g) => costGp(g.cost) > 0 && costGp(g.cost) <= 60), big ? 16 : 10).forEach((g) => add({ kind: 'item', n: g.n, qty: 1 }, costGp(g.cost)));
+  if (kind === 'smith') {
+    pickN(WEAPONS, big ? 12 : 7).forEach((w) => add({ kind: 'item', n: w.n, qty: 1 }, costGp(w.cost)));
+    pickN(ARMOR, big ? 6 : 3).forEach((a) => add({ kind: 'item', n: a.n, qty: 1 }, costGp(a.cost)));
+    if (big && chance(0.6)) { const it = magicItem(MI().find((m) => m.n === 'Оружие +1')), base = WEAPONS.find((w) => w.n === it.base); add(it, 400 + costGp(base && base.cost)); }
+  }
+  if (kind === 'alchemist') {
+    ['Зелье лечения', 'Зелье лазания'].forEach((n) => { const M = MI().find((m) => m.n === n); if (M) { const it = magicItem(M); add(it, magicPrice(it)); } });
+    const anti = GEAR.find((g) => g.n === 'Противоядие'); if (anti) add({ kind: 'item', n: anti.n, qty: 1 }, costGp(anti.cost));
+    pickN(MI().filter((m) => /^Зелье/.test(m.n) && m.r === 1), big ? 3 : 1).forEach((M) => { const it = magicItem(M); add(it, magicPrice(it)); });
+    pickN(SPELLS.filter((s) => +s.l <= (big ? 2 : 1)), big ? 5 : 3).forEach((s) => { const it = scrollItem(s); add(it, magicPrice(it)); });
+  }
+  return items;
+}
+// Игрок у торговца: список товаров с ценами, покупка за деньги из листа
+function shopDialog(id) {
+  const t = game.tokens[id], S = t && t.shop;
+  if (!S) return;
+  const dm = isDM(), m = me(), purse = !dm && m && m.charId ? app.purse(m.charId) : null, mine = user && game.tokens[`pc_${user.uid}`];
+  const near = dm || (mine && distFt(mine, t) <= 10);
+  app.openModal(`<div><h2>🛒 ${esc(t.name)}</h2>
+    <p class="muted small">${SHOP_N[S.kind] || 'товары'}${purse != null ? ` · у вас ${fmtPrice(purse)}` : ''}${!near ? ' · <b>подойдите ближе (10 фт), чтобы купить</b>' : ''}</p>
+    <div class="list">${(S.items || []).map((it, i) => `<div class="enc-row"><span><b>${esc(it.n)}</b>${it.r >= 1 ? ` <span class="muted small">${RAR_N[it.r]}</span>` : ''}</span>
+      <span class="row gap"><b>${fmtPrice(it.price)}</b>${dm ? '' : `<button data-buy="${i}" ${near && purse >= it.price ? '' : 'disabled'}>Купить</button>`}</span></div>`).join('') || '<p class="muted">Прилавок пуст.</p>'}</div>
+    <div class="modal-actions"><button data-act="closeModal">Закрыть</button></div></div>`);
+  $$('[data-buy]').forEach((b) => b.addEventListener('click', () => {
+    const { price, ...L } = S.items[+b.dataset.buy];
+    const r = app.mute(() => app.buy(m.charId, L, price));
+    if (!r || !r.ok) { app.toast('Не хватает денег'); return; }
+    addLog({ kind: 'act', who: mine ? mine.name : myName(), txt: `🛒 покупает «${r.name}» у ${t.name} за ${fmtPrice(price)}` });
+    app.toast(`🛒 «${esc(r.name)}» — в инвентаре · осталось ${fmtPrice(r.left)}`, 'crit');
+    shopDialog(id);
+  }));
+}
+// Заселить текущее поле (созданное генератором или нарисованное вручную)
+function popDialog() {
+  const G = (game.meta || {}).gen || null, players = Object.values(game.members || {}).filter((m) => m.role !== 'dm').length || 4;
+  const tpls = Object.entries(MAPGEN.TEMPLATES);
+  app.openModal(`<div><h2>👥 Заселить поле</h2>
+    <div class="form-grid"><label style="grid-column:1/-1">Местность<select id="pT">${tpls.map(([k, t]) => `<option value="${k}" ${G && G.tpl === k ? 'selected' : ''}>${t.n}</option>`).join('')}</select></label>
+      ${popOptsHtml(players, G ? !!(MAPGEN.TEMPLATES[G.tpl] || {}).peaceful : false)}</div>
+    <p class="muted small">${G ? 'Поле создано генератором: существа встанут по комнатам, босс — в дальнем зале.' : 'Поле нарисовано вручную: существа встанут группами в стороне от персонажей.'} В журнал (видит только мастер) — что получилось.</p>
+    <div class="modal-actions"><button data-act="closeModal">Отмена</button><button class="primary" id="pOk">👥 Заселить</button></div></div>`);
+  $('#pT').onchange = () => { $('#popPeace').checked = !!(MAPGEN.TEMPLATES[$('#pT').value] || {}).peaceful; };
+  $('#pOk').onclick = () => {
+    const pcs = Object.values(game.tokens).filter((t) => t.kind === 'pc');
+    const start = G && G.start ? G.start : pcs.length ? { x: Math.round(pcs.reduce((s, t) => s + t.x, 0) / pcs.length), y: Math.round(pcs.reduce((s, t) => s + t.y, 0) / pcs.length) } : { x: 1, y: 1 };
+    const L = { w: W(), h: H(), cells: game.map || {}, doors: game.doors || {}, rooms: G && G.tpl === $('#pT').value ? G.rooms || [] : [], start, tpl: $('#pT').value };
+    const P = populate(L, { ...popOptsRead(), keep: Object.values(game.tokens).flatMap((t) => { const s = t.size || 1, out = []; for (let dy = 0; dy < s; dy++) for (let dx = 0; dx < s; dx++) out.push([t.x + dx, t.y + dy]); return out; }) });
+    app.closeModal();
+    popApply(P);
+  };
+}
+const popOptsHtml = (players, peaceful) => `<label>Уровень группы<input type="number" id="popLvl" min="1" max="20" value="${partyLevel()}"></label>
+  <label>Персонажей<input type="number" id="popN" min="1" max="10" value="${players}"></label>
+  <label>Сложность стычек<select id="popDiff">${DIFF_N.map((n, i) => `<option value="${i}" ${i === 1 ? 'selected' : ''}>${n}</option>`).join('')}</select></label>
+  <label>Стычек<input type="number" id="popGr" min="0" max="10" placeholder="авто"></label>
+  <label class="check"><input type="checkbox" id="popPeace" ${peaceful ? 'checked' : ''}> Мирная: NPC вместо врагов</label>
+  <label class="check"><input type="checkbox" id="popHid"> Скрыть врагов от игроков</label>`;
+const popOptsRead = () => ({ lvl: Math.max(1, Math.min(20, +$('#popLvl').value || 1)), n: Math.max(1, +$('#popN').value || 4), diff: +$('#popDiff').value || 0,
+  groups: Math.max(0, +$('#popGr').value || 0), peaceful: $('#popPeace').checked, hidden: $('#popHid').checked });
+function popApply(P) {
+  const ids = Object.keys(P.tokens);
+  if (!ids.length) { app.toast('Не нашлось подходящих существ или места'); return; }
+  R.update(ref(gpath()), Object.fromEntries(ids.map((id) => [`tokens/${id}`, P.tokens[id]]))).catch((err) => app.toast(`Не удалось: ${esc(err.code || err.message)}`));
+  addLog({ kind: 'sys', dmOnly: true, txt: `👥 Заселено (${ids.length}): ${P.notes.join('; ')}` });
+  app.toast(`👥 Поставлено: ${ids.length}`, 'crit');
 }
 
 /* ---------- Сцены ---------- */
@@ -3065,7 +3336,7 @@ async function genApply(res, o) {
 function sceneSnap() {
   const npcs = {}, pcs = {}, m = game.meta || {};
   Object.entries(game.tokens || {}).forEach(([id, t]) => { if (t.kind === 'npc') npcs[id] = t; else pcs[id] = { x: t.x, y: t.y }; });
-  return { w: W(), h: H(), bg: m.bg || null, fog: m.fog || null, ground: m.ground || null, map: game.map || null, doors: game.doors || null, lights: game.lights || null, chests: game.chests || null,
+  return { w: W(), h: H(), bg: m.bg || null, fog: m.fog || null, ground: m.ground || null, gen: m.gen || null, map: game.map || null, doors: game.doors || null, lights: game.lights || null, chests: game.chests || null,
     reveal: game.reveal || null, seen: game.seen || null, bgimg: bgSrc ? { data: bgSrc } : null, npcs, pcs };
 }
 // Сохранить текущее поле в его сцену (или в новую «Сцена N»)
@@ -3080,7 +3351,7 @@ async function loadScene(sid, empty, name) {
   const snap = empty ? { w: 30, h: 20 } : (await R.get(ref(gpath(`sceneData/${sid}`)))).val() || {};
   const upd = { map: snap.map || null, doors: snap.doors || null, lights: snap.lights || null, reveal: snap.reveal || null, seen: snap.seen || null,
     bgimg: snap.bgimg || null, 'meta/w': snap.w || 30, 'meta/h': snap.h || 20, 'meta/bg': snap.bg || null, 'meta/fog': snap.fog || null, 'meta/scene': sid,
-    chests: snap.chests || null, 'meta/ground': snap.ground || null,
+    chests: snap.chests || null, 'meta/ground': snap.ground || null, 'meta/gen': snap.gen || null,
     areas: null, init: null, econ: null };
   Object.entries(game.tokens || {}).forEach(([id, t]) => {
     if (t.kind === 'npc') { upd[`tokens/${id}`] = null; return; }
@@ -3416,6 +3687,7 @@ function renderTools() {
       + `<button data-tbl="scenes" title="Несколько полей: таверна, подземелье, логово — переключение одной кнопкой">🎬 Сцены${(game.meta || {}).scene && (game.scenes || {})[game.meta.scene] ? `: ${esc(game.scenes[game.meta.scene].n)}` : ''}</button>`
       + '<button data-tbl="rest" title="Короткий или долгий отдых для всей группы">🏕 Отдых</button>'
       + '<button data-tbl="bestiary" title="Свои существа: создать, изменить встроенное, перенести файлом">🐉 Бестиарий</button>'
+      + '<button data-tbl="pop" title="Расставить противников по уровню группы или мирных NPC с торговцами">👥 Заселить</button>'
       + (fogOn() ? t('reveal', '👁 Открыть', 'Кисть: открыть клетки для игроков') + t('conceal', '🌫 Скрыть', 'Кисть: закрыть клетки туманом')
         + `<button class="${fogPreview ? 'on' : ''}" data-tbl="fogPreview" title="Показать поле так, как его видят игроки">👁 Вид игроков</button>` : '') : ''}
     ${!isDM() && !(hasMine && inFight()) ? t('place', hasMine ? '📍 Переставить меня' : '📍 Поставить персонажа', 'Нажмите на клетку') : ''}
@@ -3541,6 +3813,7 @@ function renderSide() {
     ${t.hpMax ? `<div>${nums ? `Хиты <b>${t.hp}</b> / ${t.hpMax}${t.temp ? ` (+${t.temp})` : ''}${t.ac ? ` · КД <b>${t.ac}</b>` : ''}` : `<span class="muted">${isDown(t) ? (isDead(t) ? 'мёртв' : 'без сознания') : t.hp / t.hpMax > .5 ? 'бодр' : t.hp / t.hpMax > .25 ? 'ранен' : 'тяжело ранен'}</span>`}</div>` : ''}
     ${isDown(t) && usesDS(t) && nums ? `<div class="death-row"><span>Успехи ${pips(+t.dsS || 0, 'ok')}</span><span>Провалы ${pips(+t.dsF || 0, 'bad')}</span></div>` : ''}
     ${t.speed ? `<div class="muted small">Скорость ${t.speed} фт${t.init != null ? ` · инициатива ${t.init >= 0 ? '+' : ''}${t.init}` : ''}</div>` : ''}
+    ${t.shop ? `<div class="mt"><button class="primary" data-tbl="shop">🛒 Товары</button> <span class="muted small">${esc(SHOP_N[t.shop.kind] || '')}</span></div>` : ''}
     ${(t.cond || []).length ? `<div class="chips mt">${t.cond.map((c) => `<span class="chip on"><span>${esc(condName(c))}</span></span>`).join('')}</div>` : ''}
     ${fxOf(selId).length ? `<div class="chips mt">${fxOf(selId).map(([k, f]) => `<span class="chip on" title="${esc(f.spell || '')}"><span>${f.ic || '✦'} ${esc(f.n || '')}</span>${dm || mine || f.by === user.uid ? `<button data-tbl="fxDel" data-k="${k}" title="Снять эффект">✕</button>` : ''}</span>`).join('')}</div>` : ''}
     ${dm || mine ? `<div class="row gap wrap mt"><label>Свет <select data-tbl-light>${LIGHTS.map(([v, n], i) => `<option value="${i}" ${(t.lt ? +t.lt.i || 0 : 0) === i ? 'selected' : ''}>${n}${v ? ` (${v.replace('/', '+')} фт)` : ''}</option>`).join('')}</select></label></div>` : ''}
@@ -3620,6 +3893,8 @@ async function onClick(e) {
     else if (a === 'xpGive') xpDialog(false);
     else if (a === 'enc') encDialog();
     else if (a === 'gen') genDialog();
+    else if (a === 'pop') popDialog();
+    else if (a === 'shop') shopDialog(selId);
     else if (a === 'bestiary') bestiaryDialog();
     else if (a === 'lootTok') tokenLootDialog(selId);
     else if (a === 'handouts') handoutsDialog();

@@ -226,21 +226,22 @@ window.dndApp = {
     if (!c || !L) return null;
     if (state.current !== id) state.current = id;
     let name = '';
-    tracked('добыча', () => {
-      if (L.kind === 'gold') { c.coins.gp = (+c.coins.gp || 0) + (+L.gp || 0); name = `${L.gp} зм`; return; }
-      const M = L.kind === 'magic' && MAGIC_ITEMS.find((m) => m.n === L.mn);
-      if (M) {
-        const base = !M.pick ? null : M.pick === 'w' ? WEAPONS.find((w) => w.n === L.base) : ARMOR.find((a) => a.id === L.base);
-        if (!M.pick || base) { name = addMagicItem(c, M, base).n; return; }
-      }
-      // Обычный предмет: вес и цена — из списков оружия, доспехов и снаряжения; свиток, камень и т. п. — с описанием и ценой
-      const w = WEAPONS.find((x) => x.n === L.n), a = ARMOR.find((x) => x.n === L.n), g = GEAR.find((x) => x.n === L.n);
-      const base = w ? { cat: 'Оружие', w: w.w, cost: w.cost } : a ? { cat: 'Доспехи', w: a.w, cost: a.cost } : g ? { cat: g.cat, w: g.w, cost: g.cost, x: g.x, chMax: g.ch || 0, ch: g.ch || 0 } : {};
-      name = addInvItem(c, { n: L.n, qty: +L.qty || 1, ...base, ...(L.cat ? { cat: L.cat } : {}), ...(L.cost ? { cost: L.cost } : {}), ...(L.x ? { x: L.x } : {}) }).n;
-    });
+    tracked('добыча', () => { name = lootInto(c, L); });
     save(); render();
     return name;
   },
+  // Покупка у торговца на столе: хватает денег — платим (сдача монетами) и кладём товар в инвентарь
+  buy(id, L, price) {
+    const c = state.chars[id];
+    if (!c || !L) return null;
+    if (state.current !== id) state.current = id;
+    if (coinGp(c.coins) + 1e-9 < price) return { ok: false, left: coinGp(c.coins) };
+    let name = '';
+    tracked(`покупка: ${L.n}`, () => { payCoins(c, price); name = lootInto(c, L); });
+    save(); render();
+    return { ok: true, name, left: +coinGp(c.coins).toFixed(2) };
+  },
+  purse(id) { const c = state.chars[id]; return c ? +coinGp(c.coins).toFixed(2) : 0; },
   // Заклинания с областью или спасброском: подготовленные, всегда подготовленные и заговоры
   // extra — английские названия заклинаний, которые стол умеет применять без области (лечение, баффы)
   areaSpells(id, extra = []) {
@@ -2640,6 +2641,32 @@ function slotOptions(c, s) {
   return out;
 }
 // Свободные ячейки для заклинания-реакции (без «без ячейки» и ритуала); заклинание должно быть подготовлено
+// Добыча или покупка в лист: золото — в кошелёк, магический предмет — как из каталога, прочее — в инвентарь; возвращает название
+function lootInto(c, L) {
+  if (L.kind === 'gold') { c.coins.gp = (+c.coins.gp || 0) + (+L.gp || 0); return `${L.gp} зм`; }
+  const M = L.kind === 'magic' && MAGIC_ITEMS.find((m) => m.n === L.mn);
+  if (M) {
+    const base = !M.pick ? null : M.pick === 'w' ? WEAPONS.find((w) => w.n === L.base) : ARMOR.find((a) => a.id === L.base);
+    if (!M.pick || base) return addMagicItem(c, M, base).n;
+  }
+  // Обычный предмет: вес и цена — из списков оружия, доспехов и снаряжения; свиток, камень и т. п. — с описанием и ценой
+  const w = WEAPONS.find((x) => x.n === L.n), a = ARMOR.find((x) => x.n === L.n), g = GEAR.find((x) => x.n === L.n);
+  const base = w ? { cat: 'Оружие', w: w.w, cost: w.cost } : a ? { cat: 'Доспехи', w: a.w, cost: a.cost } : g ? { cat: g.cat, w: g.w, cost: g.cost, x: g.x, chMax: g.ch || 0, ch: g.ch || 0 } : {};
+  return addInvItem(c, { n: L.n, qty: +L.qty || 1, ...base, ...(L.cat ? { cat: L.cat } : {}), ...(L.cost ? { cost: L.cost } : {}), ...(L.x ? { x: L.x } : {}) }).n;
+}
+// Оплата: сначала золотом, затем платиной, электрумом, серебром и медью; сдача — золотом, серебром и медью
+function payCoins(c, gp) {
+  const val = { gp: 100, pp: 1000, ep: 50, sp: 10, cp: 1 };
+  let need = Math.round(gp * 100);
+  for (const k of Object.keys(val)) {
+    if (need <= 0) break;
+    const have = +c.coins[k] || 0, use = Math.min(have, Math.ceil(need / val[k]));
+    c.coins[k] = have - use;
+    need -= use * val[k];
+  }
+  let change = -need;
+  if (change > 0) { c.coins.gp = (+c.coins.gp || 0) + Math.floor(change / 100); change %= 100; c.coins.sp = (+c.coins.sp || 0) + Math.floor(change / 10); c.coins.cp = (+c.coins.cp || 0) + (change % 10); }
+}
 function reactSlots(c, e) {
   const s = c.spells.find((x) => x.e === e && (x.prep || x.always));
   return s ? slotOptions(c, s).filter((x) => x.left > 0 && x.key !== 'free' && x.key !== 'ritual') : [];

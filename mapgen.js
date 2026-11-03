@@ -260,14 +260,14 @@ const MAPGEN = (() => {
     for (let y = y0 - 2; y <= y1 + 2; y++) for (let x = x0 - 2; x <= x1 + 2; x++) if ((x === x0 - 2 || x === x1 + 2 || y === y0 - 2 || y === y1 + 2) && R.ch(0.92)) G.set(x, y, 'water');
     for (let y = y0; y <= y1; y++) for (let x = x0; x <= x1; x++) if (x === x0 || x === x1 || y === y0 || y === y1) G.set(x, y, 'wall');
     // Башни по углам
-    [[x0, y0], [x1 - 3, y0], [x0, y1 - 3], [x1 - 3, y1 - 3]].forEach(([tx, ty], i) => building(G, out, tx, ty, 4, 4, i < 2 ? 's' : 'n', R));
+    [[x0, y0], [x1 - 3, y0], [x0, y1 - 3], [x1 - 3, y1 - 3]].forEach(([tx, ty], i) => { building(G, out, tx, ty, 4, 4, i < 2 ? 's' : 'n', R); out.rooms[out.rooms.length - 1].kind = 'tower'; });
     // Ворота и мост
     G.set(gx, y1, ''); G.set(gx - 1, y1, '');
     out.doors[`${gx}_${y1}`] = { o: 0 }; out.doors[`${gx - 1}_${y1}`] = { o: 0 };
     for (let y = y1 + 1; y < G.h; y++) { G.set(gx, y, G.get(gx, y) === 'water' ? 'bridge' : 'road'); G.set(gx - 1, y, G.get(gx - 1, y) === 'water' ? 'bridge' : 'road'); }
     // Донжон: большой зал и комнаты за перегородкой
     const kw = Math.min(14, Math.floor((x1 - x0) * 0.5)), kh = Math.min(8, Math.floor((y1 - y0) * 0.45)), kx = gx - Math.floor(kw / 2), ky = y0 + 4;
-    building(G, out, kx, ky, kw, kh, 's', R);
+    building(G, out, kx, ky, kw, kh, 's', R); out.rooms[out.rooms.length - 1].kind = 'keep';
     // За перегородкой — три покоя, каждый с дверью в зал
     const part = ky + Math.floor(kh / 2), third = Math.floor(kw / 3);
     for (let x = kx; x < kx + kw; x++) G.set(x, part, 'wall');
@@ -277,8 +277,8 @@ const MAPGEN = (() => {
     out.lights.push({ x: gx, y: ky + kh - 2, b: 20, d: 20 }, { x: gx, y: y1 - 1, b: 20, d: 20 });
     // Казармы и конюшня по бокам двора
     const sideH = Math.max(4, Math.floor((y1 - y0) * 0.35));
-    if (x0 + 9 < kx) building(G, out, x0 + 2, y0 + 6, Math.min(7, kx - x0 - 3), sideH, 'e', R);
-    if (x1 - 9 > kx + kw) building(G, out, Math.max(kx + kw + 2, x1 - 8), y0 + 6, Math.min(7, x1 - kx - kw - 3), sideH, 'w', R);
+    if (x0 + 9 < kx) building(G, out, x0 + 2, y0 + 6, Math.min(7, kx - x0 - 3), sideH, 'e', R) && (out.rooms[out.rooms.length - 1].kind = 'barracks');
+    if (x1 - 9 > kx + kw) building(G, out, Math.max(kx + kw + 2, x1 - 8), y0 + 6, Math.min(7, x1 - kx - kw - 3), sideH, 'w', R) && (out.rooms[out.rooms.length - 1].kind = 'barracks');
     // Дорога от ворот к донжону и колодец
     for (let y = ky + kh; y < y1; y++) { if (G.get(gx, y) === '') G.set(gx, y, 'road'); if (G.get(gx - 1, y) === '') G.set(gx - 1, y, 'road'); }
     G.set(gx + 3, y1 - 3, 'water');
@@ -323,6 +323,9 @@ const MAPGEN = (() => {
         out.rooms[out.rooms.length - 1].kind = R.pick(['house', 'house', 'shop', 'tavern', 'temple']);
       }
     });
+    // В каждом городе — хотя бы две лавки, таверна и храм
+    const need = [['shop', 2], ['tavern', 1], ['temple', 1]];
+    need.forEach(([k, n]) => { for (let have = out.rooms.filter((r) => r.kind === k).length; have < n; have++) { const h = out.rooms.filter((r) => r.kind === 'house'); if (!h.length) break; R.pick(h).kind = k; } });
     if (o.chests) out.rooms.filter((r) => r.kind === 'shop').slice(0, 2).forEach((r) => out.chests.push({ x: r.x, y: r.y }));
     out.ground = 'dirt'; out.start = openNear(G, sx.length ? sx[0] : 1, 0);
   }
