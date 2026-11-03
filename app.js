@@ -216,7 +216,9 @@ window.dndApp = {
       bonus: clsLvl(c, 'Плут') >= 2 || clsLvl(c, 'Монах') >= 2 ? ['dash', 'dis'] : [], atks: attacksPerAction(c), evasion: hasEvasion(c), dsS: +cb.deathS || 0, dsF: +cb.deathF || 0,
       dv: +((String(c.prof.senses || '').match(/тёмное зрение\D*(\d+)/i) || [])[1] || 0),
       // Спасброски Силы и Ловкости — цель захвата или толчка выбирает лучший
-      svs: [saveBonus(c, 'str'), saveBonus(c, 'dex')], grapDC: 8 + am(c, 'str') + pb(c) };
+      svs: [saveBonus(c, 'str'), saveBonus(c, 'dex')], grapDC: 8 + am(c, 'str') + pb(c),
+      // «Контрзаклинание» наготове (подготовлено и есть ячейка 3+ уровня) и спасбросок Телосложения — против чужого
+      cs: reactSlots(c, 'Counterspell').length > 0, svc: saveBonus(c, 'con') };
   },
   // Заклинания с областью или спасброском: подготовленные, всегда подготовленные и заговоры
   // extra — английские названия заклинаний, которые стол умеет применять без области (лечение, баффы)
@@ -246,13 +248,45 @@ window.dndApp = {
     const sup = c.resources.find((x) => x.auto === 'superiority');
     const smite = c.spells.find((s) => s.e === 'Divine Smite' && (s.prep || s.always));
     const shield = c.spells.find((s) => s.e === 'Shield' && (s.prep || s.always));
+    const M = clsLvl(c, 'Монах'), focus = c.resources.find((x) => x.auto === 'focus');
     return {
       maneuvers: sup ? ((c.cpicks || {}).man || []) : [], supLeft: sup ? sup.max - sup.used : 0, supDie: supDie(c),
       smiteSlots: smite ? slotOptions(c, smite).filter((s) => s.left > 0 && s.key !== 'free' && s.key !== 'ritual') : [],
       sneak: Math.ceil(clsLvl(c, 'Плут') / 2),
       shieldSlots: shield ? slotOptions(c, shield).filter((s) => s.left > 0 && s.key !== 'free' && s.key !== 'ritual') : [], shieldId: shield ? shield.id : '',
       grapDC: 8 + am(c, 'str') + pb(c), svStr: saveBonus(c, 'str'), svDex: saveBonus(c, 'dex'),
+      // Реакции: «Адское возмездие», «Контрзаклинание», Невероятное уклонение (плут 5), Отражение атак (монах 3),
+      // боевой стиль «Защита» (нужен щит в руке)
+      rebukeSlots: reactSlots(c, 'Hellish Rebuke'), counterSlots: reactSlots(c, 'Counterspell'),
+      uncanny: clsLvl(c, 'Плут') >= 5, protection: hasFeat(c, 'protection') && !!c.armor.shield,
+      deflect: M >= 3 ? { any: M >= 13, focus: focus ? focus.max - focus.used : 0, dc: 8 + am(c, 'wis') + pb(c), die: M >= 17 ? 12 : M >= 11 ? 10 : M >= 5 ? 8 : 6, dex: am(c, 'dex') } : null,
     };
+  },
+  // Заклинание-реакция со стола («Адское возмездие», «Контрзаклинание»): тратит ячейку (по умолчанию — самую низкую)
+  castReaction(id, e, slotKey) {
+    if (!state.chars[id]) return null;
+    if (state.current !== id) state.current = id;
+    const c = ch(), s = c.spells.find((x) => x.e === e && (+x.l === 0 || x.prep || x.always)), key = slotKey || (reactSlots(c, e)[0] || {}).key;
+    if (!s || !key) return null;
+    let r = null;
+    tracked(s.n, () => { r = { ...spendSlot(c, s, key), dc: spellDCFor(c, s), n: s.n }; });
+    save(); render();
+    return r;
+  },
+  // Отражение атак: урон уменьшается на 1к10 + Лов + уровень монаха
+  deflect(id) {
+    if (!state.chars[id]) return null;
+    if (state.current !== id) state.current = id;
+    const c = ch(), r = rollDice('Отражение атак', `1d10+${am(c, 'dex') + clsLvl(c, 'Монах')}`);
+    return r ? { total: Math.max(0, r.total), detail: r.detail } : null;
+  },
+  spendFocus(id, n = 1) {
+    const c = state.chars[id], f = c && c.resources.find((x) => x.auto === 'focus');
+    if (!f || f.max - f.used < n) return false;
+    if (state.current !== id) state.current = id;
+    tracked('очки сосредоточенности', () => { f.used += n; });
+    save(); render();
+    return true;
   },
   // Вырваться из захвата: проверка Атлетики или Акробатики (что лучше) против СЛ
   escape(id, dc) {
@@ -2573,6 +2607,11 @@ function slotOptions(c, s) {
   if (s.rt) out.push({ key: 'ritual', label: 'Как ритуал (+10 мин)', lvl: +s.l, left: 1 });
   out.push({ key: 'free', label: 'Без ячейки (умение/предмет)', lvl: +s.l, left: 1 });
   return out;
+}
+// Свободные ячейки для заклинания-реакции (без «без ячейки» и ритуала); заклинание должно быть подготовлено
+function reactSlots(c, e) {
+  const s = c.spells.find((x) => x.e === e && (x.prep || x.always));
+  return s ? slotOptions(c, s).filter((x) => x.left > 0 && x.key !== 'free' && x.key !== 'ritual') : [];
 }
 function spendSlot(c, s, key) {
   if (+s.l === 0) return { castLvl: 0, how: '' };

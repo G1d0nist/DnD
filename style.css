@@ -519,3 +519,14 @@ button.stat:hover { border-color: var(--gold); }
 .tok-face.img { background-size: cover; background-position: center; background-color: var(--tc); }
 .btn-file { display: inline-flex; align-items: center; padding: 6px 11px; border: 1px solid var(--line); border-radius: 8px; background: var(--card2); cursor: pointer; font-size: 14px; }
 .btn-file:hover { border-color: var(--gold); }
+/* Реакции, легендарные действия, логово */
+.init-row.lair span { color: #c9b27a; font-style: italic; }
+.react-box, .legend-box { display: flex; flex-direction: column; gap: 6px; padding: 8px; border-radius: 8px; border: 1px dashed var(--gold); background: var(--bg2); }
+.react-box button { text-align: left; }
+.legend-box .row { gap: 8px; }
+.leg-pips { display: inline-flex; gap: 3px; vertical-align: middle; margin-left: 4px; }
+.cs-ask { border-color: #9b6fd1; }
+.cs-ask button + button { margin-left: 6px; }
+.leg-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 6px; }
+.leg-grid label { font-size: 12px; min-width: 0; }
+.leg-grid input { width: 100%; }
