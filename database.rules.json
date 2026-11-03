@@ -68,6 +68,9 @@
         "loot": {
           ".write": false
         },
+        "handouts": {
+          ".write": false
+        },
         "lootAward": {
           "$uid": {
             ".write": "auth != null && auth.uid === $uid"

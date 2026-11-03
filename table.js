@@ -106,6 +106,7 @@ function subscribe(gid, code) {
   on('rest', (v) => { game.rest = v; handleRest(); });
   on(`xpAward/${user.uid}`, (v) => { game.award = v; applyXp(); });
   on('loot', (v) => { game.loot = v || {}; });
+  on('handouts', (v) => { game.handouts = v || {}; notifyHandouts(); });
   on(`lootAward/${user.uid}`, (v) => { game.lootAw = v; applyLoot(); });
   on('members', (v) => { game.members = v || {}; syncEffects(); applyXp(); applyLoot(); handleRest(); });
   on('tokens', (v) => { game.tokens = v || {}; cleanupInit(); syncEffects(); awardKills(); });
@@ -293,15 +294,15 @@ function drawTerrain() {
   }
 }
 // Уменьшить картинку до 2400 пикселей по большей стороне и сжать в JPEG — чтобы быстро грузилась у всех
-function shrinkImage(file) {
+function shrinkImage(file, max = 2400, q = 0.82) {
   return new Promise((ok, fail) => {
     const url = URL.createObjectURL(file), img = new Image();
     img.onload = () => {
-      const k = Math.min(1, 2400 / Math.max(img.naturalWidth, img.naturalHeight)), cv = document.createElement('canvas');
+      const k = Math.min(1, max / Math.max(img.naturalWidth, img.naturalHeight)), cv = document.createElement('canvas');
       cv.width = Math.round(img.naturalWidth * k); cv.height = Math.round(img.naturalHeight * k);
       cv.getContext('2d').drawImage(img, 0, 0, cv.width, cv.height);
       URL.revokeObjectURL(url);
-      ok({ data: cv.toDataURL('image/jpeg', 0.82), w: cv.width, h: cv.height });
+      ok({ data: cv.toDataURL('image/jpeg', q), w: cv.width, h: cv.height });
     };
     img.onerror = () => { URL.revokeObjectURL(url); fail(new Error('не картинка')); };
     img.src = url;
@@ -755,7 +756,18 @@ function avgExpr(expr) {
   });
   return Math.max(1, Math.floor(t));
 }
-const BEST = () => (typeof BESTIARY !== 'undefined' ? BESTIARY : []);
+// Бестиарий: встроенный + свои существа мастера (хранятся на его устройстве; своё с тем же e заменяет встроенное).
+// Список отсортирован по опасности, затем по названию
+let monCache = null;
+const customMons = () => { try { return JSON.parse(ls.get('dnd55-bestiary')) || []; } catch (e) { return []; } };
+function BEST() {
+  if (monCache) return monCache;
+  const base = typeof BESTIARY !== 'undefined' ? BESTIARY : [], mine = customMons().map((m) => ({ ...m, custom: true }));
+  monCache = [...mine, ...base.filter((m) => !mine.some((c) => c.e === m.e))]
+    .sort((a, b) => crNum(a.cr) - crNum(b.cr) || String(a.n).localeCompare(String(b.n), 'ru'));
+  return monCache;
+}
+function saveCustomMons(list) { ls.set('dnd55-bestiary', JSON.stringify(list)); monCache = null; }
 // Атаки существа → формат стола (досягаемость и дальность)
 function npcAttacks(t) {
   return (t.atk || []).map((a, i) => {
@@ -800,7 +812,8 @@ function newEnemyDialog(x, y, base) {
     const found = BEST().filter((m) => !q || m.n.toLowerCase().includes(q) || m.e.toLowerCase().includes(q) || m.cr === q);
     const btn = (m) => `<button data-mon="${esc(m.e)}" class="${mon && mon.e === m.e ? 'on' : ''}"><b>${esc(m.n)}</b><span class="muted small">ПО ${m.cr} · КД ${m.ac} · ${avgExpr(m.hp)} хитов</span></button>`;
     const group = (title, list) => (list.length ? `<div class="mon-head">${title}</div>${list.map(btn).join('')}` : '');
-    $('#nList').innerHTML = group('Враги и чудовища', found.filter((m) => m.cat !== 'npc')) + group('NPC — жители мира', found.filter((m) => m.cat === 'npc'))
+    $('#nList').innerHTML = group('✎ Мои существа', found.filter((m) => m.custom)) + group('Враги и чудовища', found.filter((m) => !m.custom && m.cat !== 'npc'))
+      + group('NPC — жители мира', found.filter((m) => !m.custom && m.cat === 'npc'))
       || '<p class="muted small">Ничего не найдено — заполните поля вручную.</p>';
     $$('#nList [data-mon]').forEach((x) => x.addEventListener('click', () => pick(BEST().find((m) => m.e === x.dataset.mon))));
   };
@@ -851,7 +864,7 @@ const encSave = () => ls.set('dnd55-enc', JSON.stringify(enc));
 function encDialog() {
   encLoad();
   const players = Object.entries(game.members || {}).filter(([, m]) => m.role !== 'dm');
-  app.openModal(`<h2>⚔ Конструктор столкновения</h2>
+  app.openModal(`<div id="encBox"><h2>⚔ Конструктор столкновения</h2>
     <div class="muted small">Группа (уровни можно поправить):</div>
     <div class="enc-party">${players.map(([uid, m]) => { const p = enc.party[uid] || {}; return `<label class="check"><input type="checkbox" data-encp="${uid}" ${p.on === false ? '' : 'checked'}>
       ${esc((m.char || {}).name || m.name)}<input type="number" min="1" max="20" data-encl="${uid}" value="${p.lvl || (m.char || {}).lvl || 1}"></label>`; }).join('') || '<p class="muted small">Игроков ещё нет — добавьте уровни вручную:</p>'}
@@ -862,7 +875,7 @@ function encDialog() {
     <div class="row gap wrap mt"><label class="check"><input type="checkbox" id="encHid" ${enc.hid ? 'checked' : ''}> Скрыты от игроков</label>
       <label class="check"><input type="checkbox" id="encRoll" ${enc.roll ? 'checked' : ''}> Бросить хиты</label>
       <label class="check"><input type="checkbox" id="encInit" ${enc.init ? 'checked' : ''}> Сразу в инициативу</label></div>
-    <div class="modal-actions"><button data-act="closeModal">Закрыть</button><button id="encClear">Очистить</button><button class="primary" id="encPut">📍 Поставить на поле</button></div>`);
+    <div class="modal-actions"><button data-act="closeModal">Закрыть</button><button id="encClear">Очистить</button><button class="primary" id="encPut">📍 Поставить на поле</button></div></div>`);
   const party = () => {
     const lv = players.filter(([uid]) => ($(`[data-encp="${uid}"]`) || {}).checked).map(([uid]) => Math.max(1, Math.min(20, +$(`[data-encl="${uid}"]`).value || 1)));
     const n = Math.max(0, +$('#encExtraN').value || 0), l = Math.max(1, Math.min(20, +$('#encExtraL').value || 1));
@@ -888,7 +901,7 @@ function encDialog() {
     $$('[data-encm]').forEach((b) => b.addEventListener('click', () => { const x = enc.list.find((y) => y.e === b.dataset.encm); if (x) x.n += 1; else enc.list.push({ e: b.dataset.encm, n: 1 }); encSave(); draw(); }));
   };
   // Состав группы и галочки запоминаются вместе с черновиком
-  $('#modalBody').addEventListener('input', (e) => {
+  $('#encBox').addEventListener('input', (e) => {
     if (e.target.id === 'encFind') { monList(); return; }
     players.forEach(([uid]) => { enc.party[uid] = { on: $(`[data-encp="${uid}"]`).checked, lvl: +$(`[data-encl="${uid}"]`).value || 1 }; });
     Object.assign(enc, { extraN: +$('#encExtraN').value || 0, extraL: +$('#encExtraL').value || 1, hid: $('#encHid').checked, roll: $('#encRoll').checked, init: $('#encInit').checked });
@@ -2382,6 +2395,222 @@ function applyLoot() {
   });
 }
 
+/* ---------- Редактор бестиария ---------- */
+const CR_LIST = ['0', '1/8', '1/4', '1/2', ...Array.from({ length: 30 }, (_, i) => String(i + 1))];
+const SIZE_LIST = ['Крошечный', 'Маленький', 'Средний', 'Большой', 'Огромный', 'Громадный'];
+const ON_CONDS = ['prone', 'grappled', 'restrained', 'poisoned', 'paralyzed', 'frightened', 'blinded', 'stunned', 'charmed', 'incapacitated', 'unconscious'];
+const AREA_SHAPES = ['sphere', 'cone', 'line', 'cube', 'aura'];
+// Статблок токена на поле — в формате бестиария
+function monFromToken(t) {
+  const size = ({ 1: 'Средний', 2: 'Большой', 3: 'Огромный', 4: 'Громадный' })[t.size || 1] || 'Средний';
+  return { n: t.name, e: t.mon || '', cr: t.cr != null ? String(t.cr) : '0', size, ac: +t.ac || 10, hp: String(t.hpMax || 1), speed: t.spd || String(t.speed || 30),
+    ab: t.ab || [10, 10, 10, 10, 10, 10], sv: t.sv || {}, multi: +t.multi || 1, atk: t.atk || [], x: t.tr || '', acts: t.acts || [],
+    leg: +t.leg || 0, lr: +t.lrMax || +t.lr || 0, cs: +t.cs || 0, sdc: +t.sdc || 0, xp: xpOf(t) };
+}
+// Редактор существа: tokenId — правка статблока существа на поле, иначе — своё существо в бестиарий (встроенное заменяется своей копией)
+function monEditor(src, tokenId, done) {
+  const M = JSON.parse(JSON.stringify(src || { n: 'Новое существо', cr: '1', size: 'Средний', ac: 12, hp: '4d8', speed: '30', ab: [10, 10, 10, 10, 10, 10], sv: {}, multi: 1, atk: [], acts: [], x: '' }));
+  const atk = M.atk || [], acts = M.acts || [], ab = M.ab || [10, 10, 10, 10, 10, 10];
+  const opt = (list, v, names) => list.map((k) => `<option value="${k}" ${String(v) === String(k) ? 'selected' : ''}>${names ? names(k) : k}</option>`).join('');
+  const abOpt = (v) => `<option value="">—</option>${opt(ABK, v, (k) => ABS[k])}`;
+  app.openModal(`<div id="meBox"><h2>✎ ${tokenId ? `Статблок: ${esc(M.n)}` : src && src.e ? `Существо: ${esc(M.n)}` : 'Новое существо'}</h2>
+    ${!tokenId && src && src.e && !src.custom ? '<p class="muted small">Это встроенное существо — сохранится ваша копия, она заменит его в списке (вернуть исходное можно в бестиарии).</p>' : ''}
+    <div class="form-grid"><label style="grid-column:1/-1">Название<input id="meN" value="${esc(M.n)}"></label>
+      <label>Опасность (ПО)<select id="meCr">${opt(CR_LIST, M.cr)}</select></label><label>Размер<select id="meSz">${opt(SIZE_LIST, M.size)}</select></label>
+      <label>КД<input id="meAc" type="number" value="${+M.ac || 10}"></label><label>Хиты${tokenId ? ' (максимум)' : ' (кости или число)'}<input id="meHp" value="${esc(M.hp)}"></label>
+      <label>Скорость<input id="meSp" value="${esc(M.speed)}" placeholder="30, полёт 60"></label><label>Атак за действие<input id="meMu" type="number" min="1" max="8" value="${+M.multi || 1}"></label>
+      ${tokenId ? `<label>Опыт за победу<input id="meXp" type="number" min="0" value="${+M.xp || 0}"></label>`
+        : `<label>Вид<select id="meCat"><option value="">чудовище</option><option value="npc" ${M.cat === 'npc' ? 'selected' : ''}>NPC — житель мира</option></select></label>
+          <label class="check"><input type="checkbox" id="meBeast" ${M.beast ? 'checked' : ''}> Зверь (дикий облик, спутник)</label>`}</div>
+    <div class="muted small mt">Характеристики и бонусы спасбросков:</div>
+    <div class="sv-grid">${ABK.map((k, i) => `<label>${ABS[k]}<input type="number" data-meab="${i}" data-mod="${abMod(+ab[i] || 10)}" value="${+ab[i] || 10}"><input type="number" data-mesv="${k}" title="Спасбросок" value="${(M.sv || {})[k] != null ? +M.sv[k] : abMod(+ab[i] || 10)}"></label>`).join('')}</div>
+    <h3 class="mt">Атаки</h3><div id="meAtk" class="me-rows"></div><button id="meAtkAdd">＋ Атака</button>
+    <h3 class="mt">Способности-области (дыхание, заклинания)</h3><div id="meAct" class="me-rows"></div><button id="meActAdd">＋ Способность</button>
+    <div class="leg-grid mt"><label>👑 Легенд. действий<input type="number" min="0" max="5" id="meLeg" value="${+M.leg || 0}"></label><label>Легенд. сопротивл.<input type="number" min="0" max="5" id="meLr" value="${+M.lr || 0}"></label>
+      <label>🚫 Контрзаклинаний<input type="number" min="0" max="9" id="meCs" value="${+M.cs || 0}"></label><label>СЛ заклинаний<input type="number" min="0" max="30" id="meSdc" value="${+M.sdc || 0}"></label></div>
+    <label class="mt">Особенности<textarea id="meX" rows="3">${esc(M.x || '')}</textarea></label>
+    ${tokenId ? '<label class="check mt"><input type="checkbox" id="meToBest"> Сохранить и в моё бестиарий</label>' : ''}
+    <div class="modal-actions"><button data-act="closeModal">Отмена</button><button class="primary" id="meOk">Сохранить</button></div></div>`);
+  const drawAtk = () => {
+    $('#meAtk').innerHTML = atk.map((a, i) => { const on = a.on || {}; return `<div class="me-row">
+      <input data-ma="${i}" data-k="n" value="${esc(a.n)}" placeholder="Название"><input data-ma="${i}" data-k="hit" type="number" value="${+a.hit || 0}" title="Бонус к попаданию">
+      <input data-ma="${i}" data-k="dmg" value="${esc(a.dmg || '')}" placeholder="1d8+3"><input data-ma="${i}" data-k="type" value="${esc(a.type || '')}" placeholder="тип урона">
+      <input data-ma="${i}" data-k="reach" type="number" step="5" value="${a.reach === 0 || a.reach === '0' ? 0 : +a.reach || 5}" title="Досягаемость, фт (0 — только дальнобойная)"><input data-ma="${i}" data-k="range" value="${esc(a.range || '')}" placeholder="80/320">
+      <select data-ma="${i}" data-k="cond" title="При попадании"><option value="">без эффекта</option>${opt(ON_CONDS, on.cond, (k) => condName(k).toLowerCase())}</select>
+      <select data-ma="${i}" data-k="save" title="Спасбросок против эффекта">${abOpt(on.save)}</select><input data-ma="${i}" data-k="dc" type="number" value="${+on.dc || ''}" placeholder="СЛ">
+      <label class="check" title="Повторный спасбросок в конце каждого хода цели"><input type="checkbox" data-ma="${i}" data-k="rep" ${on.rep ? 'checked' : ''}> повтор</label>
+      <button class="ghost" data-mad="${i}" title="Убрать">✕</button></div>`; }).join('') || '<p class="muted small">Нет атак.</p>';
+    $$('[data-mad]').forEach((b) => b.addEventListener('click', () => { atk.splice(+b.dataset.mad, 1); drawAtk(); }));
+  };
+  const drawAct = () => {
+    $('#meAct').innerHTML = acts.map((a, i) => `<div class="me-row">
+      <input data-mc="${i}" data-k="n" value="${esc(a.n)}" placeholder="Название"><select data-mc="${i}" data-k="shape">${opt(AREA_SHAPES, a.shape, (k) => SHAPE_N[k])}</select>
+      <input data-mc="${i}" data-k="size" type="number" step="5" value="${+a.size || 15}" title="Размер, фт"><select data-mc="${i}" data-k="save">${abOpt(a.save)}</select>
+      <input data-mc="${i}" data-k="dc" type="number" value="${+a.dc || 13}" title="СЛ"><input data-mc="${i}" data-k="f" value="${esc(a.f || '')}" placeholder="6d6">
+      <input data-mc="${i}" data-k="dtype" value="${esc(a.dtype || '')}" placeholder="огнём"><select data-mc="${i}" data-k="rech" title="Перезарядка"><option value="0">без перезарядки</option>${opt([4, 5, 6], a.rech, (k) => `перезарядка ${k}–6`)}</select>
+      <select data-mc="${i}" data-k="sp" title="Заклинание: можно прервать «Контрзаклинанием»"><option value="0">не заклинание</option>${opt([1, 2, 3, 4, 5, 6, 7, 8, 9], a.sp, (k) => `заклинание ${k} ур.`)}</select>
+      <button class="ghost" data-mcd="${i}" title="Убрать">✕</button></div>`).join('') || '<p class="muted small">Нет способностей.</p>';
+    $$('[data-mcd]').forEach((b) => b.addEventListener('click', () => { acts.splice(+b.dataset.mcd, 1); drawAct(); }));
+  };
+  // Правки строк сразу в массивы
+  $('#meBox').addEventListener('input', (e) => {
+    const t = e.target, val = t.type === 'checkbox' ? t.checked : t.type === 'number' || t.tagName === 'SELECT' && /^(rech|sp)$/.test(t.dataset.k) ? +t.value || 0 : t.value;
+    // Спасбросок без владения следует за характеристикой; поправленный вручную — остаётся
+    if (t.dataset.meab != null) {
+      const sv = $(`[data-mesv="${ABK[+t.dataset.meab]}"]`), mod = abMod(+t.value || 10);
+      if (+sv.value === +t.dataset.mod) sv.value = mod;
+      t.dataset.mod = mod;
+    }
+    if (t.dataset.ma != null) {
+      const a = atk[+t.dataset.ma];
+      if (['cond', 'save', 'dc', 'rep'].includes(t.dataset.k)) { a.on = { ...(a.on || {}), [t.dataset.k]: val }; } else a[t.dataset.k] = val;
+    }
+    if (t.dataset.mc != null) acts[+t.dataset.mc][t.dataset.k] = val;
+  });
+  $('#meAtkAdd').onclick = () => { atk.push({ n: 'Атака', hit: 4, dmg: '1d6+2', type: 'рубящий', reach: 5, range: '' }); drawAtk(); };
+  $('#meActAdd').onclick = () => { acts.push({ n: 'Дыхание', shape: 'cone', size: 15, save: 'dex', dc: 13, f: '6d6', dtype: 'огнём', half: true, rech: 5 }); drawAct(); };
+  drawAtk(); drawAct();
+  $('#meOk').onclick = () => {
+    const abv = ABK.map((k, i) => +$(`[data-meab="${i}"]`).value || 10), svAll = Object.fromEntries(ABK.map((k) => [k, +$(`[data-mesv="${k}"]`).value || 0]));
+    // Эффект атаки — только если выбрано состояние; пустые поля не сохраняются (база не принимает undefined)
+    const cleanAtk = atk.filter((a) => String(a.n || '').trim()).map((a) => {
+      const on = a.on && a.on.cond ? { cond: a.on.cond, ...(a.on.save ? { save: a.on.save, dc: +a.on.dc || 10 } : {}), ...(a.on.rep && a.on.save ? { rep: true } : {}) } : null;
+      return { n: String(a.n).trim(), hit: +a.hit || 0, dmg: a.dmg || '', type: a.type || '', reach: +a.reach || 0, range: a.range || '', ...(on ? { on } : {}) };
+    });
+    const cleanActs = acts.filter((a) => String(a.n || '').trim()).map((a) => ({ n: String(a.n).trim(), shape: a.shape || 'sphere', size: +a.size || 5, save: a.save || 'dex', dc: +a.dc || 10,
+      f: a.f || '', dtype: a.dtype || '', half: a.half !== false, rech: +a.rech || 0, ...(+a.sp ? { sp: +a.sp } : {}) }));
+    const hpTxt = $('#meHp').value.trim() || '1', leg = +$('#meLeg').value || 0, lr = +$('#meLr').value || 0, cs = +$('#meCs').value || 0, sdc = +$('#meSdc').value || 0;
+    const mon = { n: $('#meN').value.trim() || 'Существо', e: (src && src.e) || `custom_${Date.now().toString(36)}`, cr: $('#meCr').value, size: $('#meSz').value, ac: +$('#meAc').value || 10, hp: hpTxt,
+      speed: $('#meSp').value.trim() || '30', ab: abv, sv: Object.fromEntries(ABK.filter((k, i) => svAll[k] !== abMod(abv[i])).map((k) => [k, svAll[k]])), multi: Math.max(1, +$('#meMu').value || 1),
+      atk: cleanAtk, x: $('#meX').value.trim(), acts: cleanActs, ...(leg ? { leg } : {}), ...(lr ? { lr } : {}), ...(cs ? { cs } : {}), ...(sdc ? { sdc } : {}) };
+    if (!tokenId) { mon.cat = $('#meCat').value || ''; if ($('#meBeast').checked) mon.beast = true; }
+    const toBest = !tokenId || ($('#meToBest') || {}).checked;
+    if (toBest) {
+      const list = customMons().filter((m) => m.e !== mon.e);
+      saveCustomMons([...list, tokenId && !mon.e.startsWith('custom_') ? { ...mon, e: `custom_${Date.now().toString(36)}` } : mon]);
+    }
+    if (tokenId) {
+      const t = game.tokens[tokenId];
+      if (!t) return;
+      const hpMax = Math.max(1, /d/i.test(hpTxt) ? avgExpr(hpTxt) : +hpTxt || 1);
+      R.update(ref(gpath(`tokens/${tokenId}`)), { name: mon.n, cr: mon.cr, ac: mon.ac, hpMax, hp: +t.hp >= +t.hpMax ? hpMax : Math.min(+t.hp || 0, hpMax), speed: parseInt(mon.speed) || 30, spd: mon.speed,
+        size: SIZE_N[mon.size] || 1, ab: abv, sv: svAll, multi: mon.multi, atk: cleanAtk, acts: cleanActs, tr: mon.x, leg: leg || null, lr: lr || null, lrMax: lr || null, cs: cs || null, sdc: sdc || null,
+        xp: Math.max(0, +$('#meXp').value || 0) }).catch((err) => app.toast(`Не удалось: ${esc(err.code || err.message)}`));
+    }
+    app.closeModal();
+    app.toast(tokenId ? `✎ Статблок «${esc(mon.n)}» обновлён${toBest ? ' и сохранён в бестиарий' : ''}` : `🐉 «${esc(mon.n)}» в вашем бестиарии`);
+    if (done) setTimeout(done, 100);
+  };
+}
+// Мастер: свои существа — создать, изменить, удалить, перенести на другое устройство файлом
+function bestiaryDialog() {
+  app.openModal(`<h2>🐉 Бестиарий</h2>
+    <div class="row gap wrap"><input id="bmQ" placeholder="Поиск: название, ПО…" style="flex:1"><button class="primary" id="bmNew">＋ Новое существо</button></div>
+    <div class="row gap wrap mt"><button id="bmExp">⤓ Сохранить моих в файл</button><label class="btn-file">⤒ Загрузить из файла<input type="file" id="bmImp" accept=".json,application/json" hidden></label></div>
+    <p class="muted small" id="bmInfo"></p><div id="bmList" class="list"></div>
+    <div class="modal-actions"><button data-act="closeModal">Закрыть</button></div>`);
+  const draw = () => {
+    const q = ($('#bmQ').value || '').trim().toLowerCase(), mine = customMons(), all = BEST();
+    $('#bmInfo').textContent = `Всего существ: ${all.length}, ваших: ${mine.length}. Ваши существа хранятся в этом браузере — чтобы перенести их, сохраните в файл.`;
+    $('#bmList').innerHTML = all.filter((m) => !q || m.n.toLowerCase().includes(q) || String(m.e).toLowerCase().includes(q) || m.cr === q).slice(0, 120).map((m) => {
+      const over = m.custom && typeof BESTIARY !== 'undefined' && BESTIARY.some((b) => b.e === m.e);
+      return `<div class="enc-row"><span><b>${esc(m.n)}</b> <span class="muted small">ПО ${m.cr} · КД ${m.ac} · ${esc(m.hp)}${m.custom ? (over ? ' · ✎ изменено' : ' · ✎ ваше') : ''}${m.leg ? ' · 👑' : ''}</span></span>
+        <span class="row gap"><button data-bme="${esc(m.e)}" title="Изменить">✎</button>${m.custom ? `<button class="ghost" data-bmd="${esc(m.e)}" title="${over ? 'Вернуть встроенное' : 'Удалить'}">${over ? '↺' : '✕'}</button>` : ''}</span></div>`;
+    }).join('') || '<p class="muted small">Ничего не найдено.</p>';
+    $$('[data-bme]').forEach((b) => b.addEventListener('click', () => monEditor(BEST().find((m) => m.e === b.dataset.bme), null, bestiaryDialog)));
+    $$('[data-bmd]').forEach((b) => b.addEventListener('click', () => {
+      if (!app.confirm('Убрать ваше существо из бестиария?')) return;
+      saveCustomMons(customMons().filter((m) => m.e !== b.dataset.bmd)); draw();
+    }));
+  };
+  $('#bmQ').addEventListener('input', draw);
+  $('#bmNew').onclick = () => monEditor(null, null, bestiaryDialog);
+  $('#bmExp').onclick = () => {
+    const mine = customMons();
+    if (!mine.length) { app.toast('Своих существ пока нет'); return; }
+    const a = document.createElement('a');
+    a.href = URL.createObjectURL(new Blob([JSON.stringify(mine, null, 1)], { type: 'application/json' }));
+    a.download = 'bestiary-dnd55.json';
+    a.click();
+    setTimeout(() => URL.revokeObjectURL(a.href), 1000);
+  };
+  $('#bmImp').onchange = (e) => {
+    const f = e.target.files[0];
+    if (!f) return;
+    f.text().then((txt) => {
+      const arr = JSON.parse(txt);
+      if (!Array.isArray(arr)) throw new Error('не список');
+      const ok = arr.filter((m) => m && typeof m.n === 'string' && Array.isArray(m.ab) && m.ab.length === 6).map((m) => ({ ...m, e: String(m.e || `custom_${Math.random().toString(36).slice(2, 9)}`), custom: undefined }));
+      const list = customMons().filter((m) => !ok.some((x) => x.e === m.e));
+      saveCustomMons([...list, ...ok.map(({ custom, ...m }) => m)]);
+      app.toast(`🐉 Загружено существ: ${ok.length}`);
+      draw();
+    }).catch(() => app.toast('Не удалось прочитать файл бестиария', 'fumble'));
+  };
+  draw();
+}
+
+/* ---------- Раздаточные материалы ---------- */
+// games/{id}/handouts/{k}: { n, txt, img (уменьшенный JPEG), to: '' — всем | uid, t — когда показан (повторный показ меняет t) } — пишет мастер.
+// Адресный материал прячется в интерфейсе, но данные игры читает каждый участник — это не тайник от любопытных
+const hoSeen = () => { try { return JSON.parse(ls.get('dnd55-ho-seen')) || {}; } catch (e) { return {}; } };
+const hoMine = () => Object.entries(game.handouts || {}).filter(([, h]) => isDM() || !h.to || h.to === user.uid).sort((a, b) => (b[1].t || 0) - (a[1].t || 0));
+function showHandout(k) {
+  const h = (game.handouts || {})[k];
+  if (!h) return;
+  app.openModal(`<h2>📜 ${esc(h.n || 'Материал')}</h2>${h.img ? `<img class="ho-img" src="${h.img}" alt="">` : ''}${h.txt ? `<div class="ho-txt">${esc(h.txt)}</div>` : ''}
+    <div class="modal-actions"><button data-tbl-ho-list>Все материалы</button><button class="primary" data-act="closeModal">Закрыть</button></div>`);
+  $('[data-tbl-ho-list]').onclick = handoutsDialog;
+}
+// Игрок: новый или показанный заново материал открывается сам (старые, полученные до входа, — без всплывающего окна)
+function notifyHandouts() {
+  if (!game || !user || isDM()) return;
+  const seen = hoSeen();
+  const fresh = hoMine().filter(([k, h]) => seen[k] !== h.t);
+  if (!fresh.length) return;
+  fresh.forEach(([k, h]) => { seen[k] = h.t; });
+  ls.set('dnd55-ho-seen', JSON.stringify(seen));
+  const show = fresh.find(([, h]) => (h.t || 0) >= openedAt - 5000);
+  if (!show) return;
+  if (!$('#modal').hidden) app.toast(`📜 Мастер показывает: «${esc(show[1].n)}» — кнопка «📜 Материалы»`, 'crit');
+  else showHandout(show[0]);
+}
+function handoutsDialog() {
+  const dm = isDM(), list = hoMine(), pcs = Object.entries(game.members || {}).filter(([, m]) => m.role !== 'dm');
+  const whoName = (to) => (!to ? 'всем' : ((game.members[to] || {}).char || {}).name || (game.members[to] || {}).name || 'игроку');
+  let img = '';
+  app.openModal(`<h2>📜 Материалы</h2>
+    <div class="list">${list.map(([k, h]) => `<div class="enc-row"><span>${h.img ? '🖼 ' : ''}<b>${esc(h.n || 'Без названия')}</b>${dm ? ` <span class="muted small">— ${esc(whoName(h.to))}</span>` : ''}</span>
+      <span class="row gap"><button data-hoo="${k}">Открыть</button>${dm ? `<button data-hoa="${k}" title="Показать игрокам ещё раз">👁 Снова</button><button class="ghost" data-hod="${k}" title="Удалить">✕</button>` : ''}</span></div>`).join('')
+      || `<p class="muted small">${dm ? 'Пока ничего не показано.' : 'Мастер ещё ничего не показывал.'}</p>`}</div>
+    ${dm ? `<h3 class="mt">Показать новое</h3>
+      <div class="form-grid"><label style="grid-column:1/-1">Название<input id="hoN" placeholder="Письмо от барона, карта подземелья…"></label>
+        <label style="grid-column:1/-1">Текст<textarea id="hoT" rows="4" placeholder="Необязательно"></textarea></label>
+        <label class="btn-file">🖼 Картинка<input type="file" id="hoI" accept="image/*" hidden></label><span class="muted small" id="hoIInfo">без картинки</span>
+        <label>Кому<select id="hoTo"><option value="">всем</option>${pcs.map(([uid, m]) => `<option value="${uid}">${esc((m.char || {}).name || m.name)}</option>`).join('')}</select></label></div>
+      <p class="muted small">Адресный материал увидит только выбранный игрок (в интерфейсе), остальные о нём не узнают.</p>` : ''}
+    <div class="modal-actions"><button data-act="closeModal">Закрыть</button>${dm ? '<button class="primary" id="hoOk">📜 Показать</button>' : ''}</div>`);
+  $$('[data-hoo]').forEach((b) => b.addEventListener('click', () => showHandout(b.dataset.hoo)));
+  if (!dm) return;
+  $$('[data-hoa]').forEach((b) => b.addEventListener('click', async () => { await R.update(ref(gpath(`handouts/${b.dataset.hoa}`)), { t: Date.now() }); app.toast('📜 Показано снова'); }));
+  $$('[data-hod]').forEach((b) => b.addEventListener('click', async () => { if (app.confirm('Удалить материал у всех?')) { await R.remove(ref(gpath(`handouts/${b.dataset.hod}`))); setTimeout(handoutsDialog, 150); } }));
+  $('#hoI').onchange = (e) => {
+    const f = e.target.files[0];
+    if (!f) return;
+    $('#hoIInfo').textContent = 'обработка…';
+    shrinkImage(f, 1400, 0.8).then((r) => { img = r.data; $('#hoIInfo').textContent = `🖼 ${r.w}×${r.h}, ${Math.round(img.length / 1024)} КБ`; })
+      .catch(() => { img = ''; $('#hoIInfo').textContent = 'не удалось прочитать картинку'; });
+  };
+  $('#hoOk').onclick = async () => {
+    const n = $('#hoN').value.trim(), txt = $('#hoT').value.trim(), to = $('#hoTo').value;
+    if (!n && !txt && !img) { app.toast('Добавьте название, текст или картинку'); return; }
+    const k = R.push(ref(gpath('handouts'))).key;
+    await R.set(ref(gpath(`handouts/${k}`)), { n: n || 'Материал', ...(txt ? { txt: txt.slice(0, 5000) } : {}), ...(img ? { img } : {}), to, t: Date.now() });
+    app.toast(`📜 «${esc(n || 'Материал')}» показан: ${esc(whoName(to))}`);
+    setTimeout(handoutsDialog, 150);
+  };
+}
+
 /* ---------- Сцены ---------- */
 // games/{id}/scenes/{sid}: { n, t } — список (его видят все); games/{id}/sceneData/{sid} — снимок поля: размер, карта, двери, свет,
 // туман, картинка, существа мастера и места персонажей. Его читает только мастер при переключении. meta.scene — текущая сцена
@@ -2734,10 +2963,12 @@ function renderTools() {
       + `<button data-tbl="mapCfg" title="Карта-подложка, размер поля, туман войны">🗺 Карта и туман</button>`
       + `<button data-tbl="scenes" title="Несколько полей: таверна, подземелье, логово — переключение одной кнопкой">🎬 Сцены${(game.meta || {}).scene && (game.scenes || {})[game.meta.scene] ? `: ${esc(game.scenes[game.meta.scene].n)}` : ''}</button>`
       + '<button data-tbl="rest" title="Короткий или долгий отдых для всей группы">🏕 Отдых</button>'
+      + '<button data-tbl="bestiary" title="Свои существа: создать, изменить встроенное, перенести файлом">🐉 Бестиарий</button>'
       + (fogOn() ? t('reveal', '👁 Открыть', 'Кисть: открыть клетки для игроков') + t('conceal', '🌫 Скрыть', 'Кисть: закрыть клетки туманом')
         + `<button class="${fogPreview ? 'on' : ''}" data-tbl="fogPreview" title="Показать поле так, как его видят игроки">👁 Вид игроков</button>` : '') : ''}
     ${!isDM() && !(hasMine && inFight()) ? t('place', hasMine ? '📍 Переставить меня' : '📍 Поставить персонажа', 'Нажмите на клетку') : ''}
-    ${!isDM() && me() && me().charId && app.companions(me().charId).length ? `<button class="${tool === 'placeComp' ? 'on' : ''}" data-tbl="compPick" title="Поставить спутника из листа на поле">🐾 Спутник</button>` : ''}</div>`;
+    ${!isDM() && me() && me().charId && app.companions(me().charId).length ? `<button class="${tool === 'placeComp' ? 'on' : ''}" data-tbl="compPick" title="Поставить спутника из листа на поле">🐾 Спутник</button>` : ''}
+    ${isDM() || hoMine().length ? `<button data-tbl="handouts" title="${isDM() ? 'Показать игрокам картинку, письмо или карту' : 'Что показывал мастер'}">📜 Материалы${!isDM() && hoMine().length ? ` (${hoMine().length})` : ''}</button>` : ''}</div>`;
 }
 // Карточка хода: игроку — свой персонаж, мастеру — существо, чей сейчас ход
 function renderTurn() {
@@ -2876,7 +3107,7 @@ function renderSide() {
         <label>СЛ заклинаний<input type="number" min="0" max="30" data-tbl-num="sdc" value="${+t.sdc || 0}"></label></div>
       <div class="row gap wrap mt"><input type="number" id="tblDmg" min="0" placeholder="0" style="width:70px"><button data-tbl="npcDmg">− Урон</button><button data-tbl="npcHeal">＋ Лечение</button></div>
       <div class="row gap wrap mt"><label class="check"><input type="checkbox" data-tbl-hidden ${t.hidden ? 'checked' : ''}> Скрыт от игроков</label>
-      <button data-tbl="npcCopy">⧉ Копия</button><button data-tbl="npcInit">🎲 В инициативу</button></div>
+      <button data-tbl="npcCopy">⧉ Копия</button><button data-tbl="npcInit">🎲 В инициативу</button><button data-tbl="npcEdit" title="Изменить характеристики, атаки и способности этого существа">✎ Статблок</button></div>
       <div class="muted small mt">Бонусы спасбросков (бросаются автоматически):</div>
       <div class="sv-grid">${Object.entries(AB_N).map(([k]) => `<label>${{ str: 'СИЛ', dex: 'ЛОВ', con: 'ТЕЛ', int: 'ИНТ', wis: 'МДР', cha: 'ХАР' }[k]}<input type="number" data-tbl-sv="${k}" value="${+((t.sv || {})[k]) || 0}"></label>`).join('')}</div>` : ''}
     ${t.kind === 'pc' && mine ? `<p class="muted small">${t.comp ? 'Хиты спутника — в его карточке в листе (вкладка «Бой»).' : 'Хиты и состояния меняются в вашем листе — на поле они обновятся сами.'}</p>` : ''}
@@ -2935,6 +3166,9 @@ async function onClick(e) {
       if (Object.keys((game.xp || {}).kills || {}).length) xpDialog(true); } }
     else if (a === 'xpGive') xpDialog(false);
     else if (a === 'enc') encDialog();
+    else if (a === 'bestiary') bestiaryDialog();
+    else if (a === 'handouts') handoutsDialog();
+    else if (a === 'npcEdit') { const t = game.tokens[selId]; if (t) monEditor(monFromToken(t), selId); }
     else if (a === 'loot') lootDialog();
     else if (a === 'zoomFit') zoomFit();
     else if (a === 'attack') openAttack(b.dataset.id);
