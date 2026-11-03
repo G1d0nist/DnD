@@ -288,6 +288,7 @@ button.stat:hover { border-color: var(--gold); }
 
 /* Игровой стол */
 .tbl-bar { display: flex; flex-wrap: wrap; justify-content: space-between; align-items: center; gap: 8px; margin-bottom: 12px; padding: 10px 14px; }
+.tbl-tools .seg { flex-wrap: wrap; row-gap: 4px; }
 .tbl-tools .seg button { padding: 5px 9px; }
 .tbl-main { display: grid; grid-template-columns: 1fr 280px; gap: 12px; align-items: start; }
 .tbl-wrap { position: relative; overflow: auto; height: calc(100vh - 260px); min-height: 380px; border: 1px solid var(--line); border-radius: var(--radius); background: #141210; touch-action: none; }
@@ -582,3 +583,10 @@ button.stat:hover { border-color: var(--gold); }
 .pick-row > span { flex: 1; min-width: 0; }
 .pick-row select { width: auto; max-width: 150px; padding: 2px 4px; font-size: 12px; }
 .tbl-board[data-tool="chest"] { cursor: crosshair; }
+/* Генератор местности */
+.gen-wrap { margin-top: 8px; overflow: auto; max-height: 52vh; border: 1px solid var(--line); border-radius: 8px; background: #111; text-align: center; }
+.gen-wrap canvas { display: inline-block; image-rendering: pixelated; }
+.tbl-tools select[data-tbl-brush] { width: auto; padding: 5px 6px; font-size: 13px; }
+.tbl-tools select[data-tbl-brush].on { border-color: var(--gold); color: var(--gold2); }
+.tbl-board[data-tool="tree"], .tbl-board[data-tool="rock"], .tbl-board[data-tool="bush"], .tbl-board[data-tool="road"], .tbl-board[data-tool="sand"],
+.tbl-board[data-tool="bridge"], .tbl-board[data-tool="furn"], .tbl-board[data-tool="floor"] { cursor: crosshair; }

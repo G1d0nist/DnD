@@ -7,11 +7,22 @@ const esc = app.esc;
 const CELL = 40; // пикселей на клетку (5 фт) при масштабе 100%
 const GAME_KEY = 'dnd55-game';
 const CODE_ABC = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789';
+// block — не пройти, opaque — закрывает обзор и свет, cost — трудная местность
 const TERRAIN = {
-  wall: { n: 'Стена', color: '#4a4038', block: true },
+  wall: { n: 'Стена', color: '#4a4038', block: true, opaque: true },
   difficult: { n: 'Труднопроходимая', color: 'rgba(140,100,40,.45)', cost: 2 },
   water: { n: 'Вода', color: 'rgba(60,110,170,.55)', cost: 2 },
+  tree: { n: 'Дерево', color: 'rgba(30,60,28,.55)', block: true, opaque: true, ic: '🌲' },
+  rock: { n: 'Скала', color: '#5a554d', block: true, opaque: true, ic: '🪨' },
+  bush: { n: 'Кусты', color: 'rgba(70,120,50,.45)', cost: 2, ic: '🌿' },
+  road: { n: 'Дорога', color: 'rgba(150,115,70,.4)', ic: '🟫' },
+  sand: { n: 'Песок', color: 'rgba(210,180,110,.25)', ic: '🏖' },
+  bridge: { n: 'Мост', color: 'rgba(120,80,40,.85)', ic: '🌉' },
+  furn: { n: 'Мебель', color: 'rgba(110,70,35,.9)', block: true, ic: '🪑' },
+  floor: { n: 'Пол', color: 'rgba(170,148,112,.42)', ic: '⬜' },
 };
+// Цвет земли под картой (meta.ground) — задаёт генератор
+const GROUND = { grass: '#24301d', stone: '#2a2622', sand: '#4a3f2a', swamp: '#222b1f', dirt: '#302820', wood: '#33261a' };
 const SIZE_N = { 'Крошечный': 1, 'Маленький': 1, 'Средний': 1, 'Большой': 2, 'Огромный': 3, 'Громадный': 4 };
 const PALETTE = ['#d4a64a', '#5b8fc9', '#5a9e5a', '#9b6fd1', '#c97a3d', '#3db0a8', '#c95b8f'];
 
@@ -246,12 +257,38 @@ function loadBg(src) {
   img.onerror = () => app.toast('Не удалось загрузить карту-подложку');
   img.src = src;
 }
+// Рисунок клетки поверх заливки (без карты-подложки): крона дерева, валун, кустики, доски моста, стол; v — разнообразие
+function drawCell(g, type, px, py, v) {
+  const c = CELL / 2;
+  g.save();
+  if (type === 'tree') {
+    g.fillStyle = '#4a3220'; g.fillRect(px + c - 3, py + c + 4, 6, 10);
+    g.fillStyle = ['#2f6b2a', '#3a7a30', '#2a5e26', '#356f2c', '#2d6629'][v];
+    g.beginPath(); g.arc(px + c, py + c - 1, 14 + (v % 3), 0, Math.PI * 2); g.fill();
+    g.fillStyle = 'rgba(255,255,255,.08)'; g.beginPath(); g.arc(px + c - 5, py + c - 6, 6, 0, Math.PI * 2); g.fill();
+  } else if (type === 'rock') {
+    g.fillStyle = ['#7a746a', '#6d675e', '#827b70', '#746e64', '#696358'][v];
+    g.beginPath(); g.moveTo(px + 6, py + 30); g.lineTo(px + 10 + v, py + 10); g.lineTo(px + 24, py + 6 + v); g.lineTo(px + 34, py + 16); g.lineTo(px + 32, py + 32); g.closePath(); g.fill();
+    g.strokeStyle = 'rgba(0,0,0,.35)'; g.stroke();
+  } else if (type === 'bush') {
+    g.fillStyle = '#4f8a3a';
+    [[12, 26], [22, 20], [30, 28]].forEach(([dx, dy]) => { g.beginPath(); g.arc(px + dx, py + dy - v, 6, 0, Math.PI * 2); g.fill(); });
+  } else if (type === 'bridge') {
+    g.strokeStyle = 'rgba(60,35,15,.8)'; g.lineWidth = 2;
+    for (let i = 8; i < CELL; i += 8) { g.beginPath(); g.moveTo(px + i, py + 1); g.lineTo(px + i, py + CELL - 1); g.stroke(); }
+  } else if (type === 'furn') {
+    g.strokeStyle = '#d4a64a'; g.lineWidth = 1.5; g.strokeRect(px + 4, py + 4, CELL - 8, CELL - 8);
+  } else if (type === 'wall') {
+    g.strokeStyle = 'rgba(0,0,0,.25)'; g.beginPath(); g.moveTo(px, py + c); g.lineTo(px + CELL, py + c); g.moveTo(px + c * (v % 2), py); g.lineTo(px + c * (v % 2), py + c); g.stroke();
+  }
+  g.restore();
+}
 function drawTerrain() {
   if (!game) return;
   const cv = $('#tblTerrain'), g = cv.getContext('2d'), bg = bgSet();
   layoutBoard();
   g.clearRect(0, 0, cv.width, cv.height);
-  g.fillStyle = '#1f1b16';
+  g.fillStyle = GROUND[(game.meta || {}).ground] || '#1f1b16';
   g.fillRect(0, 0, cv.width, cv.height);
   if (bgImg) {
     const w = (bg.w || W()) * CELL, h = (w * bgImg.naturalHeight) / bgImg.naturalWidth;
@@ -266,12 +303,13 @@ function drawTerrain() {
     g.fillStyle = bgImg && type === 'wall' ? 'rgba(40,30,22,.55)' : T.color;
     g.fillRect(x * CELL, y * CELL, CELL, CELL);
     if (bgImg && type === 'wall') { g.strokeStyle = 'rgba(255,190,120,.45)'; g.strokeRect(x * CELL + 1.5, y * CELL + 1.5, CELL - 3, CELL - 3); }
-    if (type === 'difficult') { // штриховка
-      g.strokeStyle = 'rgba(200,150,70,.5)';
+    if (type === 'difficult' || type === 'bush') { // штриховка трудной местности
+      g.strokeStyle = type === 'bush' ? 'rgba(120,190,90,.45)' : 'rgba(200,150,70,.5)';
       g.beginPath();
       for (let i = -CELL; i < CELL; i += 10) { g.moveTo(x * CELL + i, y * CELL + CELL); g.lineTo(x * CELL + i + CELL, y * CELL); }
       g.stroke();
     }
+    if (!bgImg) drawCell(g, type, x * CELL, y * CELL, (x * 7 + y * 13) % 5);
   });
   // Двери: закрытая — створка поперёк клетки, открытая — откинута к краю; запертая — с замком
   Object.entries(game.doors || {}).forEach(([k, d]) => {
@@ -372,7 +410,7 @@ function lineClear(x0, y0, x1, y1) {
   for (let i = 1; i < n; i++) {
     const cx = Math.floor(x0 + (dx * i) / n), cy = Math.floor(y0 + (dy * i) / n);
     if (cx === Math.floor(x1) && cy === Math.floor(y1)) return true;
-    if ((game.map || {})[`${cx}_${cy}`] === 'wall' || doorShut(`${cx}_${cy}`)) return false;
+    if ((TERRAIN[(game.map || {})[`${cx}_${cy}`]] || {}).opaque || doorShut(`${cx}_${cy}`)) return false;
   }
   return true;
 }
@@ -2203,7 +2241,7 @@ function pushToken(id, fromId, n) {
     let blocked = false;
     for (let dx = 0; dx < s; dx++) for (let dy = 0; dy < s; dy++) {
       const k = `${nx + dx}_${ny + dy}`;
-      if ((game.map || {})[k] === 'wall' || doorShut(k)) blocked = true;
+      if ((TERRAIN[(game.map || {})[k]] || {}).block || doorShut(k)) blocked = true;
       if (Object.entries(game.tokens).some(([oid, o]) => oid !== id && nx + dx >= o.x && nx + dx < o.x + (o.size || 1) && ny + dy >= o.y && ny + dy < o.y + (o.size || 1))) blocked = true;
     }
     if (blocked) break;
@@ -2920,13 +2958,114 @@ function handoutsDialog() {
   };
 }
 
+/* ---------- Генератор местности и локаций ---------- */
+// mapgen.js строит карту по шаблону и «зерну»; здесь — предпросмотр, сундуки с добычей и замена поля (по желанию — новой сценой)
+// Цвета предпросмотра: стены тёмные, пол светлый — чтобы план читался с первого взгляда
+const PREV_C = { wall: '#15120f', floor: '#6e604b', tree: '#2f6b2a', rock: '#7a746a', furn: '#a0662e', road: '#7a6240', bridge: '#8a5a2b' };
+const AMB_N = [['bright', '☀ день'], ['dim', '🌆 сумерки'], ['dark', '🌑 темнота']], FOG_N = [['off', 'выключен'], ['vision', 'обзор персонажей'], ['manual', 'только открытое мастером']];
+let genSeed = 0;
+function genDialog() {
+  if (typeof MAPGEN === 'undefined') { app.toast('Генератор не загрузился — обновите страницу'); return; }
+  const T = MAPGEN.TEMPLATES;
+  let st = {};
+  try { st = JSON.parse(ls.get('dnd55-gen')) || {}; } catch (e) { st = {}; }
+  let tpl = T[st.tpl] ? st.tpl : 'forest', res = null;
+  genSeed = genSeed || Math.floor(Math.random() * 1e9);
+  const group = (kind) => Object.entries(T).filter(([, t]) => t.kind === kind).map(([k, t]) => `<option value="${k}" ${k === tpl ? 'selected' : ''}>${t.n}</option>`).join('');
+  const sel = (id, list) => `<select id="${id}">${list.map(([v, n]) => `<option value="${v}">${n}</option>`).join('')}</select>`;
+  app.openModal(`<div id="genBox"><h2>🎲 Генератор местности и локаций</h2>
+    <div class="form-grid"><label style="grid-column:1/-1">Шаблон<select id="gT"><optgroup label="Местность">${group('terrain')}</optgroup><optgroup label="Локации">${group('location')}</optgroup></select></label>
+      <label>Ширина, клеток<input type="number" id="gW" min="12" max="80"></label><label>Высота, клеток<input type="number" id="gH" min="10" max="80"></label>
+      <label>Густота<input type="range" id="gD" min="0" max="1" step="0.05" value="${st.d != null ? st.d : 0.3}"></label>
+      <label>Освещение${sel('gA', AMB_N)}</label><label>Туман войны${sel('gF', FOG_N)}</label>
+      <label class="check"><input type="checkbox" id="gRoad"> Дорога</label>
+      <label class="check"><input type="checkbox" id="gChest"> Сундуки, уровень <input type="number" id="gLvl" min="1" max="20" value="${partyLevel()}" style="width:56px"></label></div>
+    <div class="row between mt"><span class="muted small" id="gInfo"></span><button id="gRe">🎲 Другой вариант</button></div>
+    <div class="gen-wrap"><canvas id="gPrev"></canvas></div>
+    <div class="form-grid mt"><label class="check" style="grid-column:1/-1"><input type="checkbox" id="gScene" checked> Новой сценой — текущее поле сохранится в своей сцене, вернуться можно в «🎬 Сцены»</label>
+      <label>Название сцены<input id="gName"></label><label class="check"><input type="checkbox" id="gNpc" checked> Убрать существ с поля</label></div>
+    <p class="muted small">Персонажи встанут у входа (синяя точка). Сундуки получат добычу по уровню, в подземельях и пещерах — иногда с замком и ловушкой. Существ и NPC пока ставьте сами или конструктором столкновений.</p>
+    <div class="modal-actions"><button data-act="closeModal">Отмена</button><button class="primary" id="gOk">Создать</button></div></div>`);
+  const opts = () => ({ w: +$('#gW').value, h: +$('#gH').value, density: +$('#gD').value, road: $('#gRoad').checked, chests: $('#gChest').checked, seed: genSeed });
+  // Шаблон задаёт размер, дорогу, сундуки, свет и туман по умолчанию
+  const setTpl = () => {
+    tpl = $('#gT').value;
+    const t = T[tpl], probe = MAPGEN.generate(tpl, { seed: 1 });
+    $('#gW').value = t.w; $('#gH').value = t.h; $('#gRoad').checked = !!t.road; $('#gChest').checked = !!t.chests;
+    $('#gRoad').closest('label').hidden = t.kind !== 'terrain';
+    $('#gA').value = probe.amb; $('#gF').value = probe.fog;
+    $('#gName').value = t.n.replace(/^\S+\s/, '');
+  };
+  const draw = () => {
+    res = MAPGEN.generate(tpl, opts());
+    const cv = $('#gPrev'), px = Math.max(4, Math.min(14, Math.floor(Math.min(560, cv.parentElement.clientWidth || 560) / res.w))), g = cv.getContext('2d');
+    cv.width = res.w * px; cv.height = res.h * px;
+    g.fillStyle = GROUND[res.ground] || '#1f1b16'; g.fillRect(0, 0, cv.width, cv.height);
+    Object.entries(res.cells).forEach(([k, v]) => { const [x, y] = k.split('_').map(Number); g.fillStyle = PREV_C[v] || (TERRAIN[v] || {}).color || '#555'; g.fillRect(x * px, y * px, px, px); });
+    Object.entries(res.doors).forEach(([k, d]) => { const [x, y] = k.split('_').map(Number); g.fillStyle = d.l ? '#e0703a' : '#8a5a2b'; g.fillRect(x * px + 1, y * px + 1, px - 2, px - 2); });
+    res.lights.forEach((L) => { g.fillStyle = '#ffe58a'; g.beginPath(); g.arc(L.x * px + px / 2, L.y * px + px / 2, px / 3, 0, Math.PI * 2); g.fill(); });
+    res.chests.forEach((c) => { g.fillStyle = '#ffd34d'; g.fillRect(c.x * px + 1, c.y * px + 1, px - 2, px - 2); g.strokeStyle = '#000'; g.strokeRect(c.x * px + 1, c.y * px + 1, px - 2, px - 2); });
+    g.fillStyle = '#5b8fc9'; g.beginPath(); g.arc(res.start.x * px + px / 2, res.start.y * px + px / 2, px / 2, 0, Math.PI * 2); g.fill();
+    const doors = Object.values(res.doors), rooms = res.rooms.filter((r) => r.kind !== 'cave');
+    $('#gInfo').textContent = `${res.w}×${res.h} клеток${rooms.length ? ` · помещений: ${rooms.length}` : ''}${doors.length ? ` · дверей: ${doors.length}${doors.some((d) => d.l) ? ` (заперто ${doors.filter((d) => d.l).length})` : ''}` : ''}${res.chests.length ? ` · сундуков: ${res.chests.length}` : ''} · вариант ${genSeed % 100000}`;
+    ls.set('dnd55-gen', JSON.stringify({ tpl, d: +$('#gD').value }));
+  };
+  $('#gT').onchange = () => { setTpl(); draw(); };
+  ['#gW', '#gH', '#gD', '#gRoad', '#gChest'].forEach((s) => $(s).addEventListener('change', draw));
+  $('#gRe').onclick = () => { genSeed = Math.floor(Math.random() * 1e9); draw(); };
+  $('#gOk').onclick = () => genApply(res, { lvl: Math.max(1, Math.min(20, +$('#gLvl').value || 1)), amb: $('#gA').value, fog: $('#gF').value, asScene: $('#gScene').checked,
+    name: $('#gName').value.trim() || T[tpl].n.replace(/^\S+\s/, ''), clearNpc: $('#gNpc').checked, peaceful: !!T[tpl].peaceful });
+  setTpl(); draw();
+}
+async function genApply(res, o) {
+  if (!res) return;
+  const tier = tierLvl(o.lvl), key = (p) => R.push(ref(gpath(p))).key;
+  const lights = Object.fromEntries(res.lights.map((L) => [key('lights'), L]));
+  // Сундуки: в опасных местах чаще заперты и с ловушками; у главного зала подземелья — сокровищница
+  const chests = Object.fromEntries(res.chests.map((c) => {
+    const lockP = o.peaceful ? 0.6 : 0.4, trapP = o.peaceful ? 0 : 0.3;
+    const trap = chance(trapP) ? makeTrap(pickOne(TRAPS).id, o.lvl) : null;
+    return [key('chests'), { x: c.x, y: c.y, lvl: o.lvl, lock: chance(lockP) ? [10, 15, 15, 20][tier] : 0, trap, loot: c.boss ? genHoard(tier) : genChest(o.lvl) }];
+  }));
+  const fog = { ...fogSet(), mode: o.fog, amb: o.amb };
+  const blocked = (k) => (TERRAIN[res.cells[k]] || {}).block || (res.doors[k] && !res.doors[k].o);
+  // Персонажи и их спутники — на свободные клетки рядом со входом
+  const taken = new Set(), spot = () => {
+    for (let r = 0; r < Math.max(res.w, res.h); r++) for (let dy = -r; dy <= r; dy++) for (let dx = -r; dx <= r; dx++) {
+      if (Math.max(Math.abs(dx), Math.abs(dy)) !== r) continue;
+      const x = res.start.x + dx, y = res.start.y + dy, k = `${x}_${y}`;
+      if (x >= 0 && y >= 0 && x < res.w && y < res.h && !blocked(k) && !taken.has(k) && res.cells[k] !== 'water') { taken.add(k); return [x, y]; }
+    }
+    return [res.start.x, res.start.y];
+  };
+  if (o.asScene && (Object.keys(game.map || {}).length || Object.keys(game.tokens || {}).length)) await saveScene();
+  const upd = { map: res.cells, doors: res.doors, lights, chests, reveal: null, seen: null, bgimg: null, 'meta/bg': null, 'meta/w': res.w, 'meta/h': res.h,
+    'meta/fog': fog, 'meta/ground': res.ground || null, areas: null, init: null, econ: null };
+  const pcs = {};
+  Object.entries(game.tokens || {}).forEach(([id, t]) => {
+    if (t.kind === 'npc') { if (o.clearNpc) upd[`tokens/${id}`] = null; return; }
+    const [x, y] = spot();
+    upd[`tokens/${id}/x`] = x; upd[`tokens/${id}/y`] = y; pcs[id] = { x, y };
+  });
+  if (o.asScene) {
+    const sid = key('scenes');
+    upd['meta/scene'] = sid;
+    upd[`scenes/${sid}`] = { n: o.name, t: Date.now() };
+    upd[`sceneData/${sid}`] = { w: res.w, h: res.h, fog, ground: res.ground || null, map: res.cells, doors: res.doors, lights, chests, npcs: {}, pcs };
+  }
+  app.closeModal();
+  await R.update(ref(gpath()), upd).catch((err) => app.toast(`Не удалось: ${esc(err.code || err.message)}`));
+  addLog({ kind: 'sys', txt: `🗺 Новая местность: ${o.name}` });
+  app.toast(`🗺 «${esc(o.name)}» готово${Object.keys(chests).length ? ` · сундуков: ${Object.keys(chests).length}` : ''}`, 'crit');
+}
+
 /* ---------- Сцены ---------- */
 // games/{id}/scenes/{sid}: { n, t } — список (его видят все); games/{id}/sceneData/{sid} — снимок поля: размер, карта, двери, свет,
 // туман, картинка, существа мастера и места персонажей. Его читает только мастер при переключении. meta.scene — текущая сцена
 function sceneSnap() {
   const npcs = {}, pcs = {}, m = game.meta || {};
   Object.entries(game.tokens || {}).forEach(([id, t]) => { if (t.kind === 'npc') npcs[id] = t; else pcs[id] = { x: t.x, y: t.y }; });
-  return { w: W(), h: H(), bg: m.bg || null, fog: m.fog || null, map: game.map || null, doors: game.doors || null, lights: game.lights || null,
+  return { w: W(), h: H(), bg: m.bg || null, fog: m.fog || null, ground: m.ground || null, map: game.map || null, doors: game.doors || null, lights: game.lights || null, chests: game.chests || null,
     reveal: game.reveal || null, seen: game.seen || null, bgimg: bgSrc ? { data: bgSrc } : null, npcs, pcs };
 }
 // Сохранить текущее поле в его сцену (или в новую «Сцена N»)
@@ -2941,6 +3080,7 @@ async function loadScene(sid, empty, name) {
   const snap = empty ? { w: 30, h: 20 } : (await R.get(ref(gpath(`sceneData/${sid}`)))).val() || {};
   const upd = { map: snap.map || null, doors: snap.doors || null, lights: snap.lights || null, reveal: snap.reveal || null, seen: snap.seen || null,
     bgimg: snap.bgimg || null, 'meta/w': snap.w || 30, 'meta/h': snap.h || 20, 'meta/bg': snap.bg || null, 'meta/fog': snap.fog || null, 'meta/scene': sid,
+    chests: snap.chests || null, 'meta/ground': snap.ground || null,
     areas: null, init: null, econ: null };
   Object.entries(game.tokens || {}).forEach(([id, t]) => {
     if (t.kind === 'npc') { upd[`tokens/${id}`] = null; return; }
@@ -3263,7 +3403,9 @@ function renderTools() {
   const hasMine = user && game.tokens[`pc_${user.uid}`];
   $('#tblBoard').dataset.tool = tool; // курсор поля соответствует инструменту
   $('#tblTools').innerHTML = `<div class="seg">${t('move', '✋ Двигать', 'Перетаскивайте токены, по пустому месту — прокрутка')}${t('ruler', '📏 Линейка', 'Протяните, чтобы измерить расстояние')}
-    ${isDM() ? t('wall', '▮ Стена') + t('difficult', '▦ Трудная') + t('water', '≈ Вода') + t('erase', '⌫ Ластик') + t('enemy', '＋ Существо', 'Нажмите на клетку, чтобы поставить врага или NPC из бестиария')
+    ${isDM() ? t('wall', '▮ Стена') + t('difficult', '▦ Трудная') + t('water', '≈ Вода')
+      + `<select data-tbl-brush class="${['tree', 'rock', 'bush', 'road', 'sand', 'bridge', 'furn', 'floor'].includes(tool) ? 'on' : ''}" title="Другие кисти местности"><option value="">🖌 Кисть…</option>${['tree', 'rock', 'bush', 'road', 'sand', 'bridge', 'furn', 'floor'].map((k) => `<option value="${k}" ${tool === k ? 'selected' : ''}>${TERRAIN[k].ic} ${TERRAIN[k].n}</option>`).join('')}</select>`
+      + t('erase', '⌫ Ластик') + '<button data-tbl="gen" title="Создать местность или локацию по шаблону: лес, река, горы, подземелье, замок, город…">🎲 Генератор</button>' + t('enemy', '＋ Существо', 'Нажмите на клетку, чтобы поставить врага или NPC из бестиария')
       + `<button class="${tool === 'encPlace' ? 'on' : ''}" data-tbl="enc" title="Собрать столкновение из бестиария, оценить сложность для группы и поставить его на поле">⚔ Столкновение</button>`
       + t('door', '🚪 Дверь', 'Поставить или убрать дверь. Открыть — нажатием с «Двигать», запереть — с Shift')
       + t('light', '💡 Свет', 'Поставить или убрать источник света (20 фт яркого + 20 тусклого)')
@@ -3477,6 +3619,7 @@ async function onClick(e) {
       if (Object.keys((game.xp || {}).kills || {}).length) xpDialog(true); } }
     else if (a === 'xpGive') xpDialog(false);
     else if (a === 'enc') encDialog();
+    else if (a === 'gen') genDialog();
     else if (a === 'bestiary') bestiaryDialog();
     else if (a === 'lootTok') tokenLootDialog(selId);
     else if (a === 'handouts') handoutsDialog();
@@ -3604,6 +3747,7 @@ document.addEventListener('change', (e) => {
   if (e.target.matches('[data-tbl-xp]') && game && selId) R.update(ref(gpath(`tokens/${selId}`)), { xp: Math.max(0, +e.target.value || 0) });
   if (e.target.matches('[data-tbl-side]') && game && selId) R.update(ref(gpath(`tokens/${selId}`)), { side: e.target.value });
   if (e.target.matches('[data-tbl-ds]') && game && selId) R.update(ref(gpath(`tokens/${selId}`)), { dsOn: e.target.checked });
+  if (e.target.matches('[data-tbl-brush]')) { tool = e.target.value || 'move'; renderTools(); $('#tblBoard').dataset.tool = tool; }
   if (e.target.matches('[data-tbl-num]') && game && selId) R.update(ref(gpath(`tokens/${selId}`)), { [e.target.dataset.tblNum]: Math.max(0, +e.target.value || 0) });
   if (e.target.matches('[data-tbl-sv]') && game && selId) R.update(ref(gpath(`tokens/${selId}/sv`)), { [e.target.dataset.tblSv]: +e.target.value || 0 });
 });
