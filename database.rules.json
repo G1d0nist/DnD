@@ -71,6 +71,22 @@
         "handouts": {
           ".write": false
         },
+        "chests": {
+          "$chest": {
+            "lk": {
+              ".write": "auth != null && root.child('games/' + $gameId + '/members/' + auth.uid).exists() && data.parent().exists()"
+            },
+            "tf": {
+              ".write": "auth != null && root.child('games/' + $gameId + '/members/' + auth.uid).exists() && data.parent().exists()"
+            },
+            "toff": {
+              ".write": "auth != null && root.child('games/' + $gameId + '/members/' + auth.uid).exists() && data.parent().exists()"
+            },
+            "o": {
+              ".write": "auth != null && root.child('games/' + $gameId + '/members/' + auth.uid).exists() && data.parent().exists() && newData.val() === auth.uid"
+            }
+          }
+        },
         "lootAward": {
           "$uid": {
             ".write": "auth != null && auth.uid === $uid"

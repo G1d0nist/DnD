@@ -105,10 +105,11 @@ function subscribe(gid, code) {
   on('scenes', (v) => { game.scenes = v || {}; });
   on('rest', (v) => { game.rest = v; handleRest(); });
   on(`xpAward/${user.uid}`, (v) => { game.award = v; applyXp(); });
-  on('loot', (v) => { game.loot = v || {}; });
+  on('loot', (v) => { game.loot = v || {}; syncChests(); });
   on('handouts', (v) => { game.handouts = v || {}; notifyHandouts(); });
+  on('chests', (v) => { game.chests = v || {}; drawTerrain(); syncChests(); });
   on(`lootAward/${user.uid}`, (v) => { game.lootAw = v; applyLoot(); });
-  on('members', (v) => { game.members = v || {}; syncEffects(); applyXp(); applyLoot(); handleRest(); });
+  on('members', (v) => { game.members = v || {}; syncEffects(); applyXp(); applyLoot(); handleRest(); syncChests(); });
   on('tokens', (v) => { game.tokens = v || {}; cleanupInit(); syncEffects(); awardKills(); });
   on('map', (v) => { game.map = v || {}; drawTerrain(); });
   on('init', (v) => { game.init = v; checkMyTurn(); checkNpcTurn(); cleanupInit(); syncEffects(); });
@@ -285,6 +286,11 @@ function drawTerrain() {
   });
   // Источники света видит только мастер
   if (isDM()) Object.values(game.lights || {}).forEach((L) => { g.font = '18px system-ui'; g.fillText('💡', L.x * CELL + 10, L.y * CELL + 27); });
+  // Сундуки: закрытый, открытый; мастер видит замок и ловушку
+  Object.values(game.chests || {}).forEach((C) => {
+    g.font = '22px system-ui'; g.fillText(C.o ? '📭' : '🧰', C.x * CELL + 8, C.y * CELL + 29);
+    if (isDM() && !C.o) { g.font = '11px system-ui'; if (+C.lock && !C.lk) g.fillText('🔒', C.x * CELL + 1, C.y * CELL + 12); if (C.trap && !C.toff) g.fillText('⚠', C.x * CELL + CELL - 12, C.y * CELL + 12); }
+  });
   if (!bgImg || bg.grid) {
     g.strokeStyle = bgImg ? 'rgba(0,0,0,.35)' : 'rgba(255,255,255,.07)';
     g.beginPath();
@@ -578,6 +584,10 @@ function onDown(e) {
     return;
   }
   if (tool === 'move' && !tokEl && (game.doors || {})[ck]) { toggleDoor(ck, e.shiftKey); return; }
+  // Сундук: мастер ставит инструментом и правит нажатием, игрок — открывает, стоя рядом
+  const chest = !tokEl && chestAt(p.x, p.y);
+  if (tool === 'chest' && isDM()) { chestDialog(chest ? chest[0] : null, p.x, p.y); return; }
+  if (tool === 'move' && chest) { if (isDM()) chestDialog(chest[0]); else chestPlayer(chest[0]); return; }
   if (TERRAIN[tool] || tool === 'erase' || tool === 'reveal' || tool === 'conceal') {
     drag = { kind: 'paint', pending: {}, root: tool === 'reveal' || tool === 'conceal' };
     paintAt(p);
@@ -823,7 +833,7 @@ function newEnemyDialog(x, y, base) {
     // Статблок: из бестиария, из копируемого существа или одна своя атака
     let stats;
     if (mon) stats = monStats(mon);
-    else if (base) stats = { ...['mon', 'cr', 'ab', 'atk', 'acts', 'multi', 'tr', 'spd', 'sv', 'img', 'leg', 'lr', 'lrMax', 'cs', 'sdc'].reduce((o, k) => (base[k] != null ? { ...o, [k]: base[k] } : o), {}) };
+    else if (base) stats = { ...['mon', 'cr', 'ab', 'atk', 'acts', 'multi', 'tr', 'spd', 'sv', 'img', 'leg', 'lr', 'lrMax', 'cs', 'sdc', 'mt', 'hoard', 'lootFix', 'lootGp', 'lootRnd'].reduce((o, k) => (base[k] != null ? { ...o, [k]: base[k] } : o), {}) };
     else {
       const an = $('#nAn').value.trim();
       stats = { multi: 1, atk: an ? [{ n: an, hit: +$('#nAh').value || 0, dmg: $('#nAd').value.trim(), type: $('#nAt').value.trim(), reach: $('#nAr').value.trim() ? 0 : 5, range: $('#nAr').value.trim() }] : [] };
@@ -832,6 +842,7 @@ function newEnemyDialog(x, y, base) {
       const id = R.push(ref(gpath('tokens'))).key, hp = mon && $('#nRoll').checked ? Math.max(1, rollExpr(mon.hp).total) : +$('#nH').value || 1;
       upd[id] = { kind: 'npc', owner: user.uid, name: n > 1 ? `${name} ${i + 1}` : name, x: Math.min(W() - size, x + i * size), y, size, color: '#c94a3d',
         hp, hpMax: hp, ac: +$('#nA').value || 10, speed: +$('#nS').value || 30, init: +$('#nI').value || 0, hidden: $('#nHid').checked, cond: [], side: $('#nSide').value, dsOn: $('#nDs').checked, ...stats, xp: Math.max(0, +$('#nXp').value || 0) };
+      upd[id].loot = genLoot(upd[id]);
     }
     R.update(ref(gpath('tokens')), upd);
     app.closeModal();
@@ -842,7 +853,9 @@ function newEnemyDialog(x, y, base) {
 function monStats(mon) {
   return { mon: mon.e, cr: mon.cr, ab: mon.ab, atk: mon.atk, acts: mon.acts || [], multi: mon.multi || 1, tr: mon.x || '', spd: mon.speed,
     sv: Object.fromEntries(ABK.map((k, i) => [k, mon.sv[k] != null ? mon.sv[k] : abMod(mon.ab[i])])),
-    ...['leg', 'cs', 'sdc'].reduce((o, k) => (mon[k] ? { ...o, [k]: mon[k] } : o), {}), ...(mon.lr ? { lr: mon.lr, lrMax: mon.lr } : {}) };
+    ...['leg', 'cs', 'sdc'].reduce((o, k) => (mon[k] ? { ...o, [k]: mon[k] } : o), {}), ...(mon.lr ? { lr: mon.lr, lrMax: mon.lr } : {}),
+    // Вид и добыча: своя из бестиария (всегда), случайная по ПО, сокровищница у боссов
+    mt: mon.type || 'monstrosity', ...(mon.hoard ? { hoard: true } : {}), ...(mon.loot ? { lootFix: mon.loot.fixed || [], lootGp: +mon.loot.gp || 0, lootRnd: mon.loot.rnd !== false } : {}) };
 }
 
 /* ---------- Конструктор столкновений ---------- */
@@ -949,6 +962,7 @@ function placeEncounter(x, y) {
       const id = R.push(ref(gpath('tokens'))).key, hp = enc.roll ? Math.max(1, rollExpr(mon.hp).total) : avgExpr(mon.hp), name = n > 1 ? `${mon.n} ${i + 1}` : mon.n;
       upd[`tokens/${id}`] = { kind: 'npc', owner: user.uid, name, x: pos[0], y: pos[1], size, color: '#c94a3d', hp, hpMax: hp, ac: mon.ac, speed: parseInt(mon.speed) || 30,
         init: abMod(mon.ab[1]), hidden: !!enc.hid, cond: [], side: 'enemy', dsOn: false, ...monStats(mon), xp: crXp(mon.cr) };
+      upd[`tokens/${id}`].loot = genLoot(upd[`tokens/${id}`]);
       if (enc.init) upd[`init/list/${id}`] = { name, roll: die(20) + abMod(mon.ab[1]), owner: user.uid, kind: 'npc', tokenId: id };
       names.push(name);
     }
@@ -2300,51 +2314,194 @@ function applyXp() {
 }
 
 /* ---------- Добыча ---------- */
-// games/{id}/loot: { gp, items: { k: { kind: item | magic, n, qty, mn — магический предмет, base — оружие или доспех для «+1» } } } — пишет мастер.
-// lootAward/{uid}/{k} — выдано персонажу: его браузер кладёт добычу в лист и удаляет запись
-// Монеты с тела по ПО (упрощённо, по таблице индивидуальных сокровищ DMG 2024); звери ничего не носят; оружие — из атак существа
-function lootRoll(t) {
-  const mon = t.mon && BEST().find((m) => m.e === t.mon);
-  if (mon && mon.beast) return { gp: 0, items: [] };
-  const cr = crNum(t.cr ?? 0), r = (e) => rollExpr(e).total;
-  const gp = cr >= 17 ? r('2d8') * 1000 : cr >= 11 ? r('2d10') * 100 : cr >= 5 ? r('2d8') * 10 : r('3d6');
-  const WP = typeof WEAPONS !== 'undefined' ? WEAPONS : [];
-  const items = (t.atk || []).map((a) => WP.find((w) => w.n.toLowerCase() === String(a.n).toLowerCase())).filter(Boolean).map((w) => w.n);
-  return { gp, items };
+// games/{id}/loot: { gp, items: { k: предмет } } — общий котёл, пишет мастер; lootAward/{uid}/{k} — выдано персонажу:
+// его браузер кладёт добычу в лист и удаляет запись. Предмет: { kind: item | magic, n, qty, mn — магический предмет,
+// base — оружие или доспех для «+1», cat, cost, x — для обычных (свиток, камень), r — редкость }.
+// У существа на поле своя добыча: tokens/{id}/loot = { gp, items: [] } — бросается при появлении, мастер видит и правит её
+// Ступень опасности: 0 — ПО 0–4, 1 — 5–10, 2 — 11–16, 3 — 17+ (по уровню группы — те же границы)
+const tierCR = (cr) => { const v = crNum(cr ?? 0); return v >= 17 ? 3 : v >= 11 ? 2 : v >= 5 ? 1 : 0; };
+const tierLvl = (l) => (l >= 17 ? 3 : l >= 11 ? 2 : l >= 5 ? 1 : 0);
+const pickOne = (arr) => arr[Math.floor(Math.random() * arr.length)];
+const chance = (p) => Math.random() < p;
+const MI = () => (typeof MAGIC_ITEMS !== 'undefined' ? MAGIC_ITEMS : []);
+const RAR_N = ['обычный', 'необычный', 'редкий', 'очень редкий', 'легендарный'];
+// Редкость магического предмета по ступени — в рамках рекомендаций DMG 2024 (вероятности в процентах)
+const RAR_TIER = [[30, 60, 10, 0, 0], [0, 45, 45, 10, 0], [0, 10, 45, 40, 5], [0, 0, 25, 55, 20]];
+function rollRarity(tier) {
+  const w = RAR_TIER[Math.max(0, Math.min(3, tier))];
+  let x = Math.random() * 100;
+  for (let i = 0; i < 5; i++) { x -= w[i]; if (x < 0) return i; }
+  return 1;
+}
+// Свиток заклинания: уровень по редкости — обычный 0–1, необычный 2–3, редкий 4–5, очень редкий 6–8, легендарный 9
+const SCROLL_LV = [[0, 1], [2, 3], [4, 5], [6, 8], [9, 9]];
+function scrollItem(s) {
+  const lv = +s.l;
+  return { kind: 'item', n: `Свиток: ${s.n}${lv ? ` (${lv} ур.)` : ' (заговор)'}`, qty: 1, cat: 'Расходник',
+    x: `Свиток заклинания: прочитать — сотворить «${s.n}» без ячейки, свиток рассыпается. Чужое заклинание — проверка заклинательной характеристики.`,
+    r: SCROLL_LV.findIndex(([a, b]) => lv >= a && lv <= b) };
+}
+function magicItem(M, baseN) {
+  const base = !M.pick ? null : baseN ? (M.pick === 'w' ? WEAPONS.find((w) => w.n === baseN) : ARMOR.find((a) => a.id === baseN || a.n === baseN))
+    : M.pick === 'w' ? pickOne(WEAPONS) : pickOne(ARMOR.filter((a) => a.type !== 'shield'));
+  return { kind: 'magic', mn: M.n, n: magicName(M, base && base.n), qty: 1, r: M.r, ...(base ? { base: M.pick === 'w' ? base.n : base.id } : {}) };
+}
+// Случайный магический предмет редкости r; каждый четвёртый — свиток заклинания
+function rollMagic(r) {
+  if (chance(0.25) && typeof SPELLS !== 'undefined') {
+    const [a, b] = SCROLL_LV[r], lv = a + Math.floor(Math.random() * (b - a + 1)), s = pickOne(SPELLS.filter((x) => +x.l === lv));
+    if (s) return scrollItem(s);
+  }
+  const list = MI().filter((m) => m.r === r);
+  return list.length ? magicItem(pickOne(list)) : null;
+}
+// Драгоценность или предмет искусства по ступени
+const GEM_T = [[10, 50], [50, 100, 500], [500, 1000], [1000, 5000]], ART_T = [[25], [250, 750], [750, 2500], [2500, 7500]];
+function valuable(v, art) { return { kind: 'item', n: `${pickOne((art ? ART : GEMS)[v])} (${v} зм)`, qty: 1, cat: 'Сокровище', cost: `${v} зм` }; }
+const rollValuable = (tier) => { const art = chance(0.4); return valuable(pickOne((art ? ART_T : GEM_T)[tier]), art); };
+// Одинаковые предметы — в одну строку с количеством
+function mergeLoot(items) {
+  const out = [];
+  items.filter(Boolean).forEach((it) => { const same = out.find((x) => x.n === it.n && x.kind === it.kind); if (same) same.qty = (+same.qty || 1) + (+it.qty || 1); else out.push({ ...it }); });
+  return out;
+}
+// Что носит существо по виду: доля монет, шанс драгоценности, снаряжение из атак, множитель шанса магического предмета
+const CARRY = {
+  beast: {}, ooze: {}, plant: {}, construct: {}, elemental: { val: 0.2 }, celestial: { val: 0.2, magic: 1 },
+  undead: { coin: 0.5, val: 0.3, gear: true, magic: 1 }, humanoid: { coin: 1, val: 0.15, gear: true, magic: 1 }, giant: { coin: 1, val: 0.3, magic: 1 },
+  dragon: { coin: 2, val: 0.6, magic: 1.5 }, fiend: { coin: 0.5, val: 0.2, magic: 1 }, fey: { coin: 0.5, val: 0.3, magic: 1 },
+  aberration: { coin: 0.5, val: 0.3, magic: 1 }, monstrosity: { coin: 0.3, val: 0.2, magic: 0.5 },
+};
+const TYPE_N = { humanoid: 'гуманоид', beast: 'зверь', monstrosity: 'чудовище', undead: 'нежить', dragon: 'дракон', giant: 'великан', fiend: 'исчадие',
+  celestial: 'небожитель', fey: 'фея', elemental: 'элементаль', construct: 'конструкт', aberration: 'аберрация', ooze: 'слизь', plant: 'растение' };
+const MAGIC_P = [0.06, 0.15, 0.25, 0.35];
+const monType = (t) => t.mt || (BEST().find((m) => m.e === t.mon) || {}).type || 'monstrosity';
+// Добыча существа: монеты (индивидуальное сокровище по ПО) × доля по виду, снаряжение из атак, иногда драгоценность и магический предмет.
+// Своя добыча из бестиария (lootFix, lootGp) — всегда; lootRnd === false — только она
+function genLoot(t) {
+  const fixed = (t.lootFix || []).map((x) => ({ ...x })), gpFix = +t.lootGp || 0;
+  if (t.lootRnd === false) return { gp: gpFix, items: fixed };
+  if (t.hoard) { const h = genHoard(tierCR(t.cr)); return { gp: h.gp + gpFix, items: mergeLoot([...fixed, ...h.items]) }; }
+  const C = CARRY[monType(t)] || CARRY.monstrosity, tier = tierCR(t.cr), r = (e) => rollExpr(e).total;
+  const coins = [r('3d6'), r('2d8') * 10, r('2d10') * 100, r('2d8') * 1000][tier];
+  const items = [...fixed];
+  if (C.gear) (t.atk || []).forEach((a) => { const w = WEAPONS.find((x) => x.n.toLowerCase() === String(a.n).toLowerCase()); if (w && !fixed.some((x) => x.n === w.n)) items.push({ kind: 'item', n: w.n, qty: 1 }); });
+  if (C.val && chance(C.val)) items.push(rollValuable(tier));
+  if (C.magic && chance(MAGIC_P[tier] * C.magic)) items.push(rollMagic(rollRarity(tier)));
+  return { gp: Math.round(coins * (C.coin || 0)) + gpFix, items: mergeLoot(items) };
+}
+// Сокровищница (босс, логово): много монет, драгоценности и несколько магических предметов
+function genHoard(tier) {
+  const r = (e) => rollExpr(e).total, items = [];
+  const gp = [r('2d4') * 100, r('6d6') * 100, r('4d6') * 1000, r('12d6') * 1000][tier];
+  for (let i = r(['1d4', '2d4', '2d6', '3d6'][tier]); i > 0; i--) items.push(rollValuable(tier));
+  for (let i = r(['1d2', '1d3', '1d4', '1d4+1'][tier]); i > 0; i--) items.push(rollMagic(rollRarity(Math.min(3, tier + (i === 1 ? 1 : 0)))));
+  return { gp, items: mergeLoot(items) };
+}
+// Сундук по уровню локации: монеты, немного снаряжения, драгоценность, шанс магического предмета
+function genChest(lvl) {
+  const tier = tierLvl(+lvl || 1), r = (e) => rollExpr(e).total, items = [];
+  const gp = [r('3d6') * 5, r('4d6') * 20, r('4d6') * 200, r('4d6') * 2000][tier];
+  const gear = GEAR.filter((g) => /Расходник|Снаряжение/.test(g.cat));
+  for (let i = r('1d3') - 1; i > 0; i--) items.push({ kind: 'item', n: pickOne(gear).n, qty: 1 });
+  for (let i = r('1d3') - 1; i > 0; i--) items.push(rollValuable(tier));
+  if (chance([0.25, 0.35, 0.45, 0.55][tier])) items.push(rollMagic(rollRarity(tier)));
+  return { gp, items: mergeLoot(items) };
+}
+const lootText = (L) => (!L ? '—' : [L.gp ? `${L.gp} зм` : '', ...(L.items || []).map((it) => `${it.n}${+it.qty > 1 ? ` ×${it.qty}` : ''}${it.kind === 'magic' || it.r >= 2 ? ' ✨' : ''}`)].filter(Boolean).join(', ') || 'ничего');
+// Список всех предметов для выбора: магические (с редкостью), снаряжение, оружие, доспехи, драгоценности, свитки заклинаний
+function itemSearch(q) {
+  q = q.trim().toLowerCase();
+  if (!q) return [];
+  const has = (s) => String(s).toLowerCase().includes(q), out = [];
+  MI().forEach((M) => { if (has(M.n) || has(RAR_N[M.r])) out.push({ label: M.n, sub: `${RAR_N[M.r]}${M.att ? ' · настройка' : ''}`, M }); });
+  GEAR.forEach((g) => { if (has(g.n)) out.push({ label: g.n, sub: `снаряжение · ${g.cost}`, make: () => ({ kind: 'item', n: g.n, qty: 1 }) }); });
+  WEAPONS.forEach((w) => { if (has(w.n)) out.push({ label: w.n, sub: `оружие · ${w.cost}`, make: () => ({ kind: 'item', n: w.n, qty: 1 }) }); });
+  ARMOR.forEach((a) => { if (has(a.n)) out.push({ label: a.n, sub: `доспех · ${a.cost}`, make: () => ({ kind: 'item', n: a.n, qty: 1 }) }); });
+  [[GEMS, false], [ART, true]].forEach(([T, art]) => Object.entries(T).forEach(([v, list]) => list.forEach((n) => {
+    if (has(n) || has(art ? 'искусств' : 'камень')) out.push({ label: `${n} (${v} зм)`, sub: art ? 'предмет искусства' : 'драгоценный камень', make: () => ({ kind: 'item', n: `${n} (${v} зм)`, qty: 1, cat: 'Сокровище', cost: `${v} зм` }) });
+  })));
+  // Свитки: «огненный шар» или «свиток огн…» — поиск по названию заклинания
+  const sq = q.replace(/^свит\S*\s*/, '').trim();
+  if (sq.length >= 3 && typeof SPELLS !== 'undefined') SPELLS.filter((s) => s.n.toLowerCase().includes(sq)).slice(0, 12)
+    .forEach((s) => out.push({ label: `Свиток: ${s.n}`, sub: `${+s.l ? `${s.l} ур.` : 'заговор'} · ${RAR_N[scrollItem(s).r]}`, make: () => scrollItem(s) }));
+  return out.slice(0, 40);
+}
+// Редактор добычи (встраивается в окно): золото, список с количеством, поиск по всем предметам, свой предмет по названию.
+// L меняется на месте; onChange — после каждой правки
+function lootEdit(box, L, onChange = () => {}) {
+  L.items = L.items || [];
+  box.innerHTML = `<div class="row gap wrap"><label>Монеты, зм<input type="number" min="0" data-le="gp" value="${+L.gp || 0}" style="width:110px"></label></div>
+    <div class="list mt" data-le="list"></div>
+    <div class="row gap mt"><input data-le="q" placeholder="Найти предмет: зелье, длинный меч, рубин, свиток огненного…" style="flex:1"><button data-le="own" title="Добавить как свой предмет">＋ Своё</button></div>
+    <div class="pick-list" data-le="res"></div>`;
+  const q = box.querySelector('[data-le="q"]');
+  const drawList = () => {
+    box.querySelector('[data-le="list"]').innerHTML = L.items.map((it, i) => `<div class="enc-row"><span><b>${esc(it.n)}</b>${it.kind === 'magic' || it.r >= 1 ? ` <span class="muted small">${RAR_N[it.r] || ''}</span>` : ''}</span>
+      <span class="row gap"><input type="number" min="1" value="${+it.qty || 1}" data-leq="${i}" style="width:58px"><button class="ghost" data-led="${i}" title="Убрать">✕</button></span></div>`).join('')
+      || '<p class="muted small">Предметов нет.</p>';
+    box.querySelectorAll('[data-led]').forEach((b) => b.addEventListener('click', () => { L.items.splice(+b.dataset.led, 1); drawList(); onChange(); }));
+    box.querySelectorAll('[data-leq]').forEach((x) => x.addEventListener('input', () => { L.items[+x.dataset.leq].qty = Math.max(1, +x.value || 1); onChange(); }));
+  };
+  const add = (it) => { if (!it) return; L.items = mergeLoot([...L.items, it]); drawList(); onChange(); };
+  const drawRes = () => {
+    const res = itemSearch(q.value), el = box.querySelector('[data-le="res"]');
+    el.innerHTML = res.map((x, i) => `<div class="pick-row"><span>${esc(x.label)} <span class="muted small">${esc(x.sub)}</span></span>
+      ${x.M && x.M.pick ? `<select data-lb="${i}"><option value="">случайное ${x.M.pick === 'w' ? 'оружие' : 'доспех'}</option>${(x.M.pick === 'w' ? WEAPONS : ARMOR.filter((a) => a.type !== 'shield')).map((b) => `<option value="${esc(x.M.pick === 'w' ? b.n : b.id)}">${esc(b.n)}</option>`).join('')}</select>` : ''}
+      <button data-la="${i}">＋</button></div>`).join('') || (q.value.trim() ? '<p class="muted small">Ничего не найдено — можно добавить как свой предмет.</p>' : '');
+    el.querySelectorAll('[data-la]').forEach((b) => b.addEventListener('click', () => {
+      const x = res[+b.dataset.la], sel = el.querySelector(`[data-lb="${b.dataset.la}"]`);
+      add(x.M ? magicItem(x.M, sel && sel.value) : x.make());
+    }));
+  };
+  box.querySelector('[data-le="gp"]').addEventListener('input', (e) => { L.gp = Math.max(0, +e.target.value || 0); onChange(); });
+  q.addEventListener('input', drawRes);
+  box.querySelector('[data-le="own"]').addEventListener('click', () => { const n = q.value.trim(); if (n) { add({ kind: 'item', n, qty: 1 }); q.value = ''; drawRes(); } });
+  drawList();
+}
+// Мастер: добыча одного существа — посмотреть, перебросить, сделать сокровищницей, изменить
+function tokenLootDialog(id) {
+  const t = game.tokens[id];
+  if (!t) return;
+  const L = JSON.parse(JSON.stringify(t.loot || genLoot(t)));
+  app.openModal(`<div><h2>💰 Добыча: ${esc(t.name)}</h2>
+    <p class="muted small">${TYPE_N[monType(t)] || ''} · ПО ${esc(t.cr ?? '?')}${t.looted ? ' · <b>уже обыскан</b>' : ''}. Игроки получат это, когда мастер обыщет павших.</p>
+    <div class="row gap wrap"><button id="tlRe">🎲 Перебросить</button><button id="tlHoard" title="Крупная добыча: монеты, драгоценности, несколько магических предметов">👑 Сокровищница</button><button id="tlNone">Ничего</button></div>
+    <div id="tlBox" class="loot-box mt"></div>
+    <div class="modal-actions"><button data-act="closeModal">Отмена</button><button class="primary" id="tlOk">Сохранить</button></div></div>`);
+  const draw = () => lootEdit($('#tlBox'), L);
+  const set = (x) => { L.gp = x.gp; L.items = x.items; draw(); };
+  $('#tlRe').onclick = () => set(genLoot({ ...t, hoard: false }));
+  $('#tlHoard').onclick = () => set(genHoard(tierCR(t.cr)));
+  $('#tlNone').onclick = () => set({ gp: 0, items: [] });
+  $('#tlOk').onclick = () => { R.update(ref(gpath(`tokens/${id}`)), { loot: { gp: +L.gp || 0, items: L.items } }).catch(() => {}); app.closeModal(); };
+  draw();
 }
 function lootDialog() {
   const L = game.loot || {}, gp = +L.gp || 0, items = Object.entries(L.items || {});
-  const pcs = Object.entries(game.members || {}).filter(([, m]) => m.role !== 'dm'), MI = typeof MAGIC_ITEMS !== 'undefined' ? MAGIC_ITEMS : [];
+  const pcs = Object.entries(game.members || {}).filter(([, m]) => m.role !== 'dm');
   const bodies = Object.entries(game.tokens).filter(([, t]) => t.kind === 'npc' && team(t) === 'npc' && isDead(t) && !t.looted);
   const who = `<option value="">— кому —</option>${pcs.map(([uid, m]) => `<option value="${uid}">${esc((m.char || {}).name || m.name)}</option>`).join('')}`;
-  app.openModal(`<h2>💰 Добыча</h2>
+  app.openModal(`<div><h2>💰 Добыча</h2>
     ${bodies.length ? `<div class="enc-row"><span class="small">Не обысканы: ${bodies.map(([, t]) => esc(t.name)).join(', ')}</span><button class="primary" id="lSearch">🎲 Обыскать</button></div>` : ''}
     <div class="enc-row mt"><b>Золото: ${gp} зм</b><button id="lSplit" ${gp && pcs.length ? '' : 'disabled'}>Поровну всем${pcs.length ? ` (по ${Math.floor(gp / pcs.length)} зм)` : ''}</button></div>
-    <div class="list mt">${items.map(([k, it]) => `<div class="enc-row"><span><b>${esc(it.n)}</b>${+it.qty > 1 ? ` ×${it.qty}` : ''}${it.kind === 'magic' ? ' ✨' : ''}</span>
+    <div class="list mt">${items.map(([k, it]) => `<div class="enc-row"><span><b>${esc(it.n)}</b>${+it.qty > 1 ? ` ×${it.qty}` : ''}${it.kind === 'magic' ? ' ✨' : ''}${it.r >= 1 ? ` <span class="muted small">${RAR_N[it.r]}</span>` : ''}</span>
       <span class="row gap"><select data-lwho="${k}">${who}</select><button data-lgive="${k}">Отдать</button><button class="ghost" data-ldel="${k}" title="Убрать">✕</button></span></div>`).join('')
       || '<p class="muted small">Предметов пока нет — обыщите павших или добавьте вручную.</p>'}</div>
-    <h3 class="mt">Добавить</h3>
-    <div class="form-grid"><label>Золото, зм<input type="number" id="lGp" min="0" placeholder="0"></label>
-      <label>Предмет<input id="lN" placeholder="Верёвка, рубин (50 зм)…"></label><label>Количество<input type="number" id="lQ" min="1" value="1"></label>
-      <label>Магический предмет<select id="lM"><option value="">—</option>${MI.map((m) => `<option>${esc(m.n)}</option>`).join('')}</select></label>
-      <label id="lBaseBox" hidden>Основа<select id="lBase"></select></label></div>
-    <div class="modal-actions"><button data-act="closeModal">Закрыть</button><button class="primary" id="lAdd">＋ В добычу</button></div>`);
+    <h3 class="mt">Добавить в котёл</h3><div id="lAddBox"></div>
+    <div class="modal-actions"><button data-act="closeModal">Закрыть</button><button class="primary" id="lAdd">＋ В добычу</button></div></div>`);
   const again = () => setTimeout(lootDialog, 150);
   const push = (upd, it) => { upd[`loot/items/${R.push(ref(gpath('loot'))).key}`] = it; };
-  // Магическое оружие и доспех «+N» делаются из обычного: выбрать основу
-  $('#lM').onchange = () => {
-    const M = MI.find((m) => m.n === $('#lM').value);
-    $('#lBaseBox').hidden = !(M && M.pick);
-    if (M && M.pick) $('#lBase').innerHTML = M.pick === 'w' ? WEAPONS.map((w) => `<option value="${esc(w.n)}">${esc(w.n)}</option>`).join('')
-      : ARMOR.filter((a) => a.type !== 'shield').map((a) => `<option value="${esc(a.id)}">${esc(a.n)}</option>`).join('');
-  };
+  const add = { gp: 0, items: [] };
+  lootEdit($('#lAddBox'), add);
+  // Добыча каждого павшего — та, что бросилась при его появлении (или бросается сейчас, если её не было)
   if ($('#lSearch')) $('#lSearch').onclick = async () => {
     const upd = {}, found = [];
     let sum = 0;
     bodies.forEach(([id, t]) => {
-      const r = lootRoll(t);
-      sum += r.gp;
-      r.items.forEach((n) => { push(upd, { kind: 'item', n, qty: 1 }); found.push(n); });
+      const r = t.loot || genLoot(t);
+      sum += +r.gp || 0;
+      (r.items || []).forEach((it) => { push(upd, it); found.push(it.n); });
       upd[`tokens/${id}/looted`] = true;
     });
     upd['loot/gp'] = gp + sum;
@@ -2361,14 +2518,10 @@ function lootDialog() {
     again();
   };
   $('#lAdd').onclick = async () => {
-    const upd = {}, add = +$('#lGp').value || 0, n = $('#lN').value.trim(), M = MI.find((m) => m.n === $('#lM').value);
-    if (add > 0) upd['loot/gp'] = gp + add;
-    if (n) push(upd, { kind: 'item', n, qty: Math.max(1, +$('#lQ').value || 1) });
-    if (M) {
-      const base = M.pick ? $('#lBase').value : '', bn = M.pick === 'w' ? base : M.pick ? (ARMOR.find((a) => a.id === base) || {}).n : '';
-      push(upd, { kind: 'magic', mn: M.n, n: bn ? `${bn} ${M.n.match(/\+\d/)[0]}` : M.n, qty: 1, ...(base ? { base } : {}) });
-    }
-    if (!Object.keys(upd).length) { app.toast('Укажите золото, предмет или магический предмет'); return; }
+    const upd = {};
+    if (add.gp > 0) upd['loot/gp'] = gp + add.gp;
+    add.items.forEach((it) => push(upd, it));
+    if (!Object.keys(upd).length) { app.toast('Укажите монеты или найдите предмет'); return; }
     await R.update(ref(gpath()), upd);
     again();
   };
@@ -2380,6 +2533,132 @@ function lootDialog() {
     again();
   }));
   $$('[data-ldel]').forEach((b) => b.addEventListener('click', async () => { await R.remove(ref(gpath(`loot/items/${b.dataset.ldel}`))); again(); }));
+}
+
+/* ---------- Сундуки ---------- */
+// games/{id}/chests/{k}: { x, y, lvl — уровень локации, lock — СЛ замка (0 — не заперт), trap: { n, abil, dc, f, dtype, cond } | null,
+//   loot: { gp, items }, lk — замок открыт, tf — ловушку искали успешно, toff — ловушка обезврежена или сработала,
+//   o — uid открывшего, moved — содержимое уже в общей добыче }. Игроки пишут только lk, tf, toff, o; содержимое в котёл переносит мастер
+const TRAPS = [
+  { id: 'needle', n: 'Отравленная игла', abil: 'con', dtype: 'ядом', cond: 'poisoned' },
+  { id: 'fire', n: 'Огненная руна', abil: 'dex', dtype: 'огнём' },
+  { id: 'acid', n: 'Кислотные брызги', abil: 'dex', dtype: 'кислотой' },
+  { id: 'shock', n: 'Разряд молнии', abil: 'dex', dtype: 'электричеством' },
+  { id: 'gas', n: 'Усыпляющий газ', abil: 'con', dtype: '', cond: 'unconscious' },
+];
+const TRAP_DMG = ['2d10', '4d10', '10d10', '18d10'], TRAP_DC = [13, 15, 17, 19];
+const LOCKS = [[0, 'не заперт'], [10, 'простой замок (СЛ 10)'], [15, 'хороший замок (СЛ 15)'], [20, 'сложный замок (СЛ 20)'], [25, 'мастерский замок (СЛ 25)']];
+const chestAt = (x, y) => Object.entries(game.chests || {}).find(([, c]) => c.x === x && c.y === y);
+const partyLevel = () => { const l = Object.values(game.members || {}).filter((m) => m.role !== 'dm').map((m) => +(m.char || {}).lvl || 1); return l.length ? Math.round(l.reduce((a, b) => a + b, 0) / l.length) : 1; };
+function makeTrap(id, lvl) {
+  const T = TRAPS.find((x) => x.id === id), tier = tierLvl(+lvl || 1);
+  return T ? { id: T.id, n: T.n, abil: T.abil, dc: TRAP_DC[tier], f: T.dtype ? TRAP_DMG[tier] : '', dtype: T.dtype, ...(T.cond ? { cond: T.cond } : {}) } : null;
+}
+// Мастер: поставить или изменить сундук
+function chestDialog(k, x, y) {
+  const lvl0 = partyLevel(), C = k ? JSON.parse(JSON.stringify(game.chests[k])) : { x, y, lvl: lvl0, lock: 0, trap: null, loot: genChest(lvl0) };
+  const L = C.loot || { gp: 0, items: [] };
+  const opener = C.o && (C.o === user.uid ? 'мастер' : ((game.members[C.o] || {}).char || {}).name || 'игрок');
+  app.openModal(`<div><h2>🧰 ${k ? 'Сундук' : 'Новый сундук'}</h2>
+    ${C.o ? `<p class="small">Открыт: ${esc(opener)}${C.moved ? ' — содержимое в общей добыче' : ''}</p>` : ''}
+    <div class="form-grid"><label>Уровень локации<input type="number" id="chL" min="1" max="20" value="${+C.lvl || 1}"></label>
+      <label>Замок<select id="chLock">${LOCKS.map(([v, n]) => `<option value="${v}" ${+C.lock === v ? 'selected' : ''}>${n}</option>`).join('')}</select></label>
+      <label>Ловушка<select id="chTrap"><option value="">нет</option>${TRAPS.map((T) => `<option value="${T.id}" ${C.trap && C.trap.id === T.id ? 'selected' : ''}>${T.n}</option>`).join('')}</select></label></div>
+    <p class="muted small" id="chTrapInfo"></p>
+    <div class="loot-box mt"><div class="row between"><b>Содержимое</b><button id="chRe">🎲 По уровню</button></div><div id="chLoot"></div></div>
+    <div class="modal-actions">${k ? '<button class="danger" id="chDel">Убрать</button>' : ''}<button data-act="closeModal">Отмена</button>
+      ${k && !C.o ? '<button id="chOpen" title="Открыть за игроков: содержимое уйдёт в общую добычу">Открыть</button>' : ''}<button class="primary" id="chOk">Сохранить</button></div></div>`);
+  const trapInfo = () => { const T = makeTrap($('#chTrap').value, $('#chL').value); $('#chTrapInfo').textContent = T ? `Ловушка: спасбросок ${AB_N[T.abil]} СЛ ${T.dc}${T.f ? `, ${T.f} ${T.dtype}` : ''}${T.cond ? `, ${condName(T.cond).toLowerCase()}` : ''}. Найти и обезвредить — та же СЛ.` : ''; };
+  const draw = () => lootEdit($('#chLoot'), L);
+  $('#chTrap').onchange = trapInfo; $('#chL').oninput = trapInfo;
+  $('#chRe').onclick = () => { const g = genChest($('#chL').value); L.gp = g.gp; L.items = g.items; draw(); };
+  $('#chOk').onclick = () => {
+    const lvl = Math.max(1, Math.min(20, +$('#chL').value || 1)), tid = $('#chTrap').value, same = C.trap && C.trap.id === tid;
+    const key = k || R.push(ref(gpath('chests'))).key;
+    R.update(ref(gpath(`chests/${key}`)), { x: C.x, y: C.y, lvl, lock: +$('#chLock').value || 0, trap: makeTrap(tid, lvl),
+      ...(same ? {} : { tf: null, toff: null }), loot: { gp: +L.gp || 0, items: L.items } }).catch((err) => app.toast(`Не удалось: ${esc(err.code || err.message)}`));
+    app.closeModal();
+  };
+  if ($('#chDel')) $('#chDel').onclick = () => { if (app.confirm('Убрать сундук с поля?')) { R.remove(ref(gpath(`chests/${k}`))); app.closeModal(); } };
+  if ($('#chOpen')) $('#chOpen').onclick = () => { R.update(ref(gpath(`chests/${k}`)), { o: user.uid }); app.closeModal(); };
+  draw(); trapInfo();
+}
+// Игрок у сундука: осмотреть на ловушки, обезвредить, вскрыть или взломать замок, открыть
+function chestPlayer(k) {
+  const C = game.chests[k], mine = game.tokens[`pc_${user.uid}`], m = me();
+  if (!C || !m || !m.charId) return;
+  if (!mine || distFt(mine, { x: C.x, y: C.y, size: 1 }) > 5) { app.toast('Подойдите к сундуку вплотную'); return; }
+  if (C.o) { app.toast(`Сундук уже открыт${C.moved ? ' — содержимое у мастера в добыче' : ''}`); return; }
+  const locked = +C.lock && !C.lk, trapKnown = C.trap && C.tf && !C.toff, fight = inFight(), e = econ(`pc_${user.uid}`);
+  const needAct = fight && (!isTurnOf(`pc_${user.uid}`) || e.a);
+  app.openModal(`<div><h2>🧰 Сундук</h2>
+    <p class="small">${locked ? '🔒 Заперт.' : C.lk ? '🔓 Замок открыт.' : 'Не заперт.'}${trapKnown ? ` ⚠ Ловушка: ${esc(C.trap.n)}.` : C.tf ? ' Ловушек не найдено.' : ''}</p>
+    <div class="list">
+      ${!C.tf ? `<button class="atk-pick" data-chs="search" ${needAct ? 'disabled' : ''}><b>🔍 Осмотреть на ловушки</b><span class="muted small">Интеллект (Анализ)</span></button>` : ''}
+      ${trapKnown ? `<button class="atk-pick" data-chs="disarm" ${needAct ? 'disabled' : ''}><b>🛠 Обезвредить ловушку</b><span class="muted small">Ловкость + воровские инструменты, СЛ ${C.trap.dc}; провал на 5 и больше — ловушка сработает</span></button>` : ''}
+      ${locked ? `<button class="atk-pick" data-chs="pick" ${needAct ? 'disabled' : ''}><b>🔓 Вскрыть замок</b><span class="muted small">Ловкость + воровские инструменты, СЛ ${C.lock}</span></button>
+        <button class="atk-pick" data-chs="force" ${needAct ? 'disabled' : ''}><b>💪 Взломать</b><span class="muted small">Сила (Атлетика), СЛ ${+C.lock + 5}; шумно</span></button>` : ''}
+      <button class="atk-pick" data-chs="open" ${locked ? 'disabled' : ''}><b>📦 Открыть</b><span class="muted small">${locked ? 'сначала отоприте замок' : 'содержимое уйдёт в общую добычу группы'}</span></button></div>
+    ${fight ? `<p class="muted small">В бою осмотр, вскрытие, взлом и обезвреживание тратят действие${needAct ? ' — сейчас действия нет' : ''}.</p>` : ''}
+    <div class="modal-actions"><button data-act="closeModal">Закрыть</button></div></div>`);
+  const name = mine.name, upd = (o) => R.update(ref(gpath(`chests/${k}`)), o).catch((err) => app.toast(`Не удалось: ${esc(err.code || err.message)}`));
+  const spend = () => { if (fight) R.update(ref(gpath(`econ/pc_${user.uid}`)), { a: 1 }).catch(() => {}); };
+  const check = (o) => app.mute(() => app.check(m.charId, o));
+  const spring = () => {
+    const T = C.trap, d = T.f ? rollExpr(T.f) : null;
+    upd({ toff: true });
+    saveRequest(`pc_${user.uid}`, { n: `Ловушка: ${T.n}`, who: 'Сундук', abil: T.abil, dc: T.dc, ...(d ? { dmg: d.total, dmgDetail: d.detail, dtype: T.dtype, half: true } : {}),
+      ...(T.cond ? { fail: { n: T.n, ic: '⚠', cond: T.cond } } : {}) });
+    addLog({ kind: 'act', who: name, txt: `⚠ Срабатывает ловушка сундука: ${T.n}${d ? ` — ${d.total} ${T.dtype}` : ''} (спасбросок ${AB_N[T.abil]} СЛ ${T.dc})` });
+  };
+  $$('[data-chs]').forEach((b) => b.addEventListener('click', () => {
+    const a = b.dataset.chs;
+    app.closeModal();
+    if (a === 'search') {
+      // Без ловушки СЛ 10 — чтобы по броску нельзя было понять, есть ли она
+      const r = check({ skill: 'investigation', dc: C.trap ? C.trap.dc : 10, label: 'Осмотр сундука' });
+      if (!r) return;
+      spend();
+      if (r.ok) upd({ tf: true });
+      app.toast(r.ok ? (C.trap ? `⚠ Найдена ловушка: ${esc(C.trap.n)}` : 'Ловушек нет') : 'Ничего подозрительного не заметно…', r.ok && C.trap ? 'crit' : '');
+      addLog({ kind: 'act', who: name, txt: `🔍 осматривает сундук: ${r.total}${r.ok && C.trap ? ' — находит ловушку' : ''}` });
+    } else if (a === 'disarm') {
+      const r = check({ abil: 'dex', tool: 'воровск', dc: C.trap.dc, label: `Обезвредить: ${C.trap.n}` });
+      if (!r) return;
+      spend();
+      if (r.ok) { upd({ toff: true }); app.toast('🛠 Ловушка обезврежена', 'crit'); }
+      else if (C.trap.dc - r.total >= 5) spring();
+      else app.toast('Не вышло — можно попробовать ещё раз');
+      addLog({ kind: 'act', who: name, txt: `🛠 обезвреживает ловушку: ${r.total} — ${r.ok ? 'успех' : C.trap.dc - r.total >= 5 ? 'ловушка срабатывает' : 'не вышло'}` });
+    } else if (a === 'pick' || a === 'force') {
+      const dc = +C.lock + (a === 'force' ? 5 : 0);
+      const r = a === 'pick' ? check({ abil: 'dex', tool: 'воровск', dc, label: 'Вскрыть замок' }) : check({ skill: 'athletics', dc, label: 'Взломать сундук' });
+      if (!r) return;
+      spend();
+      if (r.ok) upd({ lk: true });
+      app.toast(r.ok ? '🔓 Замок открыт' : 'Замок не поддаётся', r.ok ? 'crit' : '');
+      addLog({ kind: 'act', who: name, txt: `${a === 'pick' ? '🔓 вскрывает замок' : '💪 взламывает сундук'}: ${r.total} — ${r.ok ? 'открыто' : 'не вышло'}` });
+    } else if (a === 'open') {
+      if (C.trap && !C.toff) spring();
+      upd({ o: user.uid });
+      app.toast(`📦 Внутри: ${esc(lootText(C.loot))}`, 'crit');
+    }
+  }));
+}
+// Браузер мастера: содержимое открытого сундука — в общую добычу
+const chestMoving = new Set();
+function syncChests() {
+  // Ждём участников и котёл: имя открывшего и текущее золото
+  if (!game || !isDM() || !Object.keys(game.members || {}).length || game.loot === undefined) return;
+  Object.entries(game.chests || {}).forEach(([k, C]) => {
+    if (C.o && !C.moved) { if (chestMoving.has(k)) return; chestMoving.add(k); }
+    if (!C.o || C.moved) return;
+    const L = C.loot || {}, upd = { [`chests/${k}/moved`]: true, 'loot/gp': (+(game.loot || {}).gp || 0) + (+L.gp || 0) };
+    (L.items || []).forEach((it) => { upd[`loot/items/${R.push(ref(gpath('loot'))).key}`] = it; });
+    R.update(ref(gpath()), upd).catch(() => {});
+    const who = C.o === user.uid ? 'Мастер' : ((game.members[C.o] || {}).char || {}).name || 'Игрок';
+    addLog({ kind: 'sys', txt: `🧰 ${who} открывает сундук: ${lootText(L)} — в общей добыче` });
+  });
 }
 // Игрок: выданное мастером — в лист (золото, предметы, магические предметы с бонусами)
 const lootDone = new Set();
@@ -2405,12 +2684,14 @@ function monFromToken(t) {
   const size = ({ 1: 'Средний', 2: 'Большой', 3: 'Огромный', 4: 'Громадный' })[t.size || 1] || 'Средний';
   return { n: t.name, e: t.mon || '', cr: t.cr != null ? String(t.cr) : '0', size, ac: +t.ac || 10, hp: String(t.hpMax || 1), speed: t.spd || String(t.speed || 30),
     ab: t.ab || [10, 10, 10, 10, 10, 10], sv: t.sv || {}, multi: +t.multi || 1, atk: t.atk || [], x: t.tr || '', acts: t.acts || [],
-    leg: +t.leg || 0, lr: +t.lrMax || +t.lr || 0, cs: +t.cs || 0, sdc: +t.sdc || 0, xp: xpOf(t) };
+    leg: +t.leg || 0, lr: +t.lrMax || +t.lr || 0, cs: +t.cs || 0, sdc: +t.sdc || 0, xp: xpOf(t), type: monType(t) };
 }
 // Редактор существа: tokenId — правка статблока существа на поле, иначе — своё существо в бестиарий (встроенное заменяется своей копией)
 function monEditor(src, tokenId, done) {
   const M = JSON.parse(JSON.stringify(src || { n: 'Новое существо', cr: '1', size: 'Средний', ac: 12, hp: '4d8', speed: '30', ab: [10, 10, 10, 10, 10, 10], sv: {}, multi: 1, atk: [], acts: [], x: '' }));
   const atk = M.atk || [], acts = M.acts || [], ab = M.ab || [10, 10, 10, 10, 10, 10];
+  // Добыча своего существа: всегда при нём (fixed, gp) и случайная по ПО и виду (rnd); сокровищница — у боссов
+  const LT = { gp: 0, rnd: true, ...(M.loot || {}) }; LT.items = (LT.fixed || []).map((x) => ({ ...x }));
   const opt = (list, v, names) => list.map((k) => `<option value="${k}" ${String(v) === String(k) ? 'selected' : ''}>${names ? names(k) : k}</option>`).join('');
   const abOpt = (v) => `<option value="">—</option>${opt(ABK, v, (k) => ABS[k])}`;
   app.openModal(`<div id="meBox"><h2>✎ ${tokenId ? `Статблок: ${esc(M.n)}` : src && src.e ? `Существо: ${esc(M.n)}` : 'Новое существо'}</h2>
@@ -2429,6 +2710,12 @@ function monEditor(src, tokenId, done) {
     <div class="leg-grid mt"><label>👑 Легенд. действий<input type="number" min="0" max="5" id="meLeg" value="${+M.leg || 0}"></label><label>Легенд. сопротивл.<input type="number" min="0" max="5" id="meLr" value="${+M.lr || 0}"></label>
       <label>🚫 Контрзаклинаний<input type="number" min="0" max="9" id="meCs" value="${+M.cs || 0}"></label><label>СЛ заклинаний<input type="number" min="0" max="30" id="meSdc" value="${+M.sdc || 0}"></label></div>
     <label class="mt">Особенности<textarea id="meX" rows="3">${esc(M.x || '')}</textarea></label>
+    <div class="form-grid mt"><label>Вид существа<select id="meType">${opt(Object.keys(TYPE_N), M.type || 'monstrosity', (k) => TYPE_N[k])}</select></label>
+      ${tokenId ? '' : `<label class="check"><input type="checkbox" id="meHoard" ${M.hoard ? 'checked' : ''}> Сокровищница (босс, логово)</label>`}</div>
+    ${tokenId ? '<p class="muted small">Добыча этого существа — в его карточке («💰 Добыча» → ✎).</p>' : `<h3 class="mt">Добыча</h3>
+      <label class="check"><input type="checkbox" id="meLRnd" ${LT.rnd !== false ? 'checked' : ''}> Случайная добыча по опасности и виду (бросается, когда существо появляется)</label>
+      <div class="muted small mt">Всегда при нём:</div><div id="meLoot" class="loot-box"></div>
+      <div class="row gap mt"><button id="meLSug">🎲 Предложить по ПО</button></div><div id="meLSugBox" class="list mt"></div>`}
     ${tokenId ? '<label class="check mt"><input type="checkbox" id="meToBest"> Сохранить и в моё бестиарий</label>' : ''}
     <div class="modal-actions"><button data-act="closeModal">Отмена</button><button class="primary" id="meOk">Сохранить</button></div></div>`);
   const drawAtk = () => {
@@ -2470,6 +2757,22 @@ function monEditor(src, tokenId, done) {
   $('#meAtkAdd').onclick = () => { atk.push({ n: 'Атака', hit: 4, dmg: '1d6+2', type: 'рубящий', reach: 5, range: '' }); drawAtk(); };
   $('#meActAdd').onclick = () => { acts.push({ n: 'Дыхание', shape: 'cone', size: 15, save: 'dex', dc: 13, f: '6d6', dtype: 'огнём', half: true, rech: 5 }); drawAct(); };
   drawAtk(); drawAct();
+  if (!tokenId) {
+    lootEdit($('#meLoot'), LT);
+    // Предложение по ПО и виду: несколько бросков добычи — отметить нужное и добавить в «всегда при нём»
+    $('#meLSug').onclick = () => {
+      const probe = { cr: $('#meCr').value, mt: $('#meType').value, atk };
+      const rolls = [genLoot(probe), genLoot(probe), genLoot(probe), genHoard(tierCR(probe.cr))], sug = rolls.flatMap((r) => r.items).filter((it, i, a) => it && a.findIndex((x) => x && x.n === it.n) === i).map((it) => ({ ...it, qty: 1 })).slice(0, 14);
+      const gps = rolls.slice(0, 3).map((r) => r.gp).sort((a, b) => a - b);
+      $('#meLSugBox').innerHTML = `<p class="muted small">Монеты по ПО ${esc(probe.cr)} (${TYPE_N[probe.mt]}): обычно ${gps[0]}–${gps[2]} зм — случайная добыча бросит их сама.</p>
+        ${sug.map((it, i) => `<label class="check"><input type="checkbox" data-sg="${i}"> ${esc(it.n)}${it.r >= 1 ? ` <span class="muted small">${RAR_N[it.r]}</span>` : ''}</label>`).join('') || '<p class="muted small">Такое существо ничего не носит — добавьте предметы вручную.</p>'}
+        ${sug.length ? '<button id="meLSugAdd">＋ Добавить отмеченное</button>' : ''}`;
+      if ($('#meLSugAdd')) $('#meLSugAdd').onclick = () => {
+        LT.items = mergeLoot([...LT.items, ...$$('[data-sg]').filter((x) => x.checked).map((x) => sug[+x.dataset.sg])]);
+        lootEdit($('#meLoot'), LT); $('#meLSugBox').innerHTML = '';
+      };
+    };
+  }
   $('#meOk').onclick = () => {
     const abv = ABK.map((k, i) => +$(`[data-meab="${i}"]`).value || 10), svAll = Object.fromEntries(ABK.map((k) => [k, +$(`[data-mesv="${k}"]`).value || 0]));
     // Эффект атаки — только если выбрано состояние; пустые поля не сохраняются (база не принимает undefined)
@@ -2483,7 +2786,13 @@ function monEditor(src, tokenId, done) {
     const mon = { n: $('#meN').value.trim() || 'Существо', e: (src && src.e) || `custom_${Date.now().toString(36)}`, cr: $('#meCr').value, size: $('#meSz').value, ac: +$('#meAc').value || 10, hp: hpTxt,
       speed: $('#meSp').value.trim() || '30', ab: abv, sv: Object.fromEntries(ABK.filter((k, i) => svAll[k] !== abMod(abv[i])).map((k) => [k, svAll[k]])), multi: Math.max(1, +$('#meMu').value || 1),
       atk: cleanAtk, x: $('#meX').value.trim(), acts: cleanActs, ...(leg ? { leg } : {}), ...(lr ? { lr } : {}), ...(cs ? { cs } : {}), ...(sdc ? { sdc } : {}) };
-    if (!tokenId) { mon.cat = $('#meCat').value || ''; if ($('#meBeast').checked) mon.beast = true; }
+    mon.type = $('#meType').value || 'monstrosity';
+    if (!tokenId) {
+      mon.cat = $('#meCat').value || '';
+      if ($('#meBeast').checked) mon.beast = true;
+      if ($('#meHoard').checked) mon.hoard = true;
+      mon.loot = { fixed: LT.items, gp: +LT.gp || 0, rnd: $('#meLRnd').checked };
+    }
     const toBest = !tokenId || ($('#meToBest') || {}).checked;
     if (toBest) {
       const list = customMons().filter((m) => m.e !== mon.e);
@@ -2495,7 +2804,7 @@ function monEditor(src, tokenId, done) {
       const hpMax = Math.max(1, /d/i.test(hpTxt) ? avgExpr(hpTxt) : +hpTxt || 1);
       R.update(ref(gpath(`tokens/${tokenId}`)), { name: mon.n, cr: mon.cr, ac: mon.ac, hpMax, hp: +t.hp >= +t.hpMax ? hpMax : Math.min(+t.hp || 0, hpMax), speed: parseInt(mon.speed) || 30, spd: mon.speed,
         size: SIZE_N[mon.size] || 1, ab: abv, sv: svAll, multi: mon.multi, atk: cleanAtk, acts: cleanActs, tr: mon.x, leg: leg || null, lr: lr || null, lrMax: lr || null, cs: cs || null, sdc: sdc || null,
-        xp: Math.max(0, +$('#meXp').value || 0) }).catch((err) => app.toast(`Не удалось: ${esc(err.code || err.message)}`));
+        xp: Math.max(0, +$('#meXp').value || 0), mt: mon.type }).catch((err) => app.toast(`Не удалось: ${esc(err.code || err.message)}`));
     }
     app.closeModal();
     app.toast(tokenId ? `✎ Статблок «${esc(mon.n)}» обновлён${toBest ? ' и сохранён в бестиарий' : ''}` : `🐉 «${esc(mon.n)}» в вашем бестиарии`);
@@ -2958,6 +3267,7 @@ function renderTools() {
       + `<button class="${tool === 'encPlace' ? 'on' : ''}" data-tbl="enc" title="Собрать столкновение из бестиария, оценить сложность для группы и поставить его на поле">⚔ Столкновение</button>`
       + t('door', '🚪 Дверь', 'Поставить или убрать дверь. Открыть — нажатием с «Двигать», запереть — с Shift')
       + t('light', '💡 Свет', 'Поставить или убрать источник света (20 фт яркого + 20 тусклого)')
+      + t('chest', '🧰 Сундук', 'Поставить сундук с добычей по уровню, замком и ловушкой; нажатие на сундук — изменить')
       + t('area', '◯ Область', 'Область со спасброском: дыхание, ловушка… Конус и линия — от выделенного существа')
       + `<button class="${freeMove ? 'on' : ''}" data-tbl="freeMove" title="Двигать любые токены без учёта хода и скорости (толчок, перенос тела). То же — перетаскивание с Shift">🔓 Свободно</button>`
       + `<button data-tbl="mapCfg" title="Карта-подложка, размер поля, туман войны">🗺 Карта и туман</button>`
@@ -3108,6 +3418,7 @@ function renderSide() {
       <div class="row gap wrap mt"><input type="number" id="tblDmg" min="0" placeholder="0" style="width:70px"><button data-tbl="npcDmg">− Урон</button><button data-tbl="npcHeal">＋ Лечение</button></div>
       <div class="row gap wrap mt"><label class="check"><input type="checkbox" data-tbl-hidden ${t.hidden ? 'checked' : ''}> Скрыт от игроков</label>
       <button data-tbl="npcCopy">⧉ Копия</button><button data-tbl="npcInit">🎲 В инициативу</button><button data-tbl="npcEdit" title="Изменить характеристики, атаки и способности этого существа">✎ Статблок</button></div>
+      <div class="loot-box mt"><div class="row between"><b>💰 Добыча${t.looted ? ' (обыскан)' : ''}</b><button data-tbl="lootTok" title="Посмотреть, перебросить или изменить">✎</button></div><div class="small">${esc(lootText(t.loot))}</div></div>
       <div class="muted small mt">Бонусы спасбросков (бросаются автоматически):</div>
       <div class="sv-grid">${Object.entries(AB_N).map(([k]) => `<label>${{ str: 'СИЛ', dex: 'ЛОВ', con: 'ТЕЛ', int: 'ИНТ', wis: 'МДР', cha: 'ХАР' }[k]}<input type="number" data-tbl-sv="${k}" value="${+((t.sv || {})[k]) || 0}"></label>`).join('')}</div>` : ''}
     ${t.kind === 'pc' && mine ? `<p class="muted small">${t.comp ? 'Хиты спутника — в его карточке в листе (вкладка «Бой»).' : 'Хиты и состояния меняются в вашем листе — на поле они обновятся сами.'}</p>` : ''}
@@ -3167,6 +3478,7 @@ async function onClick(e) {
     else if (a === 'xpGive') xpDialog(false);
     else if (a === 'enc') encDialog();
     else if (a === 'bestiary') bestiaryDialog();
+    else if (a === 'lootTok') tokenLootDialog(selId);
     else if (a === 'handouts') handoutsDialog();
     else if (a === 'npcEdit') { const t = game.tokens[selId]; if (t) monEditor(monFromToken(t), selId); }
     else if (a === 'loot') lootDialog();

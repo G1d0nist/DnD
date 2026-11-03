@@ -416,7 +416,30 @@ BESTIARY.push(
 const MONX = { 'Aboleth': { leg: 3, lr: 3 }, 'Adult Red Dragon': { leg: 3, lr: 3 }, 'Mage': { cs: 3, sdc: 14 }, 'Priest': { sdc: 13 },
   'Archmage': { cs: 3, sdc: 17 }, 'Druid': { sdc: 12 }, 'Spirit Naga': { sdc: 14 }, 'Lich': { leg: 3, lr: 3, cs: 3, sdc: 20 }, 'Vampire': { leg: 3, lr: 3 },
   'Mummy Lord': { leg: 3, lr: 3, sdc: 17 }, 'Unicorn': { leg: 3 }, 'Solar': { leg: 3 }, 'Kraken': { leg: 3, lr: 3 }, 'Tarrasque': { leg: 3, lr: 3 }, 'Pit Fiend': { lr: 4 } };
+// Вид существа — от него зависит добыча (звери и слизи ничего не носят, гуманоиды — снаряжение и кошелёк, у драконов — сокровища)
+const MTYPE = {
+  undead: ['Skeleton', 'Zombie', 'Ghoul', 'Wight', 'Shadow', 'Will-o\'-Wisp', 'Specter', 'Ghast', 'Ogre Zombie', 'Mummy', 'Ghost', 'Banshee', 'Vampire Spawn', 'Wraith', 'Vampire', 'Mummy Lord', 'Lich'],
+  construct: ['Homunculus', 'Flying Sword', 'Animated Armor', 'Shield Guardian', 'Clay Golem', 'Stone Golem', 'Iron Golem', 'Flesh Golem'],
+  ooze: ['Gelatinous Cube', 'Black Pudding', 'Gray Ooze', 'Ochre Jelly'],
+  plant: ['Shambling Mound', 'Treant'],
+  elemental: ['Air Elemental', 'Earth Elemental', 'Fire Elemental', 'Water Elemental', 'Azer', 'Salamander', 'Xorn', 'Gargoyle', 'Invisible Stalker', 'Djinni', 'Efreeti'],
+  fiend: ['Lemure', 'Dretch', 'Imp', 'Quasit', 'Bearded Devil', 'Nightmare', 'Succubus', 'Barbed Devil', 'Night Hag', 'Vrock', 'Chain Devil', 'Hezrou', 'Bone Devil', 'Glabrezu',
+    'Horned Devil', 'Erinyes', 'Rakshasa', 'Nalfeshnee', 'Ice Devil', 'Marilith', 'Balor', 'Pit Fiend', 'Hell Hound'],
+  celestial: ['Couatl', 'Unicorn', 'Deva', 'Planetar', 'Solar', 'Pegasus'],
+  fey: ['Sprite', 'Satyr', 'Dryad', 'Blink Dog', 'Green Hag', 'Sea Hag'],
+  giant: ['Ogre', 'Troll', 'Hill Giant', 'Stone Giant', 'Frost Giant', 'Fire Giant', 'Cloud Giant', 'Storm Giant', 'Ettin', 'Oni'],
+  aberration: ['Aboleth', 'Gibbering Mouther', 'Cloaker', 'Chuul', 'Otyugh'],
+  humanoid: ['Kobold', 'Bandit', 'Cultist', 'Guard', 'Goblin', 'Orc', 'Hobgoblin', 'Gnoll', 'Thug', 'Bugbear', 'Goblin Boss', 'Bandit Captain', 'Veteran', 'Knight', 'Merfolk',
+    'Drow', 'Lizardfolk', 'Sahuagin', 'Hobgoblin Captain', 'Orc War Chief', 'Werewolf', 'Wererat', 'Wereboar', 'Weretiger', 'Werebear'],
+  beast: ['Swarm of Rats', 'Swarm of Bats', 'Swarm of Insects', 'Stirge'],
+};
 // Взрослые и древние драконы: три легендарных действия и три Легендарных сопротивления
 BESTIARY.forEach((m) => { if (/^(Adult|Ancient) .* Dragon$/.test(m.e)) Object.assign(m, { leg: 3, lr: 3 }); });
 Object.entries(MONX).forEach(([e, x]) => { const m = BESTIARY.find((y) => y.e === e); if (m) Object.assign(m, x); });
 BESTIARY.forEach((m) => (m.acts || []).forEach((a) => { if (/ячейка (\d)/.test(a.n)) a.sp = +a.n.match(/ячейка (\d)/)[1]; }));
+BESTIARY.forEach((m) => {
+  const t = Object.keys(MTYPE).find((k) => MTYPE[k].includes(m.e));
+  m.type = t || (m.beast ? 'beast' : / Dragon|Dragon /.test(m.e) || m.e.endsWith('Dragon') ? 'dragon' : m.cat === 'npc' ? 'humanoid' : 'monstrosity');
+  // Существа с логовом и легендарными действиями охраняют сокровищницу
+  if (m.leg && m.type !== 'celestial') m.hoard = true;
+});

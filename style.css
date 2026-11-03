@@ -574,3 +574,11 @@ button.stat:hover { border-color: var(--gold); }
 /* Подсказка пустой вкладки «Ход» — только на телефоне */
 .tbl-side > #tblMtHint { display: none; }
 @media (max-width: 760px) { .tbl-side[data-mt="turn"] > #tblMtHint:not([hidden]) { display: block; } }
+/* Добыча и сундуки */
+.loot-box { padding: 8px 10px; border-radius: 8px; border: 1px solid var(--line); background: var(--bg2); }
+.loot-box .enc-row { background: var(--card); }
+.pick-list { display: grid; gap: 3px; max-height: 220px; overflow-y: auto; margin-top: 6px; }
+.pick-row { display: flex; align-items: center; gap: 6px; padding: 4px 8px; border-radius: 6px; background: var(--card); border: 1px solid var(--line); font-size: 13px; }
+.pick-row > span { flex: 1; min-width: 0; }
+.pick-row select { width: auto; max-width: 150px; padding: 2px 4px; font-size: 12px; }
+.tbl-board[data-tool="chest"] { cursor: crosshair; }
