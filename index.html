@@ -336,22 +336,24 @@
       <div class="card tbl-bar">
         <div class="row gap wrap"><b id="tblName"></b><span class="badge" id="tblCode" title="Код приглашения"></span><button data-tbl="copy" title="Скопировать ссылку-приглашение">🔗 Пригласить</button></div>
         <div class="row gap wrap tbl-tools" id="tblTools"></div>
-        <div class="row gap"><button data-tbl="zoomOut" title="Отдалить">−</button><span id="tblZoom" class="muted small"></span><button data-tbl="zoomIn" title="Приблизить">＋</button><button data-tbl="leave" class="danger" id="tblLeave"></button></div>
+        <div class="row gap"><button data-tbl="zoomOut" title="Отдалить">−</button><span id="tblZoom" class="muted small"></span><button data-tbl="zoomIn" title="Приблизить">＋</button><button data-tbl="zoomFit" title="Всё поле целиком">⤢</button><button data-tbl="leave" class="danger" id="tblLeave"></button></div>
       </div>
       <div class="tbl-main">
         <div class="tbl-wrap" id="tblWrap"><div class="tbl-sizer" id="tblSizer"><div class="tbl-board" id="tblBoard">
           <canvas id="tblTerrain"></canvas><canvas id="tblAreas"></canvas><canvas id="tblRange"></canvas><div id="tblTokens"></div><canvas id="tblFog"></canvas><canvas id="tblFxCv"></canvas><div id="tblFx"></div><div id="tblHint" class="tbl-hint" hidden></div>
         </div></div></div>
-        <aside class="tbl-side">
-          <div class="aim-bar" id="tblCastBar" hidden></div>
-          <div class="card tbl-turn" id="tblTurn" hidden></div>
-          <div class="card" id="tblSaves" hidden></div>
-          <div class="card"><div class="row between"><h3>Инициатива</h3><span class="badge" id="tblRound"></span></div><div id="tblInit"></div></div>
-          <div class="card" id="tblSel" hidden></div>
-          <div class="card"><div class="row between"><h3>Журнал</h3><button class="ghost small" data-tbl="logClear" id="tblLogClear" hidden>очистить</button></div><div id="tblLog" class="tbl-log"></div>
+        <aside class="tbl-side" id="tblSide" data-mt="turn">
+          <nav class="tbl-mtabs" id="tblMtabs"><button data-mt="turn" class="on">⚔ Ход</button><button data-mt="init">🎲 Очередь</button><button data-mt="log">📜 Журнал<span class="mt-badge" id="tblLogBadge" hidden></span></button><button data-mt="people">👥 Игроки</button></nav>
+          <div class="aim-bar" id="tblCastBar" data-mt="turn" hidden></div>
+          <div class="card tbl-turn" id="tblTurn" data-mt="turn" hidden></div>
+          <div class="card" id="tblSaves" data-mt="turn" hidden></div>
+          <div class="card" data-mt="init"><div class="row between"><h3>Инициатива</h3><span class="badge" id="tblRound"></span></div><div id="tblInit"></div></div>
+          <div class="card" id="tblSel" data-mt="turn" hidden></div>
+          <p class="card muted small" id="tblMtHint" data-mt="turn" hidden>Вне боя здесь пусто: нажмите на фишку на поле, чтобы увидеть её карточку. Инициатива — во вкладке «Очередь».</p>
+          <div class="card" data-mt="log"><div class="row between"><h3>Журнал</h3><button class="ghost small" data-tbl="logClear" id="tblLogClear" hidden>очистить</button></div><div id="tblLog" class="tbl-log"></div>
             <div class="chat-row mt"><input id="tblChat" maxlength="400" placeholder="Сообщение · /r 1d20+5 — бросок"><button data-tbl="chatSend" title="Отправить">➤</button></div>
             <div id="tblChatOpts" class="mt"></div></div>
-          <div class="card"><h3>Участники</h3><div id="tblMembers"></div></div>
+          <div class="card" data-mt="people"><h3>Участники</h3><div id="tblMembers"></div></div>
         </aside>
       </div>
     </div>

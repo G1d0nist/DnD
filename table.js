@@ -28,6 +28,9 @@ let ruler = null; // линейка: { x0, y0, x1, y1 } — клетки
 const openedAt = Date.now(); // уведомления — только о событиях после открытия страницы
 let drag = null; // перетаскивание токена / панорама / рисование
 const ls = { get: (k) => { try { return localStorage.getItem(k); } catch (e) { return null; } }, set: (k, v) => { try { localStorage.setItem(k, v); } catch (e) { /* приватный режим */ } } };
+let logSeen = +ls.get('dnd55-logseen') || 0, zoomInit = false; // телефон: прочитанный журнал, начальный масштаб
+const touchPts = new Map(); // касания пальцев по полю
+let pinch = null; // масштаб двумя пальцами: { d, z, mx, my }
 const ref = (p) => R.ref(db, p);
 const gpath = (p = '') => `games/${game.id}${p ? '/' + p : ''}`;
 const isDM = () => !!(game && user && game.meta && game.meta.dm === user.uid);
@@ -102,7 +105,9 @@ function subscribe(gid, code) {
   on('scenes', (v) => { game.scenes = v || {}; });
   on('rest', (v) => { game.rest = v; handleRest(); });
   on(`xpAward/${user.uid}`, (v) => { game.award = v; applyXp(); });
-  on('members', (v) => { game.members = v || {}; syncEffects(); applyXp(); handleRest(); });
+  on('loot', (v) => { game.loot = v || {}; });
+  on(`lootAward/${user.uid}`, (v) => { game.lootAw = v; applyLoot(); });
+  on('members', (v) => { game.members = v || {}; syncEffects(); applyXp(); applyLoot(); handleRest(); });
   on('tokens', (v) => { game.tokens = v || {}; cleanupInit(); syncEffects(); awardKills(); });
   on('map', (v) => { game.map = v || {}; drawTerrain(); });
   on('init', (v) => { game.init = v; checkMyTurn(); checkNpcTurn(); cleanupInit(); syncEffects(); });
@@ -524,7 +529,7 @@ function hint(text, e) {
   h.style.left = p.px + 14 + 'px'; h.style.top = p.py - 28 + 'px';
 }
 function onDown(e) {
-  if (!game || e.button > 0) return;
+  if (!game || e.button > 0 || pinch || touchPts.size > 1) return;
   const tokEl = e.target.closest('[data-tok]'), p = cellAt(e);
   // «Переставить меня»: нажатие на клетку ставит персонажа; нажатие на свой токен — сразу обычное перетаскивание
   if (tool === 'place') {
@@ -537,6 +542,7 @@ function onDown(e) {
     }
   }
   if (tool === 'enemy') { newEnemyDialog(p.x, p.y); return; }
+  if (tool === 'encPlace') { tool = 'move'; renderTools(); placeEncounter(p.x, p.y); return; }
   if (tool === 'placeComp') { placeCompanion(p.x, p.y); tool = 'move'; renderTools(); return; }
   // Размещение области: нажатие фиксирует её; для заклинания на одну цель — нажатие на существо
   if (cast) {
@@ -580,7 +586,7 @@ function onDown(e) {
     drawRuler();
   } else if (tokEl) {
     const id = tokEl.dataset.tok, t = game.tokens[id];
-    selId = id; renderSide(); renderTokens();
+    selId = id; renderSide(); renderTokens(); mtab('turn', true);
     if (!t || !canMove(t)) return;
     // Принудительное перемещение (толчок, перенос тела) — только мастер: с Shift или в режиме «Свободно»
     const speed = speedOf(t), dm = isDM(), forced = dm && (e.shiftKey || freeMove);
@@ -803,9 +809,7 @@ function newEnemyDialog(x, y, base) {
     const n = Math.max(1, Math.min(12, +$('#nC').value || 1)), size = +$('#nZ').value || 1, upd = {}, name = $('#nN').value.trim() || 'Существо';
     // Статблок: из бестиария, из копируемого существа или одна своя атака
     let stats;
-    if (mon) stats = { mon: mon.e, cr: mon.cr, ab: mon.ab, atk: mon.atk, acts: mon.acts || [], multi: mon.multi || 1, tr: mon.x || '', spd: mon.speed,
-      sv: Object.fromEntries(ABK.map((k, i) => [k, mon.sv[k] != null ? mon.sv[k] : abMod(mon.ab[i])])),
-      ...['leg', 'cs', 'sdc'].reduce((o, k) => (mon[k] ? { ...o, [k]: mon[k] } : o), {}), ...(mon.lr ? { lr: mon.lr, lrMax: mon.lr } : {}) };
+    if (mon) stats = monStats(mon);
     else if (base) stats = { ...['mon', 'cr', 'ab', 'atk', 'acts', 'multi', 'tr', 'spd', 'sv', 'img', 'leg', 'lr', 'lrMax', 'cs', 'sdc'].reduce((o, k) => (base[k] != null ? { ...o, [k]: base[k] } : o), {}) };
     else {
       const an = $('#nAn').value.trim();
@@ -821,6 +825,127 @@ function newEnemyDialog(x, y, base) {
     tool = 'move'; renderTools();
   };
 }
+// Статблок существа из бестиария для токена
+function monStats(mon) {
+  return { mon: mon.e, cr: mon.cr, ab: mon.ab, atk: mon.atk, acts: mon.acts || [], multi: mon.multi || 1, tr: mon.x || '', spd: mon.speed,
+    sv: Object.fromEntries(ABK.map((k, i) => [k, mon.sv[k] != null ? mon.sv[k] : abMod(mon.ab[i])])),
+    ...['leg', 'cs', 'sdc'].reduce((o, k) => (mon[k] ? { ...o, [k]: mon[k] } : o), {}), ...(mon.lr ? { lr: mon.lr, lrMax: mon.lr } : {}) };
+}
+
+/* ---------- Конструктор столкновений ---------- */
+// Бюджет опыта на персонажа по уровню (DMG 2024): низкая, умеренная, высокая сложность. Множителя за число врагов в 2024 нет
+const ENC_BUDGET = [null, [50, 75, 100], [100, 150, 200], [150, 225, 400], [250, 375, 500], [500, 750, 1100], [600, 1000, 1400], [750, 1300, 1700],
+  [1000, 1700, 2100], [1300, 2000, 2600], [1600, 2300, 3100], [1900, 2900, 4100], [2200, 3700, 4700], [2600, 4200, 5400], [2900, 4900, 6200],
+  [3300, 5400, 7800], [3800, 6100, 9800], [4500, 7200, 11700], [5000, 8700, 14200], [5500, 10700, 17200], [6400, 13200, 22000]];
+const ENC_N = ['Низкая', 'Умеренная', 'Высокая'];
+const crXp = (cr) => (typeof XP_CR !== 'undefined' ? XP_CR[cr] || 0 : 0);
+// Черновик столкновения хранится на устройстве мастера: { list: [{ e, n }], party: { uid: { on, lvl } }, hid, roll, init }
+let enc = null;
+function encLoad() {
+  if (enc) return enc;
+  try { enc = JSON.parse(ls.get('dnd55-enc')) || null; } catch (e) { enc = null; }
+  enc = { list: [], party: {}, hid: false, roll: false, init: true, ...(enc || {}) };
+  return enc;
+}
+const encSave = () => ls.set('dnd55-enc', JSON.stringify(enc));
+function encDialog() {
+  encLoad();
+  const players = Object.entries(game.members || {}).filter(([, m]) => m.role !== 'dm');
+  app.openModal(`<h2>⚔ Конструктор столкновения</h2>
+    <div class="muted small">Группа (уровни можно поправить):</div>
+    <div class="enc-party">${players.map(([uid, m]) => { const p = enc.party[uid] || {}; return `<label class="check"><input type="checkbox" data-encp="${uid}" ${p.on === false ? '' : 'checked'}>
+      ${esc((m.char || {}).name || m.name)}<input type="number" min="1" max="20" data-encl="${uid}" value="${p.lvl || (m.char || {}).lvl || 1}"></label>`; }).join('') || '<p class="muted small">Игроков ещё нет — добавьте уровни вручную:</p>'}
+      <label class="check">Ещё персонажей<input type="number" min="0" max="8" id="encExtraN" value="${enc.extraN || 0}"> ур.<input type="number" min="1" max="20" id="encExtraL" value="${enc.extraL || 1}"></label></div>
+    <div id="encMeter" class="enc-meter mt"></div>
+    <div id="encList" class="list mt"></div>
+    <label class="mt">Бестиарий<input id="encFind" placeholder="Поиск: гоблин, дракон, 1/4…" autocomplete="off"></label><div id="encMon" class="mon-list"></div>
+    <div class="row gap wrap mt"><label class="check"><input type="checkbox" id="encHid" ${enc.hid ? 'checked' : ''}> Скрыты от игроков</label>
+      <label class="check"><input type="checkbox" id="encRoll" ${enc.roll ? 'checked' : ''}> Бросить хиты</label>
+      <label class="check"><input type="checkbox" id="encInit" ${enc.init ? 'checked' : ''}> Сразу в инициативу</label></div>
+    <div class="modal-actions"><button data-act="closeModal">Закрыть</button><button id="encClear">Очистить</button><button class="primary" id="encPut">📍 Поставить на поле</button></div>`);
+  const party = () => {
+    const lv = players.filter(([uid]) => ($(`[data-encp="${uid}"]`) || {}).checked).map(([uid]) => Math.max(1, Math.min(20, +$(`[data-encl="${uid}"]`).value || 1)));
+    const n = Math.max(0, +$('#encExtraN').value || 0), l = Math.max(1, Math.min(20, +$('#encExtraL').value || 1));
+    return [...lv, ...Array(n).fill(l)];
+  };
+  const draw = () => {
+    const lv = party(), budget = [0, 1, 2].map((i) => lv.reduce((s, l) => s + ENC_BUDGET[l][i], 0));
+    const mons = enc.list.map((x) => ({ ...x, m: BEST().find((m) => m.e === x.e) })).filter((x) => x.m);
+    const xp = mons.reduce((s, x) => s + crXp(x.m.cr) * x.n, 0), lvl = lv.length ? Math.round(lv.reduce((a, b) => a + b, 0) / lv.length) : 1;
+    const lvlIdx = budget.findIndex((b) => xp <= b), max = Math.max(budget[2] * 1.3, xp, 1);
+    const label = !xp ? '—' : lvlIdx < 0 ? 'Выше высокой — смертельно опасно' : ENC_N[lvlIdx];
+    $('#encMeter').innerHTML = `<div class="row between"><b>Опыт врагов: ${xp}</b><span class="enc-lbl d${lvlIdx < 0 ? 3 : lvlIdx}">${label}</span></div>
+      <div class="enc-bar"><div style="width:${Math.min(100, (xp / max) * 100)}%" class="d${lvlIdx < 0 ? 3 : lvlIdx}"></div>${budget.map((b, i) => `<span class="enc-mark" style="left:${(b / max) * 100}%" title="${ENC_N[i]}: ${b}"></span>`).join('')}</div>
+      <div class="muted small">Бюджет группы (${lv.length} перс.): ${budget.map((b, i) => `${ENC_N[i].toLowerCase()} ${b}`).join(' · ')}${mons.some((x) => crNum(x.m.cr) > lvl) ? ` · <span class="warn-text">⚠ существо с ПО выше среднего уровня группы (${lvl}) может убить персонажа одним ударом</span>` : ''}</div>`;
+    $('#encList').innerHTML = mons.map((x, i) => `<div class="enc-row"><span><b>${esc(x.m.n)}</b> <span class="muted small">ПО ${x.m.cr} · ${crXp(x.m.cr)} оп.</span></span>
+      <span class="qty"><button data-encd="${i}" data-d="-1">−</button><b>${x.n}</b><button data-encd="${i}" data-d="1">+</button></span></div>`).join('') || '<p class="muted small">Добавьте существ из бестиария ниже.</p>';
+    $$('[data-encd]').forEach((b) => b.addEventListener('click', () => { const x = enc.list[+b.dataset.encd]; x.n += +b.dataset.d; if (x.n <= 0) enc.list.splice(+b.dataset.encd, 1); encSave(); draw(); }));
+  };
+  const monList = () => {
+    const q = ($('#encFind').value || '').trim().toLowerCase();
+    $('#encMon').innerHTML = BEST().filter((m) => !q || m.n.toLowerCase().includes(q) || m.e.toLowerCase().includes(q) || m.cr === q).map((m) =>
+      `<button data-encm="${esc(m.e)}"><b>${esc(m.n)}</b><span class="muted small">ПО ${m.cr} · ${crXp(m.cr)} оп. · КД ${m.ac} · ${avgExpr(m.hp)} хитов</span></button>`).join('');
+    $$('[data-encm]').forEach((b) => b.addEventListener('click', () => { const x = enc.list.find((y) => y.e === b.dataset.encm); if (x) x.n += 1; else enc.list.push({ e: b.dataset.encm, n: 1 }); encSave(); draw(); }));
+  };
+  // Состав группы и галочки запоминаются вместе с черновиком
+  $('#modalBody').addEventListener('input', (e) => {
+    if (e.target.id === 'encFind') { monList(); return; }
+    players.forEach(([uid]) => { enc.party[uid] = { on: $(`[data-encp="${uid}"]`).checked, lvl: +$(`[data-encl="${uid}"]`).value || 1 }; });
+    Object.assign(enc, { extraN: +$('#encExtraN').value || 0, extraL: +$('#encExtraL').value || 1, hid: $('#encHid').checked, roll: $('#encRoll').checked, init: $('#encInit').checked });
+    encSave(); draw();
+  });
+  $('#encClear').onclick = () => { enc.list = []; encSave(); draw(); };
+  $('#encPut').onclick = () => {
+    if (!enc.list.length) { app.toast('Добавьте существ'); return; }
+    app.closeModal();
+    tool = 'encPlace'; renderTools();
+    app.toast('📍 Нажмите на клетку — существа встанут вокруг неё');
+  };
+  monList(); draw();
+}
+// Свободная клетка для существа размера s рядом с (x, y): по кольцам вокруг, без стен, дверей и других существ
+function freeSpot(x, y, s, taken) {
+  const busy = (cx, cy) => {
+    for (let dx = 0; dx < s; dx++) for (let dy = 0; dy < s; dy++) {
+      const k = `${cx + dx}_${cy + dy}`, T = TERRAIN[(game.map || {})[k]];
+      if (cx + dx >= W() || cy + dy >= H() || (T && T.block) || doorShut(k) || taken.has(k)) return true;
+    }
+    return false;
+  };
+  for (let r = 0; r < Math.max(W(), H()); r++) {
+    for (let dy = -r; dy <= r; dy++) for (let dx = -r; dx <= r; dx++) {
+      if (Math.max(Math.abs(dx), Math.abs(dy)) !== r) continue;
+      const cx = x + dx, cy = y + dy;
+      if (cx >= 0 && cy >= 0 && !busy(cx, cy)) return [cx, cy];
+    }
+  }
+  return null;
+}
+function placeEncounter(x, y) {
+  encLoad();
+  const taken = new Set(), upd = {}, names = [];
+  Object.values(game.tokens).forEach((t) => { for (let dx = 0; dx < (t.size || 1); dx++) for (let dy = 0; dy < (t.size || 1); dy++) taken.add(`${t.x + dx}_${t.y + dy}`); });
+  enc.list.forEach(({ e, n }) => {
+    const mon = BEST().find((m) => m.e === e);
+    if (!mon) return;
+    const size = SIZE_N[mon.size] || 1;
+    for (let i = 0; i < n; i++) {
+      const pos = freeSpot(x, y, size, taken);
+      if (!pos) break;
+      for (let dx = 0; dx < size; dx++) for (let dy = 0; dy < size; dy++) taken.add(`${pos[0] + dx}_${pos[1] + dy}`);
+      const id = R.push(ref(gpath('tokens'))).key, hp = enc.roll ? Math.max(1, rollExpr(mon.hp).total) : avgExpr(mon.hp), name = n > 1 ? `${mon.n} ${i + 1}` : mon.n;
+      upd[`tokens/${id}`] = { kind: 'npc', owner: user.uid, name, x: pos[0], y: pos[1], size, color: '#c94a3d', hp, hpMax: hp, ac: mon.ac, speed: parseInt(mon.speed) || 30,
+        init: abMod(mon.ab[1]), hidden: !!enc.hid, cond: [], side: 'enemy', dsOn: false, ...monStats(mon), xp: crXp(mon.cr) };
+      if (enc.init) upd[`init/list/${id}`] = { name, roll: die(20) + abMod(mon.ab[1]), owner: user.uid, kind: 'npc', tokenId: id };
+      names.push(name);
+    }
+  });
+  if (!names.length) { app.toast('Не нашлось свободного места'); return; }
+  R.update(ref(gpath()), upd).catch((err) => app.toast(`Не удалось: ${esc(err.code || err.message)}`));
+  if (!enc.hid) addLog({ kind: 'sys', txt: `⚔ Появляются: ${names.join(', ')}` });
+  app.toast(`Поставлено существ: ${names.length}${enc.init ? ' · инициатива брошена' : ''}`);
+}
+
 // Действия существа (мастер): атаки и способности-области; вне своего хода — реакцией
 // legend — легендарное действие: после хода другого существа, стоит 1–3 из запаса на раунд (одна атака, способность, перемещение)
 function openNpcAttack(id, legend) {
@@ -1418,6 +1543,7 @@ function notifyCs() {
     if (csNotified.has(k + id)) return;
     csNotified.add(k + id);
     app.toast(`🚫 ${esc((game.tokens[r.caster] || {}).name || '')} творит «${esc(r.n)}» — ${esc(game.tokens[id].name)} может ответить «Контрзаклинанием»`, 'crit');
+    mtab('turn', true);
     setTimeout(renderAll, CS_WAIT + 3500); // убрать просроченный запрос из панели
   });
 }
@@ -1882,7 +2008,7 @@ function notifyAreas() {
     const mine = t.kind === 'pc' ? t.owner === user.uid : isDM();
     if (!mine) return;
     notifiedSaves.add(key);
-    if (t.kind === 'pc') app.toast(`✨ ${esc(A.n)}: спасбросок ${AB_N[A.abil]} СЛ ${A.dc} — бросьте в панели «Спасброски»`, 'crit');
+    if (t.kind === 'pc') { app.toast(`✨ ${esc(A.n)}: спасбросок ${AB_N[A.abil]} СЛ ${A.dc} — бросьте в панели «Спасброски»`, 'crit'); mtab('turn', true); }
   }));
 }
 function renderSaves() {
@@ -1937,6 +2063,7 @@ function checkMyTurn() {
   const key = `${game.id}:${game.init.round}:${game.init.turn}`;
   if (ls.get('dnd55-turn') === key) return;
   ls.set('dnd55-turn', key);
+  mtab('turn', true);
   const mine = game.tokens[`pc_${user.uid}`];
   app.toast(mine && isDown(mine) && !isStable(mine) && !isDead(mine) ? '💀 Ваш ход: вы без сознания — бросьте спасбросок от смерти' : '⚔ Ваш ход!', 'crit');
   // С начала 2-го раунда каждый ваш ход сдвигает эффекты в листе на раунд
@@ -2157,6 +2284,102 @@ function applyXp() {
     if (r) { app.toast(`⭐ +${a.n} опыта (всего ${r.xp})`, 'crit'); level = level || r.canLevel; }
   });
   if (level) setTimeout(() => { app.toast('⬆ Достаточно опыта для нового уровня!', 'crit'); app.openLevelUp(m.charId); }, 600);
+}
+
+/* ---------- Добыча ---------- */
+// games/{id}/loot: { gp, items: { k: { kind: item | magic, n, qty, mn — магический предмет, base — оружие или доспех для «+1» } } } — пишет мастер.
+// lootAward/{uid}/{k} — выдано персонажу: его браузер кладёт добычу в лист и удаляет запись
+// Монеты с тела по ПО (упрощённо, по таблице индивидуальных сокровищ DMG 2024); звери ничего не носят; оружие — из атак существа
+function lootRoll(t) {
+  const mon = t.mon && BEST().find((m) => m.e === t.mon);
+  if (mon && mon.beast) return { gp: 0, items: [] };
+  const cr = crNum(t.cr ?? 0), r = (e) => rollExpr(e).total;
+  const gp = cr >= 17 ? r('2d8') * 1000 : cr >= 11 ? r('2d10') * 100 : cr >= 5 ? r('2d8') * 10 : r('3d6');
+  const WP = typeof WEAPONS !== 'undefined' ? WEAPONS : [];
+  const items = (t.atk || []).map((a) => WP.find((w) => w.n.toLowerCase() === String(a.n).toLowerCase())).filter(Boolean).map((w) => w.n);
+  return { gp, items };
+}
+function lootDialog() {
+  const L = game.loot || {}, gp = +L.gp || 0, items = Object.entries(L.items || {});
+  const pcs = Object.entries(game.members || {}).filter(([, m]) => m.role !== 'dm'), MI = typeof MAGIC_ITEMS !== 'undefined' ? MAGIC_ITEMS : [];
+  const bodies = Object.entries(game.tokens).filter(([, t]) => t.kind === 'npc' && team(t) === 'npc' && isDead(t) && !t.looted);
+  const who = `<option value="">— кому —</option>${pcs.map(([uid, m]) => `<option value="${uid}">${esc((m.char || {}).name || m.name)}</option>`).join('')}`;
+  app.openModal(`<h2>💰 Добыча</h2>
+    ${bodies.length ? `<div class="enc-row"><span class="small">Не обысканы: ${bodies.map(([, t]) => esc(t.name)).join(', ')}</span><button class="primary" id="lSearch">🎲 Обыскать</button></div>` : ''}
+    <div class="enc-row mt"><b>Золото: ${gp} зм</b><button id="lSplit" ${gp && pcs.length ? '' : 'disabled'}>Поровну всем${pcs.length ? ` (по ${Math.floor(gp / pcs.length)} зм)` : ''}</button></div>
+    <div class="list mt">${items.map(([k, it]) => `<div class="enc-row"><span><b>${esc(it.n)}</b>${+it.qty > 1 ? ` ×${it.qty}` : ''}${it.kind === 'magic' ? ' ✨' : ''}</span>
+      <span class="row gap"><select data-lwho="${k}">${who}</select><button data-lgive="${k}">Отдать</button><button class="ghost" data-ldel="${k}" title="Убрать">✕</button></span></div>`).join('')
+      || '<p class="muted small">Предметов пока нет — обыщите павших или добавьте вручную.</p>'}</div>
+    <h3 class="mt">Добавить</h3>
+    <div class="form-grid"><label>Золото, зм<input type="number" id="lGp" min="0" placeholder="0"></label>
+      <label>Предмет<input id="lN" placeholder="Верёвка, рубин (50 зм)…"></label><label>Количество<input type="number" id="lQ" min="1" value="1"></label>
+      <label>Магический предмет<select id="lM"><option value="">—</option>${MI.map((m) => `<option>${esc(m.n)}</option>`).join('')}</select></label>
+      <label id="lBaseBox" hidden>Основа<select id="lBase"></select></label></div>
+    <div class="modal-actions"><button data-act="closeModal">Закрыть</button><button class="primary" id="lAdd">＋ В добычу</button></div>`);
+  const again = () => setTimeout(lootDialog, 150);
+  const push = (upd, it) => { upd[`loot/items/${R.push(ref(gpath('loot'))).key}`] = it; };
+  // Магическое оружие и доспех «+N» делаются из обычного: выбрать основу
+  $('#lM').onchange = () => {
+    const M = MI.find((m) => m.n === $('#lM').value);
+    $('#lBaseBox').hidden = !(M && M.pick);
+    if (M && M.pick) $('#lBase').innerHTML = M.pick === 'w' ? WEAPONS.map((w) => `<option value="${esc(w.n)}">${esc(w.n)}</option>`).join('')
+      : ARMOR.filter((a) => a.type !== 'shield').map((a) => `<option value="${esc(a.id)}">${esc(a.n)}</option>`).join('');
+  };
+  if ($('#lSearch')) $('#lSearch').onclick = async () => {
+    const upd = {}, found = [];
+    let sum = 0;
+    bodies.forEach(([id, t]) => {
+      const r = lootRoll(t);
+      sum += r.gp;
+      r.items.forEach((n) => { push(upd, { kind: 'item', n, qty: 1 }); found.push(n); });
+      upd[`tokens/${id}/looted`] = true;
+    });
+    upd['loot/gp'] = gp + sum;
+    await R.update(ref(gpath()), upd);
+    addLog({ kind: 'sys', txt: `💰 Обысканы павшие: ${sum} зм${found.length ? `, ${found.join(', ')}` : ''}` });
+    again();
+  };
+  $('#lSplit').onclick = async () => {
+    const each = Math.floor(gp / pcs.length), k = R.push(ref(gpath('lootAward'))).key, upd = { 'loot/gp': gp - each * pcs.length };
+    if (!each) return;
+    pcs.forEach(([uid]) => { upd[`lootAward/${uid}/${k}`] = { kind: 'gold', gp: each }; });
+    await R.update(ref(gpath()), upd);
+    addLog({ kind: 'sys', txt: `💰 Золото поровну: по ${each} зм` });
+    again();
+  };
+  $('#lAdd').onclick = async () => {
+    const upd = {}, add = +$('#lGp').value || 0, n = $('#lN').value.trim(), M = MI.find((m) => m.n === $('#lM').value);
+    if (add > 0) upd['loot/gp'] = gp + add;
+    if (n) push(upd, { kind: 'item', n, qty: Math.max(1, +$('#lQ').value || 1) });
+    if (M) {
+      const base = M.pick ? $('#lBase').value : '', bn = M.pick === 'w' ? base : M.pick ? (ARMOR.find((a) => a.id === base) || {}).n : '';
+      push(upd, { kind: 'magic', mn: M.n, n: bn ? `${bn} ${M.n.match(/\+\d/)[0]}` : M.n, qty: 1, ...(base ? { base } : {}) });
+    }
+    if (!Object.keys(upd).length) { app.toast('Укажите золото, предмет или магический предмет'); return; }
+    await R.update(ref(gpath()), upd);
+    again();
+  };
+  $$('[data-lgive]').forEach((b) => b.addEventListener('click', async () => {
+    const k = b.dataset.lgive, uid = $(`[data-lwho="${k}"]`).value, it = L.items[k];
+    if (!uid) { app.toast('Выберите, кому отдать'); return; }
+    await R.update(ref(gpath()), { [`lootAward/${uid}/${k}`]: it, [`loot/items/${k}`]: null });
+    addLog({ kind: 'sys', txt: `💰 ${((game.members[uid] || {}).char || {}).name || 'Игрок'} получает: ${it.n}${+it.qty > 1 ? ` ×${it.qty}` : ''}` });
+    again();
+  }));
+  $$('[data-ldel]').forEach((b) => b.addEventListener('click', async () => { await R.remove(ref(gpath(`loot/items/${b.dataset.ldel}`))); again(); }));
+}
+// Игрок: выданное мастером — в лист (золото, предметы, магические предметы с бонусами)
+const lootDone = new Set();
+function applyLoot() {
+  const m = me(), v = game && game.lootAw;
+  if (!v || !m || !m.charId) return;
+  Object.entries(v).forEach(([k, L]) => {
+    if (lootDone.has(k)) return;
+    lootDone.add(k);
+    const n = app.addLoot(m.charId, L);
+    R.remove(ref(gpath(`lootAward/${user.uid}/${k}`))).catch(() => {});
+    if (n) app.toast(`💰 Получено: ${esc(n)}${L.kind !== 'gold' && +L.qty > 1 ? ` ×${L.qty}` : ''} — уже в листе`, 'crit');
+  });
 }
 
 /* ---------- Сцены ---------- */
@@ -2408,7 +2631,60 @@ function renderAll() {
   renderChatBar();
   renderSaves();
   renderCastBar();
+  renderMtabs();
 }
+/* ---------- Телефон: вкладки панели, масштаб пальцами ---------- */
+const narrow = () => window.matchMedia('(max-width: 760px)').matches;
+function mtab(name, auto) {
+  const side = $('#tblSide');
+  if (!side || (auto && !narrow()) || side.dataset.mt === name) return;
+  side.dataset.mt = name;
+  if (name === 'log') { logSeen = Date.now(); ls.set('dnd55-logseen', String(logSeen)); }
+  renderMtabs();
+}
+function renderMtabs() {
+  const side = $('#tblSide');
+  if (!side || !game) return;
+  $$('#tblMtabs [data-mt]').forEach((b) => b.classList.toggle('on', b.dataset.mt === side.dataset.mt));
+  // Непрочитанные записи журнала (кроме своих), пока открыта другая вкладка
+  if (side.dataset.mt === 'log') logSeen = Date.now();
+  const n = logList().filter((e) => (e.t || 0) > logSeen && e.by !== user.uid && (isDM() || !e.dmOnly)).length, badge = $('#tblLogBadge');
+  badge.hidden = !n; badge.textContent = n > 9 ? '9+' : n;
+  $('#tblMtHint').hidden = ['#tblCastBar', '#tblTurn', '#tblSaves', '#tblSel'].some((s) => !$(s).hidden);
+  // На телефоне поле сначала мельче, чтобы было видно больше клеток
+  if (!zoomInit) { zoomInit = true; if (narrow()) { zoom = 0.6; layoutBoard(); } }
+}
+function zoomFit() {
+  const w = $('#tblWrap');
+  zoom = Math.max(0.3, Math.min(2, +Math.min(w.clientWidth / (W() * CELL), w.clientHeight / (H() * CELL)).toFixed(2)));
+  layoutBoard();
+}
+// Два пальца: масштаб с центром между ними; начатое перетаскивание отменяется
+$('#tblWrap').addEventListener('pointerdown', (e) => {
+  if (e.pointerType !== 'touch') return;
+  touchPts.set(e.pointerId, { x: e.clientX, y: e.clientY });
+  if (touchPts.size !== 2) return;
+  if (drag && drag.kind === 'token') { drawRange(null); hint(''); }
+  if (drag && drag.kind === 'ruler') { ruler = null; drawRuler(); }
+  drag = null;
+  if (game) renderTokens();
+  const [a, b] = [...touchPts.values()];
+  pinch = { d: Math.hypot(a.x - b.x, a.y - b.y) || 1, z: zoom, mx: (a.x + b.x) / 2, my: (a.y + b.y) / 2 };
+}, true);
+window.addEventListener('pointermove', (e) => {
+  if (!touchPts.has(e.pointerId)) return;
+  touchPts.set(e.pointerId, { x: e.clientX, y: e.clientY });
+  if (!pinch || touchPts.size < 2) return;
+  const [a, b] = [...touchPts.values()], w = $('#tblWrap'), r = w.getBoundingClientRect();
+  const z = Math.max(0.3, Math.min(2, +((pinch.z * Math.hypot(a.x - b.x, a.y - b.y)) / pinch.d).toFixed(2)));
+  if (z === zoom) return;
+  const ox = pinch.mx - r.left, oy = pinch.my - r.top, bx = (w.scrollLeft + ox) / zoom, by = (w.scrollTop + oy) / zoom;
+  zoom = z; layoutBoard();
+  w.scrollLeft = bx * zoom - ox; w.scrollTop = by * zoom - oy;
+}, true);
+const touchEnd = (e) => { touchPts.delete(e.pointerId); if (touchPts.size < 2) pinch = null; };
+window.addEventListener('pointerup', touchEnd, true);
+window.addEventListener('pointercancel', touchEnd, true);
 // Подсветка дальности выбранной атаки: досягаемость, обычная и максимальная дистанция
 function drawAimRange() {
   const cv = $('#tblRange'), g = cv.getContext('2d');
@@ -2450,6 +2726,7 @@ function renderTools() {
   $('#tblBoard').dataset.tool = tool; // курсор поля соответствует инструменту
   $('#tblTools').innerHTML = `<div class="seg">${t('move', '✋ Двигать', 'Перетаскивайте токены, по пустому месту — прокрутка')}${t('ruler', '📏 Линейка', 'Протяните, чтобы измерить расстояние')}
     ${isDM() ? t('wall', '▮ Стена') + t('difficult', '▦ Трудная') + t('water', '≈ Вода') + t('erase', '⌫ Ластик') + t('enemy', '＋ Существо', 'Нажмите на клетку, чтобы поставить врага или NPC из бестиария')
+      + `<button class="${tool === 'encPlace' ? 'on' : ''}" data-tbl="enc" title="Собрать столкновение из бестиария, оценить сложность для группы и поставить его на поле">⚔ Столкновение</button>`
       + t('door', '🚪 Дверь', 'Поставить или убрать дверь. Открыть — нажатием с «Двигать», запереть — с Shift')
       + t('light', '💡 Свет', 'Поставить или убрать источник света (20 фт яркого + 20 тусклого)')
       + t('area', '◯ Область', 'Область со спасброском: дыхание, ловушка… Конус и линия — от выделенного существа')
@@ -2556,7 +2833,7 @@ function renderInit() {
       <b>${e.roll}</b><span>${esc(e.name)}</span>${isDM() ? `<button class="ghost" data-tbl="initDel" data-id="${e.id}" title="Убрать">✕</button>` : ''}</div>`).join('')}</div>` : '<p class="muted small">Пока никто не бросил инициативу.</p>')
     + `<div class="row gap wrap mt">
       ${!isDM() && me() && !inList ? '<button class="primary" data-tbl="rollInit">🎲 Бросить инициативу</button>' : ''}
-      ${isDM() ? `<button data-tbl="lair" title="Логово действует на счёт инициативы 20 (проигрывая ничьи)">🏰 ${game.init && game.init.list && game.init.list.lair ? 'Убрать логово' : 'Логово'}</button><button data-tbl="rollNpc" title="Бросить за всех существ на поле">🎲 Враги</button><button data-tbl="xpGive" title="Раздать опыт персонажам (котёл: ${Object.values((game.xp || {}).kills || {}).reduce((s, k) => s + (+k.n || 0), 0)})">⭐ Опыт</button>
+      ${isDM() ? `<button data-tbl="lair" title="Логово действует на счёт инициативы 20 (проигрывая ничьи)">🏰 ${game.init && game.init.list && game.init.list.lair ? 'Убрать логово' : 'Логово'}</button><button data-tbl="rollNpc" title="Бросить за всех существ на поле">🎲 Враги</button><button data-tbl="xpGive" title="Раздать опыт персонажам (котёл: ${Object.values((game.xp || {}).kills || {}).reduce((s, k) => s + (+k.n || 0), 0)})">⭐ Опыт</button><button data-tbl="loot" title="Обыскать павших и раздать добычу">💰 Добыча${(() => { const n = Object.values(game.tokens).filter((t) => t.kind === 'npc' && team(t) === 'npc' && isDead(t) && !t.looted).length; return n ? ` (${n})` : ''; })()}</button>
         ${active ? '<button class="primary" data-tbl="next">▶ Следующий ход</button><button class="ghost" data-tbl="endFight">Закончить бой</button>'
           : `<button class="primary" data-tbl="startFight" ${l.length ? '' : 'disabled'}>⚔ Начать бой</button>`}` : ''}</div>`;
 }
@@ -2617,6 +2894,8 @@ function renderMembers() {
 
 /* ---------- Кнопки ---------- */
 async function onClick(e) {
+  const mt = e.target.closest('#tblMtabs [data-mt]');
+  if (mt) { mtab(mt.dataset.mt); return; }
   const toolBtn = e.target.closest('[data-tool]');
   if (toolBtn && toolBtn.dataset.tool === 'area') { dmAreaDialog(); return; }
   if (toolBtn) { tool = toolBtn.dataset.tool; renderTools(); $('#tblBoard').dataset.tool = tool; return; }
@@ -2655,6 +2934,9 @@ async function onClick(e) {
     else if (a === 'endFight') { if (app.confirm('Закончить бой и очистить инициативу?')) { await R.update(ref(gpath()), { init: null, econ: null }); addLog({ kind: 'sys', txt: 'Бой окончен' });
       if (Object.keys((game.xp || {}).kills || {}).length) xpDialog(true); } }
     else if (a === 'xpGive') xpDialog(false);
+    else if (a === 'enc') encDialog();
+    else if (a === 'loot') lootDialog();
+    else if (a === 'zoomFit') zoomFit();
     else if (a === 'attack') openAttack(b.dataset.id);
     else if (a === 'aimOff') { aim = null; hint(''); renderAll(); }
     else if (a === 'spell') openCast(b.dataset.id);

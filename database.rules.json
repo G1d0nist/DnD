@@ -65,6 +65,14 @@
             ".write": "auth != null && auth.uid === $uid"
           }
         },
+        "loot": {
+          ".write": false
+        },
+        "lootAward": {
+          "$uid": {
+            ".write": "auth != null && auth.uid === $uid"
+          }
+        },
         "doors": {
           "$cell": {
             "o": {

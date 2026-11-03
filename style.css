@@ -530,3 +530,36 @@ button.stat:hover { border-color: var(--gold); }
 .leg-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 6px; }
 .leg-grid label { font-size: 12px; min-width: 0; }
 .leg-grid input { width: 100%; }
+.tbl-board[data-tool="encPlace"], .tbl-board[data-tool="placeComp"] { cursor: crosshair; }
+/* Конструктор столкновений и добыча */
+.enc-party { display: grid; gap: 4px; }
+.enc-party label { display: flex; align-items: center; gap: 6px; }
+.enc-party input[type="number"] { width: 58px; padding: 3px 5px; }
+.enc-meter { padding: 8px 10px; border-radius: 8px; background: var(--bg2); border: 1px solid var(--line); display: grid; gap: 6px; }
+.enc-bar { position: relative; height: 10px; border-radius: 5px; background: #000a; overflow: visible; }
+.enc-bar > div { height: 100%; border-radius: 5px; transition: width .2s; }
+.enc-mark { position: absolute; top: -3px; width: 2px; height: 16px; background: var(--muted); }
+.enc-bar .d0, .enc-lbl.d0 { background: var(--green); } .enc-bar .d1, .enc-lbl.d1 { background: var(--gold); }
+.enc-bar .d2, .enc-lbl.d2 { background: #e0703a; } .enc-bar .d3, .enc-lbl.d3 { background: var(--red); }
+.enc-lbl { padding: 1px 8px; border-radius: 10px; color: #111; font-size: 12px; font-weight: 700; }
+.enc-row { display: flex; align-items: center; justify-content: space-between; gap: 8px; flex-wrap: wrap; padding: 5px 8px; border-radius: 7px; background: var(--bg2); border: 1px solid var(--line); }
+.enc-row select { width: auto; max-width: 150px; padding: 3px 6px; }
+/* Вкладки боковой панели стола — только на узком экране */
+.tbl-mtabs { display: none; }
+.mt-badge { display: inline-block; min-width: 16px; margin-left: 4px; padding: 0 4px; border-radius: 8px; background: var(--red); color: #fff; font-size: 11px; line-height: 16px; }
+@media (max-width: 760px) {
+  .tbl-bar { padding: 8px 10px; margin-bottom: 8px; }
+  .tbl-tools .seg { flex-wrap: nowrap; overflow-x: auto; max-width: calc(100vw - 40px); scrollbar-width: thin; }
+  .tbl-tools .seg button { flex: 0 0 auto; }
+  .tbl-wrap { height: 52vh; min-height: 280px; }
+  .tbl-mtabs { display: flex; gap: 4px; position: sticky; top: 0; z-index: 3; padding: 4px; border-radius: 10px; background: var(--card); border: 1px solid var(--line); }
+  .tbl-mtabs button { flex: 1 1 0; min-width: 0; padding: 8px 2px; font-size: 12px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .tbl-mtabs button.on { border-color: var(--gold); color: var(--gold2); background: #3b2e17; }
+  .tbl-side > [data-mt] { display: none; }
+  .tbl-side[data-mt="turn"] > [data-mt="turn"]:not([hidden]), .tbl-side[data-mt="init"] > [data-mt="init"], .tbl-side[data-mt="log"] > [data-mt="log"], .tbl-side[data-mt="people"] > [data-mt="people"] { display: block; }
+  .tbl-side[data-mt="turn"] > .aim-bar[data-mt="turn"]:not([hidden]) { display: flex; }
+  .tbl-side button { min-height: 36px; }
+  .pip { min-width: 0; padding: 7px 4px; }
+  .tbl-log { max-height: 55vh; }
+  .react-box button, .legend-box button { width: 100%; }
+}

@@ -218,7 +218,26 @@ window.dndApp = {
       // Спасброски Силы и Ловкости — цель захвата или толчка выбирает лучший
       svs: [saveBonus(c, 'str'), saveBonus(c, 'dex')], grapDC: 8 + am(c, 'str') + pb(c),
       // «Контрзаклинание» наготове (подготовлено и есть ячейка 3+ уровня) и спасбросок Телосложения — против чужого
-      cs: reactSlots(c, 'Counterspell').length > 0, svc: saveBonus(c, 'con') };
+      cs: reactSlots(c, 'Counterspell').length > 0, svc: saveBonus(c, 'con'), lvl: lvl(c) };
+  },
+  // Добыча со стола: золото — в кошелёк, магический предмет — как из каталога, прочее — в инвентарь; возвращает название
+  addLoot(id, L) {
+    const c = state.chars[id];
+    if (!c || !L) return null;
+    if (state.current !== id) state.current = id;
+    let name = '';
+    tracked('добыча', () => {
+      if (L.kind === 'gold') { c.coins.gp = (+c.coins.gp || 0) + (+L.gp || 0); name = `${L.gp} зм`; return; }
+      const M = L.kind === 'magic' && MAGIC_ITEMS.find((m) => m.n === L.mn);
+      if (M) {
+        const base = !M.pick ? null : M.pick === 'w' ? WEAPONS.find((w) => w.n === L.base) : ARMOR.find((a) => a.id === L.base);
+        if (!M.pick || base) { name = addMagicItem(c, M, base).n; return; }
+      }
+      const w = WEAPONS.find((x) => x.n === L.n);
+      name = addInvItem(c, { n: L.n, qty: +L.qty || 1, ...(w ? { cat: 'Оружие', w: w.w, cost: w.cost } : {}) }).n;
+    });
+    save(); render();
+    return name;
   },
   // Заклинания с областью или спасброском: подготовленные, всегда подготовленные и заговоры
   // extra — английские названия заклинаний, которые стол умеет применять без области (лечение, баффы)
