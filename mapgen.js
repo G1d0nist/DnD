@@ -253,6 +253,139 @@ const MAPGEN = (() => {
     out.ground = 'grass'; out.start = openNear(G, 1, Math.floor(G.h / 2));
   }
 
+  /* --- Мир: регион в масштабе миля на клетку --- */
+  // Гладкий шум (сумма октав решёточного шума) — высота, влажность, температура; значения 0…1
+  function noise(R, w, h, scale, oct = 4) {
+    const out = Array.from({ length: h }, () => Array(w).fill(0));
+    let amp = 1, tot = 0;
+    const sm = (t) => t * t * (3 - 2 * t);
+    for (let o = 0; o < oct; o++) {
+      const s = Math.max(1.5, scale / 2 ** o), gw = Math.ceil(w / s) + 2, gh = Math.ceil(h / s) + 2;
+      const L = Array.from({ length: gh }, () => Array.from({ length: gw }, () => R.f()));
+      for (let y = 0; y < h; y++) for (let x = 0; x < w; x++) {
+        const fx = x / s, fy = y / s, x0 = Math.floor(fx), y0 = Math.floor(fy), tx = sm(fx - x0), ty = sm(fy - y0);
+        const a = L[y0][x0] + (L[y0][x0 + 1] - L[y0][x0]) * tx, b = L[y0 + 1][x0] + (L[y0 + 1][x0 + 1] - L[y0 + 1][x0]) * tx;
+        out[y][x] += amp * (a + (b - a) * ty);
+      }
+      tot += amp; amp *= 0.5;
+    }
+    for (let y = 0; y < h; y++) for (let x = 0; x < w; x++) out[y][x] /= tot;
+    return out;
+  }
+  const quant = (A, q) => { const v = A.flat().sort((a, b) => a - b); return v[Math.min(v.length - 1, Math.floor(q * v.length))]; };
+  // Названия мест
+  const PN1 = ['Камен', 'Сер', 'Тихо', 'Сосно', 'Дубо', 'Ясно', 'Черно', 'Бело', 'Ольхо', 'Волче', 'Медве', 'Красно', 'Дально', 'Зелено', 'Ветро', 'Звено', 'Хмеле', 'Ржаво', 'Лисо', 'Ворон'];
+  const PN2 = ['град', 'бор', 'поле', 'водье', 'горье', 'брод', 'лесье', 'мост', 'долье', 'ярь', 'ница', 'ск', 'кам', 'дол', 'гать'];
+  // Родительный падеж: «Руины Тиховодья», «Пещера Камнеграда»
+  const PN2G = { град: 'града', бор: 'бора', поле: 'поля', водье: 'водья', горье: 'горья', брод: 'брода', лесье: 'лесья', мост: 'моста', долье: 'долья', ярь: 'яри', ница: 'ницы', ск: 'ска', кам: 'кама', дол: 'дола', гать: 'гати' };
+  const TAVERNS = ['«Пьяный гоблин»', '«Серебряная кружка»', '«Три дуба»', '«Хромой пони»', '«Последний привал»', '«Тёплый очаг»', '«Сломанный щит»', '«Весёлый тролль»'];
+  const RUINS = ['Руины', 'Забытый склеп', 'Старая крепость', 'Затонувший храм', 'Курган', 'Проклятая башня'];
+  function world(G, R, o, out) {
+    const w = G.w, h = G.h;
+    const Hh = noise(R, w, h, Math.max(w, h) / 3, 5), M = noise(R, w, h, Math.max(w, h) / 2.5, 3), Tn = noise(R, w, h, Math.max(w, h) / 2, 2);
+    // Где море: с одной стороны, островом или озёрами внутри
+    const sea = R.pick(['n', 's', 'e', 'w', 'island', 'lakes']);
+    for (let y = 0; y < h; y++) for (let x = 0; x < w; x++) {
+      const d = { n: y / h, s: 1 - y / h, w: x / w, e: 1 - x / w }[sea];
+      if (d != null) Hh[y][x] += Math.min(0.25, d * 0.6) - 0.12;
+      if (sea === 'island') Hh[y][x] -= Math.max(0, Math.hypot((x - w / 2) / (w / 2), (y - h / 2) / (h / 2)) - 0.55) * 0.9;
+    }
+    const qSea = quant(Hh, sea === 'lakes' ? 0.1 : 0.24), qHill = quant(Hh, 0.76), qMount = quant(Hh, 0.87), qPeak = quant(Hh, 0.95);
+    for (let y = 0; y < h; y++) for (let x = 0; x < w; x++) {
+      const e = Hh[y][x], m = M[y][x], temp = (1 - y / h) * 0.25 + Tn[y][x] * 0.75; // севернее — холоднее (верх карты — север)
+      let v = '';
+      if (e < qSea) v = 'water';
+      else if (e >= qPeak) v = 'rock';
+      else if (e >= qMount) v = temp < 0.55 || e > quant(Hh, 0.92) ? 'snow' : 'slope';
+      else if (e >= qHill) v = R.ch(0.55) ? 'slope' : m > 0.55 ? 'thicket' : '';
+      else if (temp < 0.3) v = R.ch(0.7) ? 'snow' : m > 0.6 ? 'thicket' : '';
+      else if (m > 0.66 && e < quant(Hh, 0.45)) v = R.ch(0.75) ? 'bog' : 'water';
+      else if (m > 0.52) v = R.ch(0.12) ? 'tree' : 'thicket';
+      else if (m < 0.3 && temp > 0.55) v = 'sand';
+      else v = R.ch(0.05) ? 'bush' : '';
+      G.g[y][x] = v;
+    }
+    // Берег — песок
+    for (let y = 0; y < h; y++) for (let x = 0; x < w; x++) if (['', 'bush', 'thicket'].includes(G.g[y][x]) && near8(G, x, y, 'water') >= 3 && R.ch(0.5)) G.g[y][x] = 'sand';
+    // Реки: от гор вниз по склону к морю; в низине без выхода — озеро
+    const nRiv = R.i(2, 4);
+    for (let r = 0; r < nRiv; r++) {
+      let x = 0, y = 0, ok = false;
+      for (let t = 0; t < 200 && !ok; t++) { x = R.i(2, w - 3); y = R.i(2, h - 3); ok = Hh[y][x] >= qHill && Hh[y][x] < qPeak; }
+      if (!ok) continue;
+      const seen = new Set();
+      for (let s = 0; s < w + h; s++) {
+        seen.add(`${x}_${y}`);
+        if (G.g[y][x] === 'water' && s > 2) break;
+        G.g[y][x] = 'water';
+        let best = null;
+        [[1, 0], [-1, 0], [0, 1], [0, -1]].forEach(([dx, dy]) => {
+          const nx = x + dx, ny = y + dy;
+          if (!G.inb(nx, ny) || seen.has(`${nx}_${ny}`)) return;
+          const c = Hh[ny][nx] + R.f() * 0.02;
+          if (!best || c < best[2]) best = [nx, ny, c];
+        });
+        if (!best || best[2] > Hh[y][x] + 0.03) { clearCircle(G, x, y, R.i(1, 2), 'water'); break; }
+        [x, y] = best;
+      }
+    }
+    // Места: города и деревни у воды и на равнинах, замок на холме, пещеры в горах, лагеря в лесах
+    const land = (v) => ['', 'bush', 'sand', 'thicket', 'slope', 'snow'].includes(v);
+    const pois = [], far = (x, y, d) => pois.every((p) => Math.max(Math.abs(p.x - x), Math.abs(p.y - y)) >= d);
+    const place = (k, tpl, n, want, v = '') => {
+      for (let t = 0; t < 400; t++) {
+        const x = R.i(2, w - 3), y = R.i(2, h - 3), c = G.g[y][x];
+        if (!land(c) || !want(x, y, c, t) || !far(x, y, t < 300 ? 7 : 4)) continue;
+        pois.push({ x, y, k, tpl, n, ...(v ? { v } : {}) });
+        return true;
+      }
+      return false;
+    };
+    const town = () => `${R.pick(PN1)}${R.pick(PN2)}`;
+    const townOf = () => { const a = R.pick(PN1), b = R.pick(PN2); return `${a}${PN2G[b]}`; };
+    const wet = (x, y) => near8(G, x, y, 'water') > 0 || [[2, 0], [-2, 0], [0, 2], [0, -2]].some(([dx, dy]) => G.get(x + dx, y + dy) === 'water');
+    for (let i = 0; i < R.i(1, 2); i++) place('city', 'city', town(), (x, y, c, t) => (c === '' || c === 'sand') && (t > 250 || wet(x, y)));
+    for (let i = 0; i < R.i(3, 5); i++) place('village', 'village', town(), (x, y, c) => c === '' || c === 'bush' || c === 'snow');
+    place('castle', 'castle', `Замок ${town()}`, (x, y, c, t) => c === 'slope' || t > 250);
+    for (let i = 0; i < 2; i++) place('tavern', 'tavern', `Таверна ${R.pick(TAVERNS)}`, (x, y, c) => c === '' || c === 'bush');
+    for (let i = 0; i < R.i(2, 3); i++) place('ruin', 'dungeon', `${R.pick(RUINS)} ${townOf()}`, () => true);
+    for (let i = 0; i < R.i(1, 2); i++) place('cave', 'cave', `Пещера ${townOf()}`, (x, y, c, t) => (c === 'slope' || c === 'snow') && (near8(G, x, y, 'rock') > 0 || t > 200));
+    for (let i = 0; i < R.i(1, 2); i++) { const gob = R.ch(0.5); place('camp', gob ? 'forest' : 'plains', gob ? 'Лагерь гоблинов' : 'Лагерь разбойников', (x, y, c) => (gob ? c === 'thicket' : c === '' || c === 'bush'), gob ? 'goblins' : 'bandits'); }
+    pois.forEach((p) => { if (G.g[p.y][p.x] !== 'sand') G.g[p.y][p.x] = ''; });
+    // Дороги между поселениями: самый дешёвый путь по местности; через воду — мосты
+    const COST = { '': 1, bush: 1.2, sand: 1.3, road: 0.4, bridge: 0.4, thicket: 2, snow: 2.5, slope: 3, bog: 4, tree: 3, water: 9 };
+    const path = (a, b) => {
+      const dist = new Map([[`${a.x}_${a.y}`, 0]]), prev = new Map(), q = [[0, a.x, a.y]];
+      while (q.length) {
+        let bi = 0;
+        for (let i = 1; i < q.length; i++) if (q[i][0] < q[bi][0]) bi = i;
+        const [d, x, y] = q.splice(bi, 1)[0];
+        if (x === b.x && y === b.y) break;
+        if (d > dist.get(`${x}_${y}`)) continue;
+        for (const [dx, dy] of [[1, 0], [-1, 0], [0, 1], [0, -1]]) {
+          const nx = x + dx, ny = y + dy, c = COST[G.get(nx, ny)];
+          if (!G.inb(nx, ny) || c == null) continue;
+          const nd = d + c, k = `${nx}_${ny}`;
+          if (dist.has(k) && dist.get(k) <= nd) continue;
+          dist.set(k, nd); prev.set(k, `${x}_${y}`); q.push([nd, nx, ny]);
+        }
+      }
+      for (let k = prev.get(`${b.x}_${b.y}`); k && k !== `${a.x}_${a.y}`; k = prev.get(k)) {
+        const [x, y] = k.split('_').map(Number), c = G.g[y][x];
+        G.g[y][x] = c === 'water' || c === 'bridge' ? 'bridge' : 'road';
+      }
+    };
+    const towns = pois.filter((p) => ['city', 'village', 'castle', 'tavern'].includes(p.k));
+    for (let i = 1; i < towns.length; i++) {
+      const b = towns[i], a = towns.slice(0, i).reduce((m, p) => (Math.hypot(p.x - b.x, p.y - b.y) < Math.hypot(m.x - b.x, m.y - b.y) ? p : m));
+      path(a, b);
+    }
+    const home = pois.find((p) => p.k === 'village') || pois[0];
+    out.pois = pois;
+    out.ground = 'grass'; out.amb = 'bright'; out.fog = 'vision';
+    out.start = home ? openNear(G, home.x + 1, home.y, (v) => land(v) || v === 'road') : openNear(G, Math.floor(w / 2), Math.floor(h / 2));
+  }
+
   /* --- Локации --- */
   // Подземелье: комнаты, коридоры между ними, двери (иногда запертые), факелы, места для сундуков
   function dungeon(G, R, o, out) {
@@ -667,6 +800,8 @@ const MAPGEN = (() => {
     village: { n: '🏡 Деревня', kind: 'location', fn: village, w: 46, h: 34, chests: false, peaceful: true, minW: 24, minH: 18, connect: true },
     tavern: { n: '🍺 Таверна', kind: 'location', fn: tavern, w: 34, h: 26, chests: false, peaceful: true, minW: 22, minH: 18, rot: true, connect: true,
       variants: [['small', 'корчма'], ['inn', 'постоялый двор'], ['big', 'большая таверна']] },
+    // Карта мира: клетка — миля; места на ней открываются локальными картами
+    world: { n: '🌍 Регион (карта мира)', kind: 'world', fn: world, w: 64, h: 46, minW: 30, minH: 22 },
   };
   // Поворот на 90° по часовой: клетки, двери, свет, сундуки, комнаты и вход
   function rot90(G, out) {

@@ -156,6 +156,7 @@ function subscribe(gid, code) {
   on('chests', (v) => { game.chests = v || {}; drawTerrain(); syncChests(); });
   on('drops', (v) => { game.drops = v || {}; drawTerrain(); });
   on('trades', (v) => { game.trades = v || {}; syncTrades(); });
+  on('travel', (v) => { game.travel = v || {}; syncTravel(); });
   on(`lootAward/${user.uid}`, (v) => { game.lootAw = v; applyLoot(); });
   on('members', (v) => { game.members = v || {}; syncEffects(); applyXp(); applyLoot(); handleRest(); syncChests(); });
   on('tokens', (v) => { game.tokens = v || {}; cleanupInit(); syncEffects(); awardKills(); });
@@ -463,6 +464,7 @@ function drawTerrain() {
   });
   // Брошенные вещи — маленький мешок в углу клетки (под токеном тоже видно)
   Object.values(game.drops || {}).forEach((D) => { g.font = '15px system-ui'; g.fillText('🎒', D.x * CELL + CELL - 18, D.y * CELL + CELL - 4); });
+  drawPois(g);
   if (!bgImg || bg.grid) {
     g.strokeStyle = bgImg ? 'rgba(0,0,0,.35)' : 'rgba(255,255,255,.07)';
     g.beginPath();
@@ -769,6 +771,8 @@ function onDown(e) {
   if (tool === 'move' && chest) { if (isDM()) chestDialog(chest[0]); else chestPlayer(chest[0]); return; }
   const drop = tool === 'move' && !tokEl && dropAt(p.x, p.y);
   if (drop) { dropDialog(drop[0]); return; }
+  const poi = tool === 'move' && !tokEl && poiAt(p.x, p.y);
+  if (poi) { poiDialog(poi[0]); return; }
   if (TERRAIN[tool] || tool === 'erase' || tool === 'reveal' || tool === 'conceal') {
     drag = { kind: 'paint', pending: {}, root: tool === 'reveal' || tool === 'conceal' };
     paintAt(p);
@@ -907,6 +911,7 @@ function onUp(e) {
     }
     t.x = x; t.y = y;
     renderTokens();
+    travelStep(d.id, Math.max(Math.abs(x - d.sx), Math.abs(y - d.sy)));
     R.update(ref(gpath()), upd).catch((err) => { app.toast(`Не удалось переместить: ${esc(err.code || err.message)}`); });
   }
 }
@@ -3203,7 +3208,7 @@ function handoutsDialog() {
 /* ---------- Генератор местности и локаций ---------- */
 // mapgen.js строит карту по шаблону и «зерну»; здесь — предпросмотр, сундуки с добычей и замена поля (по желанию — новой сценой)
 // Цвета предпросмотра: стены тёмные, пол светлый — чтобы план читался с первого взгляда
-const PREV_C = { wall: '#15120f', floor: '#6e604b', tree: '#2f6b2a', rock: '#7a746a', furn: '#a0662e', road: '#7a6240', bridge: '#8a5a2b' };
+const PREV_C = { wall: '#15120f', floor: '#6e604b', tree: '#2f6b2a', rock: '#7a746a', furn: '#a0662e', road: '#b08a55', bridge: '#8a5a2b', water: '#3c6eaa', thicket: '#2a5a2a', snow: '#dfe6ee', sand: '#c8b27a', slope: '#8a7454', bog: '#4a5a30' };
 const AMB_N = [['bright', '☀ день'], ['dim', '🌆 сумерки'], ['dark', '🌑 темнота']], FOG_N = [['off', 'выключен'], ['vision', 'обзор персонажей'], ['manual', 'только открытое мастером']];
 let genSeed = 0;
 function genDialog() {
@@ -3216,7 +3221,7 @@ function genDialog() {
   const group = (kind) => Object.entries(T).filter(([, t]) => t.kind === kind).map(([k, t]) => `<option value="${k}" ${k === tpl ? 'selected' : ''}>${t.n}</option>`).join('');
   const sel = (id, list) => `<select id="${id}">${list.map(([v, n]) => `<option value="${v}">${n}</option>`).join('')}</select>`;
   app.openModal(`<div id="genBox"><h2>🎲 Генератор местности и локаций</h2>
-    <div class="form-grid"><label style="grid-column:1/-1">Шаблон<select id="gT"><optgroup label="Местность">${group('terrain')}</optgroup><optgroup label="Локации">${group('location')}</optgroup></select></label>
+    <div class="form-grid"><label style="grid-column:1/-1">Шаблон<select id="gT"><optgroup label="Местность">${group('terrain')}</optgroup><optgroup label="Локации">${group('location')}</optgroup><optgroup label="Мир">${group('world')}</optgroup></select></label>
       <label>Ширина, клеток<input type="number" id="gW" min="12" max="80"></label><label>Высота, клеток<input type="number" id="gH" min="10" max="80"></label>
       <label>Густота<input type="range" id="gD" min="0" max="1" step="0.05" value="${st.d != null ? st.d : 0.3}"></label>
       <label id="gVBox">Вариант<select id="gV"></select></label>
@@ -3253,16 +3258,17 @@ function genDialog() {
     Object.entries(res.doors).forEach(([k, d]) => { const [x, y] = k.split('_').map(Number); g.fillStyle = d.l ? '#e0703a' : '#8a5a2b'; g.fillRect(x * px + 1, y * px + 1, px - 2, px - 2); });
     res.lights.forEach((L) => { g.fillStyle = '#ffe58a'; g.beginPath(); g.arc(L.x * px + px / 2, L.y * px + px / 2, px / 3, 0, Math.PI * 2); g.fill(); });
     res.chests.forEach((c) => { g.fillStyle = '#ffd34d'; g.fillRect(c.x * px + 1, c.y * px + 1, px - 2, px - 2); g.strokeStyle = '#000'; g.strokeRect(c.x * px + 1, c.y * px + 1, px - 2, px - 2); });
+    (res.pois || []).forEach((p) => { g.fillStyle = POI_C[p.k] || '#fff'; g.fillRect(p.x * px - 1, p.y * px - 1, px + 2, px + 2); g.strokeStyle = '#000'; g.strokeRect(p.x * px - 1, p.y * px - 1, px + 2, px + 2); });
     g.fillStyle = '#5b8fc9'; g.beginPath(); g.arc(res.start.x * px + px / 2, res.start.y * px + px / 2, px / 2, 0, Math.PI * 2); g.fill();
     const doors = Object.values(res.doors), rooms = res.rooms.filter((r) => r.kind !== 'cave');
-    $('#gInfo').textContent = `${res.w}×${res.h} клеток${rooms.length ? ` · помещений: ${rooms.length}` : ''}${doors.length ? ` · дверей: ${doors.length}${doors.some((d) => d.l) ? ` (заперто ${doors.filter((d) => d.l).length})` : ''}` : ''}${res.chests.length ? ` · сундуков: ${res.chests.length}` : ''} · вариант ${genSeed % 100000}`;
+    $('#gInfo').textContent = res.pois ? `${res.w}×${res.h} миль · мест: ${res.pois.length} (${res.pois.map((p) => POI_IC[p.k]).join('')}) · вариант ${genSeed % 100000}` : `${res.w}×${res.h} клеток${rooms.length ? ` · помещений: ${rooms.length}` : ''}${doors.length ? ` · дверей: ${doors.length}${doors.some((d) => d.l) ? ` (заперто ${doors.filter((d) => d.l).length})` : ''}` : ''}${res.chests.length ? ` · сундуков: ${res.chests.length}` : ''} · вариант ${genSeed % 100000}`;
     ls.set('dnd55-gen', JSON.stringify({ tpl, d: +$('#gD').value }));
   };
   $('#gT').onchange = () => { setTpl(); draw(); };
   ['#gW', '#gH', '#gD', '#gRoad', '#gChest', '#gV'].forEach((s) => $(s).addEventListener('change', draw));
   $('#gRe').onclick = () => { genSeed = Math.floor(Math.random() * 1e9); draw(); };
-  $('#gOk').onclick = () => { const P = popOptsRead(); genApply({ ...res, tpl }, { lvl: P.lvl, amb: $('#gA').value, fog: $('#gF').value, asScene: $('#gScene').checked,
-    name: $('#gName').value.trim() || T[tpl].n.replace(/^\S+\s/, ''), clearNpc: $('#gNpc').checked, peaceful: !!T[tpl].peaceful, pop: $('#gPop').checked ? P : null }); };
+  $('#gOk').onclick = () => { const P = popOptsRead(), isWorld = T[tpl].kind === 'world'; genApply({ ...res, tpl }, { lvl: P.lvl, amb: $('#gA').value, fog: $('#gF').value, asScene: $('#gScene').checked,
+    name: $('#gName').value.trim() || T[tpl].n.replace(/^\S+\s/, ''), clearNpc: $('#gNpc').checked || isWorld, peaceful: !!T[tpl].peaceful, pop: $('#gPop').checked && !isWorld ? P : null, seed: genSeed }); };
   setTpl(); draw();
 }
 async function genApply(res, o) {
@@ -3275,7 +3281,9 @@ async function genApply(res, o) {
     const trap = chance(trapP) ? makeTrap(pickOne(TRAPS).id, o.lvl) : null;
     return [key('chests'), { x: c.x, y: c.y, lvl: o.lvl, lock: chance(lockP) ? [10, 15, 15, 20][tier] : 0, trap, loot: c.boss ? genHoard(tier) : genChest(o.lvl) }];
   }));
-  const fog = { ...fogSet(), mode: o.fog, amb: o.amb };
+  // Карта мира: миля на клетку, видно на 3 мили; места — с индексами, к ним потом привяжутся сцены
+  const world = res.pois ? { seed: o.seed || 1, pois: Object.fromEntries(res.pois.map((p, i) => [i, p])) } : null;
+  const fog = { ...fogSet(), mode: o.fog, amb: o.amb, ...(world ? { sight: 5280 * 3 } : {}) };
   const blocked = (k) => (TERRAIN[res.cells[k]] || {}).block || (res.doors[k] && !res.doors[k].o);
   // Персонажи и их спутники — на свободные клетки рядом со входом
   const taken = new Set(), spot = () => {
@@ -3288,7 +3296,8 @@ async function genApply(res, o) {
   };
   if (o.asScene && (Object.keys(game.map || {}).length || Object.keys(game.tokens || {}).length)) await saveScene();
   const upd = { map: res.cells, doors: res.doors, lights, chests, reveal: null, seen: null, bgimg: null, 'meta/bg': null, 'meta/w': res.w, 'meta/h': res.h,
-    'meta/fog': fog, 'meta/ground': res.ground || null, 'meta/ft': null, drops: null, areas: null, init: null, econ: null };
+    'meta/fog': fog, 'meta/ground': res.ground || null, 'meta/ft': world ? 5280 : null, 'meta/world': world, 'meta/worldFrom': o.worldFrom || null,
+    drops: null, areas: null, init: null, econ: null, ...(world ? { travel: { miles: 0, pace: 'normal', extra: 0, checks: 0 } } : {}) };
   const pcs = {};
   Object.entries(game.tokens || {}).forEach(([id, t]) => {
     if (t.kind === 'npc') { if (o.clearNpc) upd[`tokens/${id}`] = null; return; }
@@ -3304,13 +3313,18 @@ async function genApply(res, o) {
     const sid = key('scenes');
     upd['meta/scene'] = sid;
     upd[`scenes/${sid}`] = { n: o.name, t: Date.now() };
-    upd[`sceneData/${sid}`] = { w: res.w, h: res.h, fog, ground: res.ground || null, gen, map: res.cells, doors: res.doors, lights, chests, npcs: P ? P.tokens : {}, pcs };
+    upd[`sceneData/${sid}`] = { w: res.w, h: res.h, fog, ground: res.ground || null, gen, map: res.cells, doors: res.doors, lights, chests, npcs: P ? P.tokens : {}, pcs,
+      ft: world ? 5280 : null, world, worldFrom: o.worldFrom || null };
+    upd._sid = sid;
   }
+  const sid = upd._sid || null;
+  delete upd._sid;
   if (P && P.notes.length) addLog({ kind: 'sys', dmOnly: true, txt: `👥 Заселено (${Object.keys(P.tokens).length}): ${P.notes.join('; ')}` });
   app.closeModal();
   await R.update(ref(gpath()), upd).catch((err) => app.toast(`Не удалось: ${esc(err.code || err.message)}`));
-  addLog({ kind: 'sys', txt: `🗺 Новая местность: ${o.name}` });
-  app.toast(`🗺 «${esc(o.name)}» готово${Object.keys(chests).length ? ` · сундуков: ${Object.keys(chests).length}` : ''}`, 'crit');
+  addLog({ kind: 'sys', txt: `${world ? '🌍 Карта мира' : '🗺 Новая местность'}: ${o.name}` });
+  app.toast(`${world ? '🌍' : '🗺'} «${esc(o.name)}» готово${Object.keys(chests).length ? ` · сундуков: ${Object.keys(chests).length}` : ''}${world ? ' · места на карте — нажмите, чтобы войти' : ''}`, 'crit');
+  return sid;
 }
 
 /* ---------- Заселение: противники по уровню группы и NPC ---------- */
@@ -3805,6 +3819,129 @@ function sellPrice(i) {
   return i.cat === 'Сокровище' ? v : Math.floor(v * 50) / 100;
 }
 
+/* ---------- Карта мира: места, вход в локации, путешествие ---------- */
+const POI_IC = { city: '🏙', village: '🏡', castle: '🏰', tavern: '🍺', ruin: '🏚', cave: '🕳', camp: '⛺', tower: '🗼', temple: '⛪', crypt: '⚰', mine: '⛏', lair: '🐉' };
+const POI_C = { city: '#f0c76a', village: '#e6d3a3', castle: '#d0d0e0', tavern: '#e0a050', ruin: '#b07a7a', cave: '#909090', camp: '#e05a3a', tower: '#a090e0', temple: '#f0f0f0', crypt: '#8a6a9a', mine: '#a08060', lair: '#e03030' };
+const POI_N = { city: 'город', village: 'деревня', castle: 'замок', tavern: 'таверна', ruin: 'руины', cave: 'пещера', camp: 'лагерь', tower: 'башня', temple: 'храм', crypt: 'склеп', mine: 'шахта', lair: 'логово' };
+const worldPois = () => Object.entries(((game && game.meta && game.meta.world) || {}).pois || {});
+const poiAt = (x, y) => worldPois().find(([, p]) => p.x === x && p.y === y);
+function drawPois(g) {
+  worldPois().forEach(([, p]) => {
+    const cx = p.x * CELL + CELL / 2, cy = p.y * CELL + CELL / 2;
+    g.save();
+    g.fillStyle = 'rgba(0,0,0,.45)'; g.beginPath(); g.arc(cx, cy, CELL * 0.48, 0, Math.PI * 2); g.fill();
+    g.strokeStyle = POI_C[p.k] || '#fff'; g.lineWidth = 2; g.stroke();
+    g.font = `${Math.round(CELL * 0.6)}px system-ui`; g.textAlign = 'center'; g.textBaseline = 'middle'; g.fillText(POI_IC[p.k] || '📍', cx, cy + 1);
+    g.font = '600 11px system-ui, sans-serif'; g.textBaseline = 'top'; g.lineWidth = 3; g.strokeStyle = 'rgba(0,0,0,.85)';
+    g.strokeText(p.n, cx, cy + CELL * 0.5); g.fillStyle = '#f3e3bf'; g.fillText(p.n, cx, cy + CELL * 0.5);
+    g.restore();
+  });
+}
+// Место на карте мира: мастер входит (локация создаётся из шаблона и запоминается), переименовывает; игрок видит название
+function poiDialog(i) {
+  const W_ = game.meta.world, P = W_ && W_.pois[i];
+  if (!P) return;
+  if (!isDM()) { app.toast(`${POI_IC[P.k] || '📍'} ${esc(P.n)}`); return; }
+  const has = P.scene && (game.scenes || {})[P.scene];
+  app.openModal(`<div><h2>${POI_IC[P.k] || '📍'} ${esc(P.n)}</h2>
+    <p class="muted small">${POI_N[P.k] || 'место'} · шаблон «${esc(((MAPGEN.TEMPLATES[P.tpl] || {}).n || P.tpl).replace(/^\S+\s/, ''))}»${has ? ' · локация уже создана — войдёте туда же' : ' · при входе создастся локация (со своими существами), текущая карта мира сохранится'}</p>
+    <label>Название<input id="poiN" value="${esc(P.n)}"></label>
+    <div class="modal-actions"><button data-act="closeModal">Закрыть</button><button id="poiSave">Сохранить название</button><button class="primary" id="poiGo">🚪 Войти</button></div></div>`);
+  $('#poiSave').onclick = async () => { const n = $('#poiN').value.trim(); if (n) await R.update(ref(gpath(`meta/world/pois/${i}`)), { n }); app.closeModal(); };
+  $('#poiGo').onclick = () => enterPoi(i, $('#poiN').value.trim() || P.n);
+}
+async function enterPoi(i, name) {
+  const W_ = game.meta.world, P = W_.pois[i];
+  if (name && name !== P.n) await R.update(ref(gpath(`meta/world/pois/${i}`)), { n: name });
+  app.closeModal();
+  if (P.scene && (game.scenes || {})[P.scene]) { await loadScene(P.scene); addLog({ kind: 'sys', txt: `🚪 Отряд входит: ${name || P.n}` }); return; }
+  const T = MAPGEN.TEMPLATES[P.tpl] || MAPGEN.TEMPLATES.village;
+  const wsid = await saveScene();
+  const res = MAPGEN.generate(P.tpl, { seed: ((W_.seed || 1) + (+i + 1) * 7919) >>> 0, variant: P.v || '' });
+  const players = Object.values(game.members || {}).filter((m) => m.role !== 'dm').length || 4;
+  const sid = await genApply({ ...res, tpl: P.tpl }, { lvl: partyLevel(), amb: res.amb, fog: res.fog, asScene: true, name: name || P.n, clearNpc: true, peaceful: !!T.peaceful,
+    pop: { lvl: partyLevel(), n: players, diff: 1, groups: 0, peaceful: !!T.peaceful, hidden: false }, worldFrom: { sid: wsid, poi: +i } });
+  if (sid) await R.update(ref(gpath()), { [`sceneData/${wsid}/world/pois/${i}/scene`]: sid });
+}
+async function worldBack() {
+  const F = game.meta && game.meta.worldFrom;
+  if (!F || !(game.scenes || {})[F.sid]) { app.toast('Карта мира не найдена'); return; }
+  await loadScene(F.sid);
+  addLog({ kind: 'sys', txt: '🌍 Отряд возвращается на карту мира' });
+}
+// Путешествие (правила 2024): темп быстрый 4 мили/ч (−5 к Внимательности), обычный 3, медленный 2 (можно красться).
+// games/{id}/travel: { miles — пройдено отрядом (по самому далеко ушедшему), tok: { id: мили }, pace, extra — часы привалов, checks — проверок встреч }
+const PACE = { fast: [4, 'быстрый — 4 мили/ч, −5 к пассивной Внимательности'], normal: [3, 'обычный — 3 мили/ч'], slow: [2, 'медленный — 2 мили/ч, можно идти скрытно'] };
+const TRAVEL_START = 8; // выход в 8 утра первого дня
+const travelHours = (T) => (+T.miles || 0) / (PACE[T.pace] || PACE.normal)[0] + (+T.extra || 0);
+function travelClock(T) { const h = TRAVEL_START + travelHours(T), day = 1 + Math.floor(h / 24), hh = h % 24; return `день ${day}, ${String(Math.floor(hh)).padStart(2, '0')}:${String(Math.round((hh % 1) * 60) % 60).padStart(2, '0')}`; }
+// Шаг персонажа по карте мира — мили в его счётчик; общий путь отряда — по самому далеко ушедшему
+function travelStep(id, cells) {
+  if (!game.meta || !game.meta.world || !cells) return;
+  const t = game.tokens[id];
+  if (!t || t.kind !== 'pc' || t.comp) return;
+  const T = game.travel || {}, mine = (+((T.tok || {})[id]) || 0) + (cells * FT()) / 5280;
+  const miles = Math.max(+T.miles || 0, mine);
+  game.travel = { ...T, tok: { ...(T.tok || {}), [id]: mine }, miles };
+  R.update(ref(gpath('travel')), { [`tok/${id}`]: +mine.toFixed(2), miles: +miles.toFixed(2) }).catch(() => {});
+}
+// Мастер: каждые 4 часа пути — проверка случайной встречи (к20, 18+); встреча — бой на местности под ногами отряда
+const BIOME_TPL = { thicket: 'forest', tree: 'forest', bush: 'plains', '': 'plains', road: 'plains', bridge: 'river', sand: 'desert', slope: 'mountains', rock: 'mountains', snow: 'mountains', bog: 'swamp', water: 'coast', ice: 'mountains' };
+function partyCell() {
+  const pcs = Object.values(game.tokens).filter((t) => t.kind === 'pc' && !t.comp);
+  if (!pcs.length) return null;
+  const x = Math.round(pcs.reduce((s, t) => s + t.x, 0) / pcs.length), y = Math.round(pcs.reduce((s, t) => s + t.y, 0) / pcs.length);
+  return { x, y, v: (game.map || {})[`${x}_${y}`] || '' };
+}
+let travelAsked = 0;
+function syncTravel() {
+  if (!isDM() || !game.meta || !game.meta.world) return;
+  const T = game.travel || {}, due = Math.floor(travelHours(T) / 4);
+  if (due <= (+T.checks || 0) || travelAsked === due) return;
+  travelAsked = due;
+  const roll = die(20), hit = roll >= 18;
+  R.update(ref(gpath('travel')), { checks: due }).catch(() => {});
+  addLog({ kind: 'sys', txt: `🧭 ${travelClock(T)} · пройдено ${(+T.miles || 0).toFixed(1)} мили` });
+  addLog({ kind: 'sys', dmOnly: true, txt: `🎲 Проверка встречи: к20 = ${roll}${hit ? ' — встреча!' : ''}` });
+  if (hit) encounterDialog();
+}
+function encounterDialog() {
+  const pc = partyCell(), tpl = BIOME_TPL[pc ? pc.v : ''] || 'plains';
+  app.openModal(`<div><h2>⚔ Случайная встреча</h2><p>Местность под отрядом: <b>${esc(((MAPGEN.TEMPLATES[tpl] || {}).n || tpl))}</b>. Противники — по уровню группы и местности.</p>
+    <div class="form-grid"><label>Сложность<select id="encD">${DIFF_N.map((n, i) => `<option value="${i}" ${i === 1 ? 'selected' : ''}>${n}</option>`).join('')}</select></label>
+      <label class="check"><input type="checkbox" id="encPeace"> Мирная встреча (путники, торговец)</label></div>
+    <div class="modal-actions"><button data-act="closeModal">Пропустить</button><button class="primary" id="encGo">⚔ Бой здесь — новая сцена</button></div></div>`);
+  $('#encGo').onclick = async () => {
+    const wsid = await saveScene(), peaceful = $('#encPeace').checked, diff = +$('#encD').value || 0;
+    const res = MAPGEN.generate(tpl, { seed: Math.floor(Math.random() * 1e9), variant: 'none' });
+    const players = Object.values(game.members || {}).filter((m) => m.role !== 'dm').length || 4;
+    await genApply({ ...res, tpl }, { lvl: partyLevel(), amb: (game.meta.fog || {}).amb || 'bright', fog: 'off', asScene: true, name: `Встреча в пути`, clearNpc: true, peaceful,
+      pop: { lvl: partyLevel(), n: players, diff, groups: 1, peaceful, hidden: false }, worldFrom: { sid: wsid } });
+  };
+}
+function travelDialog() {
+  const T = game.travel || {}, dm = isDM();
+  app.openModal(`<div><h2>🧭 Путешествие</h2>
+    <p><b>${travelClock(T)}</b> · пройдено <b>${(+T.miles || 0).toFixed(1)}</b> мили · в пути ${travelHours(T).toFixed(1)} ч</p>
+    ${dm ? `<label>Темп<select id="trPace">${Object.entries(PACE).map(([k, [, n]]) => `<option value="${k}" ${(T.pace || 'normal') === k ? 'selected' : ''}>${n}</option>`).join('')}</select></label>
+    <div class="row gap wrap mt"><button data-tr="1">⏱ +1 час</button><button data-tr="night">🏕 Ночлег до утра</button><button data-tr="enc">🎲 Проверить встречу</button><button data-tr="reset">↺ Сбросить счёт</button></div>
+    <p class="muted small">Время идёт само, когда отряд двигается по карте мира (по самому далеко ушедшему персонажу). Каждые 4 часа пути — проверка встречи (к20, 18+). Длинный отдых — «🏕 Отдых» в меню «Игра».</p>
+    <h3 class="mt">Места</h3><div class="list">${worldPois().map(([i, p]) => `<div class="enc-row"><span>${POI_IC[p.k] || '📍'} ${esc(p.n)} <span class="muted small">${POI_N[p.k] || ''}${p.scene ? ' · была' : ''}</span></span><button data-poi="${i}">🚪 Войти</button></div>`).join('')}</div>`
+    : `<p class="muted small">Темп: ${(PACE[T.pace] || PACE.normal)[1]}.</p>`}
+    <div class="modal-actions"><button data-act="closeModal">Закрыть</button></div></div>`);
+  if (!dm) return;
+  $('#trPace').onchange = () => R.update(ref(gpath('travel')), { pace: $('#trPace').value }).then(travelDialog);
+  $$('[data-tr]').forEach((b) => b.addEventListener('click', async () => {
+    const k = b.dataset.tr, h = TRAVEL_START + travelHours(T);
+    if (k === '1') await R.update(ref(gpath('travel')), { extra: (+T.extra || 0) + 1 });
+    if (k === 'night') { const next = (Math.floor(h / 24) + 1) * 24 + TRAVEL_START; await R.update(ref(gpath('travel')), { extra: (+T.extra || 0) + (next - h) }); addLog({ kind: 'sys', txt: '🏕 Ночлег до утра' }); }
+    if (k === 'enc') { app.closeModal(); const r = die(20); addLog({ kind: 'sys', dmOnly: true, txt: `🎲 Проверка встречи: к20 = ${r}${r >= 18 ? ' — встреча!' : ''}` }); if (r >= 18) encounterDialog(); else app.toast(`🎲 ${r} — без встреч`); return; }
+    if (k === 'reset' && app.confirm('Сбросить пройденный путь и время?')) await R.set(ref(gpath('travel')), { miles: 0, pace: T.pace || 'normal', extra: 0, checks: 0 });
+    travelDialog();
+  }));
+  $$('[data-poi]').forEach((b) => b.addEventListener('click', () => poiDialog(b.dataset.poi)));
+}
+
 /* ---------- Масштаб и размер поля ---------- */
 const SCALES = [[5, '5 фт — бой, комнаты'], [10, '10 фт — большие залы'], [30, '30 фт — поселение, крепость'], [100, '100 фт — округа'], [5280, '1 миля — путешествие']];
 // Границы нарисованного и поставленного: местность, двери, сундуки, свет, вещи, существа
@@ -3876,7 +4013,7 @@ function scaleDialog() {
 function sceneSnap() {
   const npcs = {}, pcs = {}, m = game.meta || {};
   Object.entries(game.tokens || {}).forEach(([id, t]) => { if (t.kind === 'npc') npcs[id] = t; else pcs[id] = { x: t.x, y: t.y }; });
-  return { w: W(), h: H(), ft: m.ft || null, bg: m.bg || null, fog: m.fog || null, ground: m.ground || null, gen: m.gen || null, map: game.map || null, doors: game.doors || null, lights: game.lights || null, chests: game.chests || null,
+  return { w: W(), h: H(), ft: m.ft || null, world: m.world || null, worldFrom: m.worldFrom || null, bg: m.bg || null, fog: m.fog || null, ground: m.ground || null, gen: m.gen || null, map: game.map || null, doors: game.doors || null, lights: game.lights || null, chests: game.chests || null,
     reveal: game.reveal || null, seen: game.seen || null, drops: game.drops || null, bgimg: bgSrc ? { data: bgSrc } : null, npcs, pcs };
 }
 // Сохранить текущее поле в его сцену (или в новую «Сцена N»)
@@ -3891,7 +4028,7 @@ async function loadScene(sid, empty, name) {
   const snap = empty ? { w: 30, h: 20 } : (await R.get(ref(gpath(`sceneData/${sid}`)))).val() || {};
   const upd = { map: snap.map || null, doors: snap.doors || null, lights: snap.lights || null, reveal: snap.reveal || null, seen: snap.seen || null,
     bgimg: snap.bgimg || null, 'meta/w': snap.w || 30, 'meta/h': snap.h || 20, 'meta/bg': snap.bg || null, 'meta/fog': snap.fog || null, 'meta/scene': sid,
-    chests: snap.chests || null, 'meta/ground': snap.ground || null, 'meta/gen': snap.gen || null, 'meta/ft': snap.ft || null, drops: snap.drops || null,
+    chests: snap.chests || null, 'meta/ground': snap.ground || null, 'meta/gen': snap.gen || null, 'meta/ft': snap.ft || null, 'meta/world': snap.world || null, 'meta/worldFrom': snap.worldFrom || null, drops: snap.drops || null,
     areas: null, init: null, econ: null };
   Object.entries(game.tokens || {}).forEach(([id, t]) => {
     if (t.kind === 'npc') { upd[`tokens/${id}`] = null; return; }
@@ -4228,7 +4365,8 @@ function renderTools() {
   if (!isDM()) {
     $('#tblTools').innerHTML = `<div class="seg">${base}${!(hasMine && inFight()) ? t('place', hasMine ? '📍 Переставить меня' : '📍 Поставить персонажа', 'Нажмите на клетку') : ''}
       ${me() && me().charId && app.companions(me().charId).length ? b('compPick', '🐾 Спутник', 'Поставить спутника из листа на поле', tool === 'placeComp') : ''}
-      ${me() && me().charId ? b('items', '🎒 Вещи', 'Передать вещи или деньги другому игроку, обменяться, бросить на землю') : ''}${handouts}</div>`;
+      ${me() && me().charId ? b('items', '🎒 Вещи', 'Передать вещи или деньги другому игроку, обменяться, бросить на землю') : ''}
+      ${(game.meta || {}).world ? b('travel', `🧭 ${travelClock(game.travel || {})}`, 'Путешествие: время и пройденный путь') : ''}${handouts}</div>`;
     return;
   }
   // Мастер: выпадающие меню по группам; на кнопке меню — выбранный в нём инструмент
@@ -4248,6 +4386,8 @@ function renderTools() {
     + menu('map', '🗺 Карта', [], b('gen', '🎲 Генератор', 'Создать местность или локацию по шаблону: лес, река, горы, подземелье, замок, город…')
       + b('mapCfg', '🗺 Карта и туман', 'Карта-подложка, размер поля, туман войны')
       + b('scale', `📐 Масштаб и размер · ${fmtFt(FT())}`, 'Сколько футов в клетке; добавить или убрать ряды с любой стороны; обрезать по нарисованному')
+      + ((game.meta || {}).world ? b('travel', '🧭 Путешествие', 'Темп, время в пути, случайные встречи, список мест') : '')
+      + ((game.meta || {}).worldFrom ? b('worldBack', '🌍 На карту мира', 'Вернуться на карту мира — отряд встанет там, откуда вошёл') : '')
       + b('scenes', `🎬 Сцены${(game.meta || {}).scene && (game.scenes || {})[game.meta.scene] ? `: ${esc(game.scenes[game.meta.scene].n)}` : ''}`, 'Несколько полей: таверна, подземелье, логово — переключение одной кнопкой')
       + (fogOn() ? b('fogPreview', '👁 Вид игроков', 'Показать поле так, как его видят игроки', fogPreview) : ''), fogPreview)
     + menu('mon', '🐉 Существа', ['enemy', 'encPlace'], t('enemy', TL.enemy, 'Нажмите на клетку, чтобы поставить врага или NPC из бестиария')
@@ -4641,6 +4781,7 @@ function stepMove(dx, dy) {
   }
   t.x = x; t.y = y;
   renderTokens(); camUpdate();
+  travelStep(id, 1);
   R.update(ref(gpath()), upd).catch((err) => app.toast(`Не удалось переместить: ${esc(err.code || err.message)}`));
   if (mv) keyHint(`осталось ${Math.max(0, mv.left - cost)} фт`, id);
   return { slow: cost > FT() * (mv && mv.prone ? 2 : 1) };
@@ -4898,6 +5039,8 @@ async function onClick(e) {
     else if (a === 'scale') scaleDialog();
     else if (a === 'keys') keysDialog();
     else if (a === 'full') setFull(!fullOn);
+    else if (a === 'travel') travelDialog();
+    else if (a === 'worldBack') await worldBack();
     else if (a === 'hudSide') { $('#tblSide').classList.toggle('closed'); }
     else if (a === 'hudTab') { hudTab = b.dataset.k; ls.set('dnd55-hudtab', hudTab); renderHud(); }
     else if (a === 'hudAtk') quickAttack(b.dataset.id, b.dataset.atk);
