@@ -2021,22 +2021,30 @@ function openCast(id) {
       <span class="muted small">${SHAPE_N[s.shape]}${s.size ? ` ${s.size} фт` : ''}${s.range ? ` · дистанция ${s.range} фт` : s.self ? ' · от себя' : ''}${what(s)} · ${ACT_N[s.act]}</span></button>`).join('')
       || '<p class="muted">Нет подготовленных заклинаний, которые можно применить на столе.</p>'}</div>
     <div class="modal-actions"><button data-act="closeModal">Отмена</button></div>`);
-  $$('[data-sp]').forEach((b) => b.addEventListener('click', () => {
-    const I = list.find((x) => x.id === b.dataset.sp), F = SPELL_FX[I.e];
-    // Число целей растёт с уровнем ячейки («Благословение»: 3 + 1 за уровень выше 1)
-    const go = (slotKey, lvl) => {
-      app.closeModal();
-      const nT = F && I.shape === 'target' ? (F.n || 1) + Math.max(0, (lvl || I.l) - I.l) * (F.up || 0) : 1;
-      startCast({ info: { ...I, fxDef: F || null, nT, pick: I.pick || !!(F && F.heal) }, caster: id, charId: m.charId, slotKey, lvl: lvl || I.l });
-    };
-    const slots = I.slots.filter((s) => s.left > 0);
-    if (!I.l) { go('free', 0); return; }
-    if (!slots.length) { app.toast('Нет свободных ячеек'); return; }
-    $('#modalBody').innerHTML = `<h2>${esc(I.n)}</h2><p class="muted small">Выберите ячейку${I.u ? ` — выше уровня: +${esc(I.u)} за уровень` : ''}${F && F.up ? ` — выше уровня: +${F.up} цель за уровень` : ''}.</p>
-      <div class="slot-choice">${slots.map((s) => `<button data-slot="${s.key}" data-lvl="${s.lvl}">${esc(s.label)}</button>`).join('')}</div>
-      <div class="modal-actions"><button data-act="closeModal">Отмена</button></div>`;
-    $$('[data-slot]').forEach((x) => x.addEventListener('click', () => go(x.dataset.slot, +x.dataset.lvl)));
-  }));
+  $$('[data-sp]').forEach((b) => b.addEventListener('click', () => spellPick(id, list.find((x) => x.id === b.dataset.sp))));
+}
+// Заклинание выбрано (из меню или с панели): ячейка — и размещение на поле
+function spellPick(id, I) {
+  const m = me(), F = SPELL_FX[I.e];
+  if (!m || !m.charId) return;
+  // Число целей растёт с уровнем ячейки («Благословение»: 3 + 1 за уровень выше 1)
+  const go = (slotKey, lvl) => {
+    app.closeModal();
+    const nT = F && I.shape === 'target' ? (F.n || 1) + Math.max(0, (lvl || I.l) - I.l) * (F.up || 0) : 1;
+    startCast({ info: { ...I, fxDef: F || null, nT, pick: I.pick || !!(F && F.heal) }, caster: id, charId: m.charId, slotKey, lvl: lvl || I.l });
+  };
+  const slots = I.slots.filter((s) => s.left > 0);
+  if (!I.l) { go('free', 0); return; }
+  if (!slots.length) { app.toast('Нет свободных ячеек'); return; }
+  app.openModal(`<h2>${esc(I.n)}</h2><p class="muted small">Выберите ячейку${I.u ? ` — выше уровня: +${esc(I.u)} за уровень` : ''}${F && F.up ? ` — выше уровня: +${F.up} цель за уровень` : ''}.</p>
+    <div class="slot-choice">${slots.map((s) => `<button data-slot="${s.key}" data-lvl="${s.lvl}">${esc(s.label)}</button>`).join('')}</div>
+    <div class="modal-actions"><button data-act="closeModal">Отмена</button></div>`);
+  $$('[data-slot]').forEach((x) => x.addEventListener('click', () => go(x.dataset.slot, +x.dataset.lvl)));
+}
+// Можно ли сейчас это заклинание (вне боя — всегда; в бою — по своему действию, бонусному или реакции)
+function spellCan(id, act) {
+  const e = econ(id), turn = isTurnOf(id);
+  return !inFight() || (act === 'reaction' ? !e.r : turn && (act === 'bonus' ? !e.b : !e.a && !(e.atk > 0)));
 }
 // Мастер: область без заклинания из листа (дыхание дракона, ловушка) — источник — выбранное существо
 function dmAreaDialog() {
@@ -4090,7 +4098,7 @@ function renderAll() {
   const inGame = !!(game && game.meta && user);
   box.hidden = !inGame;
   lobby.hidden = inGame;
-  if (!inGame) { renderLobby(); return; }
+  if (!inGame) { if (fullOn) { fullOn = false; document.body.classList.remove('tbl-full-on'); $('#tblGame').classList.remove('tbl-full'); } renderLobby(); return; }
   $('#tblName').textContent = game.meta.name;
   $('#tblCode').textContent = `Код: ${game.code}`;
   $('#tblLeave').textContent = isDM() ? '⏏ Выйти из игры' : 'Покинуть';
@@ -4114,6 +4122,7 @@ function renderAll() {
   renderSaves();
   renderCastBar();
   renderMtabs();
+  renderHud();
 }
 /* ---------- Телефон: вкладки панели, масштаб пальцами ---------- */
 const narrow = () => window.matchMedia('(max-width: 760px)').matches;
@@ -4419,6 +4428,131 @@ function renderMembers() {
       ${isDM() && uid !== user.uid ? `<button class="ghost" data-tbl="kick" data-id="${uid}" title="Исключить">✕</button>` : ''}</div>`).join('');
 }
 
+/* ---------- Во весь экран: очередь сверху, панель хода снизу ---------- */
+// Поле на весь экран; журнал, ход и игроки — выдвижная панель справа; запросы (спасброски, передачи) — над панелью хода.
+// Панель: слева портрет и хиты, по центру — ресурсы хода и ячейки 1–0 (атаки, заклинания, действия, зелья), справа — конец хода
+let fullOn = false, hudTab = ls.get('dnd55-hudtab') || 'atk';
+function setFull(on) {
+  fullOn = on;
+  document.body.classList.toggle('tbl-full-on', on);
+  $('#tblGame').classList.toggle('tbl-full', on);
+  $('#tblSide').classList.toggle('closed', on);
+  const D = document.documentElement;
+  try {
+    if (on && D.requestFullscreen && !document.fullscreenElement) D.requestFullscreen().catch(() => {});
+    if (!on && document.fullscreenElement) document.exitFullscreen().catch(() => {});
+  } catch (e) { /* без полноэкранного режима браузера — просто на всё окно */ }
+  camKey = '';
+  renderAll();
+}
+document.addEventListener('fullscreenchange', () => { if (!document.fullscreenElement && fullOn) setFull(false); });
+// Чей ход и чья панель: игрок — свой персонаж; мастер — ходящее существо, вне боя — выделенное
+function hudTokId() {
+  if (!isDM()) return myTok() ? `pc_${user.uid}` : null;
+  const c = currentEntry();
+  if (c && game.tokens[c.tokenId]) return c.tokenId;
+  return selId && game.tokens[selId] ? selId : null;
+}
+const faceHtml = (t, cls = '') => `<div class="hud-face ${cls}" style="--tc:${t.kind === 'npc' ? SIDE_COLOR[t.side || 'enemy'] : t.color || '#d4a64a'}">${t.img && !isDead(t) ? `<img src="${t.img}" alt="">` : `<span>${isDead(t) ? '☠' : esc((t.name || '?').trim().slice(0, 2))}</span>`}</div>`;
+function renderFInit() {
+  const box = $('#tblFInit');
+  box.hidden = !fullOn || !inFight();
+  if (box.hidden) return;
+  const cur = currentEntry();
+  box.innerHTML = `<span class="badge">Раунд ${game.init.round || 1}</span>${initList().map((e) => {
+    const t = game.tokens[e.tokenId];
+    if (t && t.hidden && !isDM()) return '';
+    return `<div class="fi ${cur && cur.id === e.id ? 'cur' : ''} ${t && isDown(t) ? 'down' : ''}" title="${esc(e.name)} · ${e.roll}">${t ? faceHtml(t) : `<div class="hud-face"><span>${e.kind === 'lair' ? '🏰' : '?'}</span></div>`}<b>${e.roll}</b></div>`;
+  }).join('')}`;
+}
+// Ячейки панели по вкладкам: [{ label, sub, act, data, ok }]
+function hudSlots(id) {
+  const t = game.tokens[id], m = me(), dm = isDM(), e = econ(id), mv = moveInfo(id), turn = isTurnOf(id), fight = inFight();
+  const S = [];
+  if (hudTab === 'atk') {
+    if (dm) {
+      if (t.kind === 'npc') npcAttacks(t).forEach((a) => S.push({ label: `⚔ ${a.n}`, sub: `${fmtMod(a.bonus)} · ${a.dmg || ''}`, act: 'npcAttack', data: { id }, ok: !mv.incap && (!fight || turn) && (e.atk > 0 || !e.a || !e.b) }));
+    } else if (m && m.charId) {
+      [...app.attacks(m.charId), ...SPECIAL_ATK].forEach((a) => S.push({ label: a.special ? a.n : `⚔ ${a.n}`, sub: a.special ? 'приём' : `${fmtMod(a.bonus)} · ${a.dmg || ''}`, act: 'hudAtk', data: { id, atk: a.id }, ok: !mv.incap && a.ammo !== 0 && (((turn || !fight) && (e.atk > 0 || !e.a || !e.b)) || !e.r) }));
+    }
+  } else if (hudTab === 'spell' && !dm && m && m.charId) {
+    app.areaSpells(m.charId, Object.keys(SPELL_FX)).forEach((s) => S.push({ label: `✨ ${s.n}`, sub: s.l ? `${s.l} ур. · ${s.slots.filter((x) => x.left > 0).length ? 'есть ячейки' : 'нет ячеек'}` : 'заговор', act: 'hudSpell', data: { id, sp: s.id }, ok: !mv.incap && spellCan(id, s.act) && (!s.l || s.slots.some((x) => x.left > 0)) }));
+  } else if (hudTab === 'act') {
+    const can = !mv.incap && (turn || dm || !fight);
+    [['dash', '🏃 Рывок', 'действие', !e.a && mv.speed > 0], ['dis', '↩ Отход', 'действие', !e.a && !e.dis], ['dodge', '🛡 Уклонение', 'действие', !e.a && !e.dodge],
+      ['dashB', '🏃 Рывок', 'бонусное', mv.bonus.includes('dash') && !e.b && mv.speed > 0], ['disB', '↩ Отход', 'бонусное', mv.bonus.includes('dis') && !e.b && !e.dis],
+      ['stand', '⬆ Встать', `${Math.ceil(mv.speed / 2)} фт`, mv.prone && mv.left >= Math.ceil(mv.speed / 2)]]
+      .forEach(([a, label, sub, ok]) => { if (a.endsWith('B') && !mv.bonus.includes(a === 'dashB' ? 'dash' : 'dis')) return; if (a === 'stand' && !mv.prone) return; S.push({ label, sub, act: a, data: { id }, ok: can && fight && ok }); });
+    if (!dm) S.push({ label: '🎲 Спасбросок', sub: 'Alt', act: 'hudSave', data: {}, ok: true }, { label: '🎒 Вещи', sub: 'I', act: 'items', data: {}, ok: true });
+  } else if (hudTab === 'item' && !dm && m && m.charId) {
+    ((app.inventory(m.charId) || {}).items || []).filter((i) => i.heal).forEach((i) => S.push({ label: `🧪 ${i.n}`, sub: `${i.heal}${i.qty > 1 ? ` · ×${i.qty}` : ''} · бонусное`, act: 'hudDrink', data: { id, it: i.id }, ok: !mv.incap && (!fight || (turn && !e.b)) }));
+  }
+  return S;
+}
+function renderHud() {
+  const box = $('#tblHud');
+  box.hidden = !fullOn;
+  renderFInit();
+  if (!fullOn) return;
+  const id = hudTokId(), t = id && game.tokens[id], dm = isDM(), fight = inFight();
+  const side = `<div class="hud-right">
+      ${fight && t && isTurnOf(id) && !dm ? '<button class="primary hud-end" data-tbl="endTurn">✓ Закончить ход<small>Пробел</small></button>'
+        : fight && dm ? '<button class="primary hud-end" data-tbl="next">▶ Дальше<small>Пробел</small></button>'
+        : fight ? `<div class="hud-wait">Ходит: <b>${esc((currentEntry() || {}).name || '')}</b></div>` : dm && initList().length ? '<button class="primary hud-end" data-tbl="startFight">⚔ Начать бой</button>' : '<div class="hud-wait">Вне боя</div>'}
+      <div class="row gap"><button data-tbl="hudSide" title="Журнал, чат, очередь и игроки">📜</button><button data-tbl="keys" title="Клавиши (K)">⌨</button><button data-tbl="full" title="Выйти из полноэкранного режима">✕</button></div></div>`;
+  if (!t) { box.innerHTML = `<div class="hud-left"><div class="muted small">${dm ? 'Выделите существо — здесь появятся его действия' : 'Поставьте персонажа на поле'}</div></div><div class="hud-mid"></div>${side}`; return; }
+  const e = econ(id), mv = moveInfo(id), pct = Math.max(0, Math.min(1, (t.hp || 0) / (t.hpMax || 1))), ch = !dm && charOf(t);
+  const pip = (k, n) => `<span class="hpip ${e[k] ? 'used' : ''}" title="${n}${e[k] ? ' — потрачено' : ''}">${n}</span>`;
+  const slots = hudSlots(id);
+  const tabs = dm ? [['atk', '⚔ Атаки'], ['act', '🏃 Действия']] : [['atk', '⚔ Атаки'], ['spell', '✨ Заклинания'], ['act', '🏃 Действия'], ['item', '🧪 Зелья']];
+  const ds = isDown(t) && usesDS(t);
+  box.innerHTML = `<div class="hud-left">${faceHtml(t, 'big')}<div class="hud-stats">
+      <b>${esc(isDown(t) ? downLabel(t) : t.name)}</b>
+      ${t.hpMax ? `<div class="hud-hp"><div style="width:${pct * 100}%;background:${pct > 0.5 ? '#5a9e5a' : pct > 0.25 ? '#d4a64a' : '#c94a3d'}"></div><span>${t.hp}/${t.hpMax}${+t.temp ? ` +${t.temp}` : ''}</span></div>` : ''}
+      <div class="muted small">КД ${t.ac || '—'}${ch && ch.conc ? ` · 🌀 ${esc(ch.conc)}` : ''}</div>
+      ${(t.cond || []).length ? `<div class="hud-cond">${t.cond.map((k) => `<span class="chip on"><span>${esc(condName(k))}</span></span>`).join('')}</div>` : ''}</div></div>
+    <div class="hud-mid">
+      ${ds ? `<div class="hud-ds">💀 Успехи ${+t.dsS || 0}/3 · Провалы ${+t.dsF || 0}/3 ${!dm && isTurnOf(id) && !isDead(t) && !isStable(t) && !e.ds ? `<button class="primary" data-tbl="deathSave" data-id="${id}">Спасбросок от смерти</button>` : ''}</div>` : `
+      <div class="hud-res">${pip('a', 'Действие')}${pip('b', 'Бонусное')}${pip('r', 'Реакция')}
+        <span class="hud-mv" title="Перемещение"><span style="width:${fight && mv.total ? Math.min(100, (mv.left / mv.total) * 100) : 100}%"></span><em>${fight ? `${mv.left}/${mv.total}` : mv.speed} фт</em></span>
+        ${e.atk > 0 ? `<span class="muted small">атак: ${e.atk}</span>` : ''}${aim && aim.from === id ? `<span class="aim-mini">🎯 ${esc(aim.atk.n)} — цель: нажмите или Tab, Enter <button data-tbl="aimOff">✕</button></span>` : ''}</div>
+      <div class="hud-tabs">${tabs.map(([k, n]) => `<button class="${hudTab === k ? 'on' : ''}" data-tbl="hudTab" data-k="${k}">${n}</button>`).join('')}</div>
+      <div class="hud-slots">${slots.map((s, i) => `<button class="hud-slot" data-tbl="${s.act}" ${Object.entries(s.data).map(([k, v]) => `data-${k}="${esc(v)}"`).join(' ')} ${s.ok ? '' : 'disabled'} title="${esc(s.label)} · ${esc(s.sub || '')}">
+          ${i < 10 ? `<kbd>${(i + 1) % 10}</kbd>` : ''}<span>${esc(s.label)}</span><small>${esc(s.sub || '')}</small></button>`).join('') || '<span class="muted small">Пусто</span>'}</div>
+      ${!dm ? `<div class="hud-react">${reactionsHtml(id, t, e, mv.incap)}${compTurnHtml(isTurnOf(id))}</div>` : `<div class="hud-react">${legendHtml(id)}</div>`}`}
+    </div>${side}`;
+}
+// Атака с панели: как в меню «Атака», первым подходящим способом (действие → бонусное → реакция)
+function quickAttack(id, atkId) {
+  const t = game.tokens[id], m = me(), e = econ(id), turn = isTurnOf(id);
+  if (!t || !m || !m.charId) return;
+  if (incapTok(t)) { app.toast('Вы недееспособны и не можете атаковать'); return; }
+  const A = app.attacks(m.charId).find((a) => a.id === atkId) || SPECIAL_ATK.find((a) => a.id === atkId);
+  if (!A) return;
+  const per = (app.summary(m.charId) || {}).atks || 1, fight = inFight();
+  let way = (turn || !fight) && (e.atk > 0 || !e.a) ? 'action' : turn && !e.b ? 'bonus' : !e.r ? 'reaction' : null;
+  if (A.cantrip) {
+    if (fight && (!turn || e.atk > 0 || e.a)) { app.toast(turn ? 'Заговор накладывается действием «Магия», а действие уже потрачено' : 'Заговор накладывается действием — только в свой ход'); return; }
+    way = 'magic';
+  }
+  if (!way) { app.toast('Нет доступных действий для атаки'); return; }
+  aim = { from: id, charId: m.charId, atk: A, way, left: way === 'action' ? (e.atk > 0 ? e.atk : per) : way === 'magic' ? A.beams || 1 : 1, man: '', smite: '' };
+  renderAll();
+  keyHint('Цель: нажмите на неё или Tab, затем Enter', id);
+}
+// Зелье с панели: в бою — бонусным действием (правила 2024), лечение бросается и идёт в лист
+function hudDrink(id, itemId) {
+  const m = me(), t = game.tokens[id], e = econ(id);
+  if (!m || !m.charId || !t) return;
+  if (inFight() && (!isTurnOf(id) || e.b)) { app.toast(isTurnOf(id) ? 'Бонусное действие уже потрачено' : 'Выпить зелье — в свой ход'); return; }
+  const it = ((app.inventory(m.charId) || {}).items || []).find((i) => i.id === itemId);
+  if (!it || !app.takeItems(m.charId, [{ id: it.id, qty: 1 }], 0)) { app.toast('Зелья уже нет'); return; }
+  const r = app.rollFormula(it.heal, it.n);
+  if (r) app.heal(m.charId, r.total);
+  if (inFight()) R.update(ref(gpath(`econ/${id}`)), { b: 1 }).catch(() => {});
+  addLog({ kind: 'act', who: t.name, txt: `🧪 пьёт «${it.n}»${r ? `: +${r.total} хитов` : ''}` });
+}
+
 /* ---------- Клавиатура ---------- */
 // Клавиши — по физическому положению (e.code), поэтому работают и в русской раскладке. Назначения хранятся на устройстве
 const KEY_ACTS = [
@@ -4583,6 +4717,20 @@ function pressBtn(names, fallback) {
   keyHint('Сейчас недоступно', keyTokId());
   return false;
 }
+// Рывок, Отход, Уклонение клавишей: действием, а если оно потрачено — бонусным, когда класс это позволяет
+function keyEcon(k) {
+  const id = keyTokId() || hudTokId(), t = id && game.tokens[id];
+  if (!t || !inFight() || !isTurnOf(id)) { keyHint(inFight() ? 'Только в свой ход' : 'Это действие — в бою', id); return; }
+  const e = econ(id), mv = moveInfo(id);
+  if (mv.incap) { keyHint('Недееспособен', id); return; }
+  if (k === 'dash' && mv.speed > 0 && !e.a) econAct('dash', id);
+  else if (k === 'dash' && mv.speed > 0 && mv.bonus.includes('dash') && !e.b) econAct('dashB', id);
+  else if (k === 'dis' && !e.dis && !e.a) econAct('dis', id);
+  else if (k === 'dis' && !e.dis && mv.bonus.includes('dis') && !e.b) econAct('disB', id);
+  else if (k === 'dodge' && !e.dodge && !e.a) econAct('dodge', id);
+  else { keyHint('Действие уже потрачено', id); return; }
+  keyHint({ dash: '🏃 Рывок', dis: '↩ Отход', dodge: '🛡 Уклонение' }[k], id);
+}
 // Спасброски вручную: Alt + 1…6 или окно с шестью кнопками
 function manualSave(abil) {
   const m = me();
@@ -4602,13 +4750,15 @@ function savesKey() {
 function keyAction(a) {
   const pid = keyTokId();
   if (a === 'keys') keysDialog();
-  else if (a === 'attack') pressBtn(['attack', 'npcAttack', 'compAttack'], () => { if (!isDM() && myTok()) { openAttack(`pc_${user.uid}`); return true; } return false; });
+  else if (a === 'attack') pressBtn(['attack', 'npcAttack', 'compAttack'], () => {
+    if (!isDM() && myTok()) { openAttack(`pc_${user.uid}`); return true; }
+    const id = hudTokId(); if (isDM() && id && game.tokens[id].kind === 'npc') { openNpcAttack(id); return true; }
+    return false;
+  });
   else if (a === 'spell') pressBtn(['spell'], () => { if (!isDM() && myTok()) { openCast(`pc_${user.uid}`); return true; } return false; });
   else if (a === 'saves') savesKey();
   else if (a === 'endTurn') pressBtn(['endTurn', 'next']);
-  else if (a === 'dash') pressBtn(['dash', 'dashB']);
-  else if (a === 'dis') pressBtn(['dis', 'disB']);
-  else if (a === 'dodge') pressBtn(['dodge']);
+  else if (a === 'dash' || a === 'dis' || a === 'dodge') keyEcon(a);
   else if (a === 'items') { if (!isDM()) itemsDialog(); }
   else if (a === 'chat') { mtab('log'); const c = $('#tblChat'); if (c) { c.focus(); c.scrollIntoView({ block: 'nearest' }); } }
   else if (a === 'cam') { if (isDM() || camFree) camHome(); else camSetFree(true); }
@@ -4645,6 +4795,11 @@ function onKeyDown(e) {
   if (e.ctrlKey || e.metaKey) return;
   // Alt + цифра — спасбросок вручную; одиночный Alt срабатывает при отпускании
   if (e.altKey && /^Digit[1-6]$/.test(e.code)) { e.preventDefault(); altCombo = true; manualSave(ABK[+e.code.slice(5) - 1]); return; }
+  // Во весь экран: 1…9, 0 — ячейки панели хода
+  if (fullOn && !e.altKey && /^Digit[0-9]$/.test(e.code)) {
+    const n = +e.code.slice(5), b = $$('#tblHud .hud-slot')[n === 0 ? 9 : n - 1];
+    if (b) { e.preventDefault(); if (!b.disabled) b.click(); return; }
+  }
   const a = keyAct(e.code);
   if (!a) return;
   e.preventDefault();
@@ -4742,6 +4897,13 @@ async function onClick(e) {
     else if (a === 'items') itemsDialog();
     else if (a === 'scale') scaleDialog();
     else if (a === 'keys') keysDialog();
+    else if (a === 'full') setFull(!fullOn);
+    else if (a === 'hudSide') { $('#tblSide').classList.toggle('closed'); }
+    else if (a === 'hudTab') { hudTab = b.dataset.k; ls.set('dnd55-hudtab', hudTab); renderHud(); }
+    else if (a === 'hudAtk') quickAttack(b.dataset.id, b.dataset.atk);
+    else if (a === 'hudSpell') { const m = me(), I = m && app.areaSpells(m.charId, Object.keys(SPELL_FX)).find((s) => s.id === b.dataset.sp); if (I) spellPick(b.dataset.id, I); }
+    else if (a === 'hudSave') savesKey();
+    else if (a === 'hudDrink') hudDrink(b.dataset.id, b.dataset.it);
     else if (a === 'trOpen') tradeDialog(b.dataset.k);
     else if (a === 'trDecline') await R.update(ref(gpath(`trades/${b.dataset.k}`)), { state: 'declined', by: user.uid });
     else if (a === 'trAccept') {

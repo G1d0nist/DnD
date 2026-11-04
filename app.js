@@ -246,7 +246,7 @@ window.dndApp = {
   inventory(id) {
     const c = state.chars[id];
     if (!c) return null;
-    return { items: c.items.map((i) => ({ id: i.id, n: i.n, qty: +i.qty || 1, cat: i.cat || '', cost: i.cost || '', att: !!i.att, eq: !!i.eq })), gp: +coinGp(c.coins).toFixed(2) };
+    return { items: c.items.map((i) => ({ id: i.id, n: i.n, qty: +i.qty || 1, cat: i.cat || '', cost: i.cost || '', att: !!i.att, eq: !!i.eq, heal: i.heal || '' })), gp: +coinGp(c.coins).toFixed(2) };
   },
   // Забрать из листа предметы [{ id, qty }] и золото. Возвращает снимки предметов для получателя (с атакой магического оружия)
   // или null, если чего-то уже нет

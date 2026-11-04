@@ -336,9 +336,10 @@
       <div class="card tbl-bar">
         <div class="row gap wrap"><b id="tblName"></b><span class="badge" id="tblCode" title="Код приглашения"></span><button data-tbl="copy" title="Скопировать ссылку-приглашение">🔗 Пригласить</button></div>
         <div class="row gap wrap tbl-tools" id="tblTools"></div>
-        <div class="row gap"><button data-tbl="zoomOut" title="Отдалить">−</button><span id="tblZoom" class="muted small"></span><button data-tbl="zoomIn" title="Приблизить">＋</button><button data-tbl="zoomFit" title="Всё поле целиком">⤢</button><button data-tbl="leave" class="danger" id="tblLeave"></button></div>
+        <div class="row gap"><button data-tbl="zoomOut" title="Отдалить">−</button><span id="tblZoom" class="muted small"></span><button data-tbl="zoomIn" title="Приблизить">＋</button><button data-tbl="zoomFit" title="Всё поле целиком">⤢</button><button data-tbl="full" id="tblFullBtn" title="Стол во весь экран: внизу панель хода, сверху очередь">⛶</button><button data-tbl="leave" class="danger" id="tblLeave"></button></div>
       </div>
       <div class="tbl-main">
+        <div class="tbl-finit" id="tblFInit" hidden></div>
         <div class="tbl-wrap" id="tblWrap"><div class="tbl-sizer" id="tblSizer"><div class="tbl-board" id="tblBoard">
           <canvas id="tblTerrain"></canvas><canvas id="tblAreas"></canvas><canvas id="tblRange"></canvas><div id="tblTokens"></div><canvas id="tblFog"></canvas><canvas id="tblFxCv"></canvas><div id="tblFx"></div><div id="tblHint" class="tbl-hint" hidden></div>
         </div></div></div>
@@ -356,6 +357,7 @@
           <div class="card" data-mt="people"><h3>Участники</h3><div id="tblMembers"></div></div>
         </aside>
       </div>
+      <div class="tbl-hud" id="tblHud" hidden></div>
     </div>
   </section>
 
