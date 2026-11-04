@@ -590,7 +590,8 @@ button.stat:hover { border-color: var(--gold); }
 .tbl-tools select[data-tbl-brush].on { border-color: var(--gold); color: var(--gold2); }
 .tbl-board[data-tool="tree"], .tbl-board[data-tool="rock"], .tbl-board[data-tool="bush"], .tbl-board[data-tool="road"], .tbl-board[data-tool="sand"],
 .tbl-board[data-tool="bridge"], .tbl-board[data-tool="furn"], .tbl-board[data-tool="floor"], .tbl-board[data-tool="thicket"], .tbl-board[data-tool="bog"],
-.tbl-board[data-tool="rubble"], .tbl-board[data-tool="slope"], .tbl-board[data-tool="snow"], .tbl-board[data-tool="ice"] { cursor: crosshair; }
+.tbl-board[data-tool="rubble"], .tbl-board[data-tool="slope"], .tbl-board[data-tool="snow"], .tbl-board[data-tool="ice"], .tbl-board[data-tool="crate"], .tbl-board[data-tool="grave"],
+.tbl-board[data-tool="mushroom"], .tbl-board[data-tool="stairs"], .tbl-board[data-tool="lava"], .tbl-board[data-tool="chasm"] { cursor: crosshair; }
 /* Группы инструментов стола */
 .tbl-tools { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 14px; }
 .tgroup { display: flex; align-items: center; gap: 6px; }
@@ -628,6 +629,8 @@ button.stat:hover { border-color: var(--gold); }
 /* ---------- Стол во весь экран ---------- */
 body.tbl-full-on { overflow: hidden; }
 body.tbl-full-on .dice-fab { display: none; }
+/* Анимация смены вкладки сдвигает раздел — тогда «во весь экран» прилипало бы к нему, а не к окну */
+body.tbl-full-on .tab { animation: none !important; transform: none !important; }
 .tbl-full { position: fixed; inset: 0; z-index: 60; background: var(--bg, #14110e); display: flex; flex-direction: column; gap: 6px; padding: 6px; }
 .tbl-full .tbl-bar { margin: 0; padding: 4px 10px; gap: 6px; }
 .tbl-full .tbl-bar > :first-child { display: none; }

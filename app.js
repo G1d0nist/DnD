@@ -1117,7 +1117,7 @@ function portraitCrop(file) {
     const draw = () => { clampO(); im.style.width = `${nw * sc}px`; im.style.height = `${nh * sc}px`; im.style.transform = `translate(${ox}px, ${oy}px)`; };
     const zoomTo = (nz, cx = V / 2, cy = V / 2) => { const ix = (cx - ox) / sc, iy = (cy - oy) / sc; z = Math.max(1, Math.min(4, nz)); sc = base * z; ox = cx - ix * sc; oy = cy - iy * sc; $('#cropZ').value = z; draw(); };
     draw();
-    view.addEventListener('pointerdown', (e) => { dragP = { x: e.clientX, y: e.clientY, ox, oy }; view.setPointerCapture(e.pointerId); e.preventDefault(); });
+    view.addEventListener('pointerdown', (e) => { dragP = { x: e.clientX, y: e.clientY, ox, oy }; try { view.setPointerCapture(e.pointerId); } catch (err) { /* указатель уже отпущен */ } e.preventDefault(); });
     view.addEventListener('pointermove', (e) => { if (!dragP) return; ox = dragP.ox + e.clientX - dragP.x; oy = dragP.oy + e.clientY - dragP.y; draw(); });
     view.addEventListener('pointerup', () => { dragP = null; });
     view.addEventListener('wheel', (e) => { e.preventDefault(); const r = view.getBoundingClientRect(); zoomTo(z * (e.deltaY < 0 ? 1.1 : 1 / 1.1), e.clientX - r.left, e.clientY - r.top); }, { passive: false });
