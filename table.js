@@ -30,6 +30,7 @@ let FB = null, R = null, db = null, user = null;
 let game = null; // { id, code, meta, members, tokens, map, init }
 let unsubs = [];
 let myGames = null, myGamesLoading = false; // мастер: свои сохранённые игры (users/{uid}/games) для лобби
+let openMenu = null; // открытое выпадающее меню панели мастера
 let tool = 'move', zoom = 1, selId = null;
 let freeMove = false; // мастер: двигать без ограничений (толчок, перенос тела)
 let bgImg = null, bgSrc = ''; // карта-подложка
@@ -632,6 +633,7 @@ function onDown(e) {
     if (cast.area.shape === 'target') {
       if (!tokEl) return;
       const id = tokEl.dataset.tok, src = cast.caster && game.tokens[cast.caster];
+      if (game.tokens[id] && isDead(game.tokens[id])) { app.toast('Это труп — заклинание на него не подействует'); return; }
       if (cast.area.tgts) { // несколько целей: нажатие добавляет или убирает
         const L = cast.area.tgts;
         if (L.includes(id)) L.splice(L.indexOf(id), 1);
@@ -1525,6 +1527,7 @@ function specialAttack(a, tid) {
 function attackTarget(tid) {
   const a = aim, me_ = game.tokens[a.from], T = game.tokens[tid], A = a.atk, r = A.rng;
   if (!me_ || !T) return;
+  if (isDead(T)) { app.toast('Это труп — атаковать некого'); return; }
   const d = distFt(me_, T);
   let ranged;
   if (r.reach && d <= r.reach) ranged = false;
@@ -1793,11 +1796,12 @@ function areaCells(A) {
     for (let y = Math.max(0, Math.floor(g.oy - R)); y < Math.min(H(), Math.ceil(g.oy + R)); y++) if (cellIn(g, x, y)) out.push([x, y]);
   return out;
 }
+// Кого задевает область: мёртвых (трупы, три провала) — нет; без сознания, но живых — да (урон — провал спасброска от смерти)
 function areaTokens(A) {
-  if (A.shape === 'target') return (A.tgts && A.tgts.length ? A.tgts : A.tgt ? [A.tgt] : []).filter((id) => game.tokens[id]);
+  if (A.shape === 'target') return (A.tgts && A.tgts.length ? A.tgts : A.tgt ? [A.tgt] : []).filter((id) => game.tokens[id] && !isDead(game.tokens[id]));
   const set = new Set(areaCells(A).map(([x, y]) => `${x}_${y}`));
   return Object.entries(game.tokens).filter(([id, t]) => {
-    if ((A.shape === 'aura' && id === A.from) || (t.hidden && !isDM())) return false;
+    if ((A.shape === 'aura' && id === A.from) || (t.hidden && !isDM()) || isDead(t)) return false;
     const s = t.size || 1;
     for (let dx = 0; dx < s; dx++) for (let dy = 0; dy < s; dy++) if (set.has(`${t.x + dx}_${t.y + dy}`)) return true;
     return false;
@@ -2077,8 +2081,11 @@ function autoNpcSaves() {
 function saveNpcs(k) {
   const A = game.areas[k];
   if (!A || !isDM()) return;
-  const ids = Object.entries(A.tg || {}).filter(([id, v]) => !v.done && game.tokens[id] && game.tokens[id].kind === 'npc').map(([id]) => id);
-  if (!ids.length) return;
+  // Погибшие, пока область ждала спасбросков, просто вычёркиваются — по трупу урон не идёт
+  const live = Object.entries(A.tg || {}).filter(([id, v]) => !v.done && game.tokens[id] && game.tokens[id].kind === 'npc');
+  const dead = live.filter(([id]) => isDead(game.tokens[id])).map(([id]) => id), ids = live.filter(([id]) => !isDead(game.tokens[id])).map(([id]) => id);
+  if (dead.length) R.update(ref(gpath()), Object.fromEntries(dead.map((id) => [`areas/${k}/tg/${id}`, { done: true, ok: true, dmg: 0, dead: true }]))).catch(() => {});
+  if (!ids.length) { if (dead.length) finishArea(k, dead); return; }
   const upd = {}, parts = [], res = [];
   ids.forEach((id) => {
     const t = game.tokens[id], cond = t.cond || [], bonus = +((t.sv || {})[A.abil]) || 0;
@@ -2569,20 +2576,66 @@ function tokenLootDialog(id) {
   $('#tlOk').onclick = () => { R.update(ref(gpath(`tokens/${id}`)), { loot: { gp: +L.gp || 0, items: L.items } }).catch(() => {}); app.closeModal(); };
   draw();
 }
+// Примерная цена предмета — для честного дележа: магия по редкости, остальное по цене из справочника
+function lootValue(it) {
+  const q = +it.qty || 1;
+  if (it.kind === 'magic' || /^Свиток/.test(it.n)) return magicPrice(it) * q;
+  const ref_ = costGp(it.cost) ? null : [...WEAPONS, ...ARMOR, ...GEAR].find((x) => x.n === it.n);
+  return (costGp(it.cost) || (ref_ ? costGp(ref_.cost) : 0)) * q;
+}
+let lootPick = {}; // кому отмечены предметы в окне добычи: { ключ предмета: uid } — не сбрасывается при обновлении окна
 function lootDialog() {
   const L = game.loot || {}, gp = +L.gp || 0, items = Object.entries(L.items || {});
-  const pcs = Object.entries(game.members || {}).filter(([, m]) => m.role !== 'dm');
+  const pcs = Object.entries(game.members || {}).filter(([, m]) => m.role !== 'dm'), pname = (uid) => ((game.members[uid] || {}).char || {}).name || (game.members[uid] || {}).name || 'Игрок';
   const bodies = Object.entries(game.tokens).filter(([, t]) => t.kind === 'npc' && team(t) === 'npc' && isDead(t) && !t.looted);
-  const who = `<option value="">— кому —</option>${pcs.map(([uid, m]) => `<option value="${uid}">${esc((m.char || {}).name || m.name)}</option>`).join('')}`;
+  Object.keys(lootPick).forEach((k) => { if (!(L.items || {})[k] || !game.members[lootPick[k]]) delete lootPick[k]; });
+  const who = (k) => `<option value="">— кому —</option>${pcs.map(([uid]) => `<option value="${uid}" ${lootPick[k] === uid ? 'selected' : ''}>${esc(pname(uid))}</option>`).join('')}`;
   app.openModal(`<div><h2>💰 Добыча</h2>
     ${bodies.length ? `<div class="enc-row"><span class="small">Не обысканы: ${bodies.map(([, t]) => esc(t.name)).join(', ')}</span><button class="primary" id="lSearch">🎲 Обыскать</button></div>` : ''}
     <div class="enc-row mt"><b>Золото: ${gp} зм</b><button id="lSplit" ${gp && pcs.length ? '' : 'disabled'}>Поровну всем${pcs.length ? ` (по ${Math.floor(gp / pcs.length)} зм)` : ''}</button></div>
-    <div class="list mt">${items.map(([k, it]) => `<div class="enc-row"><span><b>${esc(it.n)}</b>${+it.qty > 1 ? ` ×${it.qty}` : ''}${it.kind === 'magic' ? ' ✨' : ''}${it.r >= 1 ? ` <span class="muted small">${RAR_N[it.r]}</span>` : ''}</span>
-      <span class="row gap"><select data-lwho="${k}">${who}</select><button data-lgive="${k}">Отдать</button><button class="ghost" data-ldel="${k}" title="Убрать">✕</button></span></div>`).join('')
+    ${items.length && pcs.length ? `<div class="row gap wrap mt"><span class="muted small">Быстро:</span><select id="lAll" style="width:auto"><option value="">всё — одному…</option>${pcs.map(([uid]) => `<option value="${uid}">${esc(pname(uid))}</option>`).join('')}</select>
+      <button id="lFair" title="Раскладывает предметы так, чтобы общая ценность у всех была как можно ближе">⚖ Поровну по ценности</button><button class="ghost" id="lClear">Сбросить</button></div>` : ''}
+    <div class="list mt">${items.map(([k, it]) => `<div class="enc-row"><span><b>${esc(it.n)}</b>${+it.qty > 1 ? ` ×${it.qty}` : ''}${it.kind === 'magic' ? ' ✨' : ''}${it.r >= 1 ? ` <span class="muted small">${RAR_N[it.r]}</span>` : ''}
+      ${lootValue(it) ? ` <span class="muted small">≈ ${fmtPrice(lootValue(it))}</span>` : ''}</span>
+      <span class="row gap"><select data-lwho="${k}">${who(k)}</select><button data-lgive="${k}">Отдать</button><button class="ghost" data-ldel="${k}" title="Убрать">✕</button></span></div>`).join('')
       || '<p class="muted small">Предметов пока нет — обыщите павших или добавьте вручную.</p>'}</div>
+    <p class="small mt" id="lTally"></p>
     <h3 class="mt">Добавить в котёл</h3><div id="lAddBox"></div>
-    <div class="modal-actions"><button data-act="closeModal">Закрыть</button><button class="primary" id="lAdd">＋ В добычу</button></div></div>`);
+    <div class="modal-actions"><button data-act="closeModal">Закрыть</button><button id="lAdd">＋ В добычу</button>
+      <button class="primary" id="lGive" title="Отдать все отмеченные предметы и разделить золото поровну между всеми игроками">📦 Раздать отмеченное</button></div></div>`);
   const again = () => setTimeout(lootDialog, 150);
+  // Сколько получит каждый: отмеченные предметы (по цене) и доля золота
+  const tally = () => {
+    const share = pcs.length ? Math.floor(gp / pcs.length) : 0, sum = Object.fromEntries(pcs.map(([uid]) => [uid, 0]));
+    items.forEach(([k, it]) => { if (lootPick[k] in sum) sum[lootPick[k]] += lootValue(it); });
+    const left = items.filter(([k]) => !lootPick[k]).length;
+    if ($('#lTally')) $('#lTally').innerHTML = pcs.length ? `Получат: ${pcs.map(([uid]) => `<b>${esc(pname(uid))}</b> ≈ ${fmtPrice(sum[uid] + share)}`).join(' · ')}${share ? ` <span class="muted">(с долей золота по ${share} зм)</span>` : ''}${left && items.length ? ` · <span class="muted">не отмечено: ${left}</span>` : ''}` : '';
+  };
+  const setPick = (k, uid) => { if (uid) lootPick[k] = uid; else delete lootPick[k]; const s = $(`[data-lwho="${k}"]`); if (s) s.value = uid || ''; };
+  $$('[data-lwho]').forEach((s) => s.addEventListener('change', () => { setPick(s.dataset.lwho, s.value); tally(); }));
+  if ($('#lAll')) $('#lAll').onchange = () => { items.forEach(([k]) => setPick(k, $('#lAll').value)); $('#lAll').value = ''; tally(); };
+  if ($('#lClear')) $('#lClear').onclick = () => { items.forEach(([k]) => setPick(k, '')); tally(); };
+  // Поровну по ценности: дорогие предметы по очереди тому, у кого сейчас меньше всего
+  if ($('#lFair')) $('#lFair').onclick = () => {
+    const sum = Object.fromEntries(pcs.map(([uid]) => [uid, 0]));
+    items.slice().sort((a, b) => lootValue(b[1]) - lootValue(a[1])).forEach(([k, it]) => {
+      const uid = Object.keys(sum).sort((a, b) => sum[a] - sum[b])[0];
+      setPick(k, uid); sum[uid] += lootValue(it);
+    });
+    tally();
+  };
+  tally();
+  $('#lGive').onclick = async () => {
+    const give = items.filter(([k]) => lootPick[k]), each = pcs.length ? Math.floor(gp / pcs.length) : 0;
+    if (!give.length && !each) { app.toast('Отметьте, кому что отдать'); return; }
+    const upd = {}, got = {}, gk = R.push(ref(gpath('lootAward'))).key;
+    give.forEach(([k, it]) => { const uid = lootPick[k]; upd[`lootAward/${uid}/${k}`] = it; upd[`loot/items/${k}`] = null; (got[uid] = got[uid] || []).push(`${it.n}${+it.qty > 1 ? ` ×${it.qty}` : ''}`); delete lootPick[k]; });
+    if (each) { pcs.forEach(([uid]) => { upd[`lootAward/${uid}/${gk}`] = { kind: 'gold', gp: each }; (got[uid] = got[uid] || []).push(`${each} зм`); }); upd['loot/gp'] = gp - each * pcs.length; }
+    await R.update(ref(gpath()), upd);
+    addLog({ kind: 'sys', txt: `💰 Раздано: ${Object.entries(got).map(([uid, list]) => `${pname(uid)} — ${list.join(', ')}`).join('; ')}` });
+    // Котёл опустел — окно больше не нужно
+    if (give.length === items.length) { app.closeModal(); app.toast('💰 Добыча роздана', 'crit'); } else again();
+  };
   const push = (upd, it) => { upd[`loot/items/${R.push(ref(gpath('loot'))).key}`] = it; };
   const add = { gp: 0, items: [] };
   lootEdit($('#lAddBox'), add);
@@ -2620,8 +2673,9 @@ function lootDialog() {
   $$('[data-lgive]').forEach((b) => b.addEventListener('click', async () => {
     const k = b.dataset.lgive, uid = $(`[data-lwho="${k}"]`).value, it = L.items[k];
     if (!uid) { app.toast('Выберите, кому отдать'); return; }
+    delete lootPick[k];
     await R.update(ref(gpath()), { [`lootAward/${uid}/${k}`]: it, [`loot/items/${k}`]: null });
-    addLog({ kind: 'sys', txt: `💰 ${((game.members[uid] || {}).char || {}).name || 'Игрок'} получает: ${it.n}${+it.qty > 1 ? ` ×${it.qty}` : ''}` });
+    addLog({ kind: 'sys', txt: `💰 ${pname(uid)} получает: ${it.n}${+it.qty > 1 ? ` ×${it.qty}` : ''}` });
     again();
   }));
   $$('[data-ldel]').forEach((b) => b.addEventListener('click', async () => { await R.remove(ref(gpath(`loot/items/${b.dataset.ldel}`))); again(); }));
@@ -3759,32 +3813,56 @@ function renderTools() {
   const t = (k, label, title) => `<button class="${tool === k ? 'on' : ''}" data-tool="${k}" title="${title || ''}">${label}</button>`;
   const hasMine = user && game.tokens[`pc_${user.uid}`];
   $('#tblBoard').dataset.tool = tool; // курсор поля соответствует инструменту
-  const b = (a, label, title, on) => `<button class="${on ? 'on' : ''}" data-tbl="${a}" title="${title}">${label}</button>`;
-  const group = (name, html) => (html.trim() ? `<div class="tgroup"><span class="tg-l">${name}</span><div class="seg">${html}</div></div>` : '');
+  const b = (a, label, title, on) => `<button class="${on ? 'on' : ''}" data-tbl="${a}" title="${title}">${label}${on && /Свободно|Вид игроков/.test(label) ? ' ✓' : ''}</button>`;
   const brushes = ['tree', 'rock', 'bush', 'road', 'sand', 'bridge', 'furn', 'floor'];
   const handouts = isDM() || hoMine().length ? b('handouts', `📜 Материалы${!isDM() && hoMine().length ? ` (${hoMine().length})` : ''}`, isDM() ? 'Показать игрокам картинку, письмо или карту' : 'Что показывал мастер') : '';
-  // Мастеру — группы: поле, карта (рисование и устройство), существа, игра; игроку — поле и свои кнопки
-  $('#tblTools').innerHTML = group('Поле', t('move', '✋ Двигать', 'Перетаскивайте токены, по пустому месту — прокрутка') + t('ruler', '📏 Линейка', 'Протяните, чтобы измерить расстояние')
-    + (!isDM() && !(hasMine && inFight()) ? t('place', hasMine ? '📍 Переставить меня' : '📍 Поставить персонажа', 'Нажмите на клетку') : '')
-    + (!isDM() && me() && me().charId && app.companions(me().charId).length ? b('compPick', '🐾 Спутник', 'Поставить спутника из листа на поле', tool === 'placeComp') : '')
-    + (isDM() ? '' : handouts))
-    + (!isDM() ? '' : group('Рисовать', t('wall', '▮ Стена') + t('difficult', '▦ Трудная') + t('water', '≈ Вода')
-      + `<select data-tbl-brush class="${brushes.includes(tool) ? 'on' : ''}" title="Другие кисти местности"><option value="">🖌 Кисть…</option>${brushes.map((k) => `<option value="${k}" ${tool === k ? 'selected' : ''}>${TERRAIN[k].ic} ${TERRAIN[k].n}</option>`).join('')}</select>`
-      + t('erase', '⌫ Ластик') + t('door', '🚪 Дверь', 'Поставить или убрать дверь. Открыть — нажатием с «Двигать», запереть — с Shift')
-      + t('light', '💡 Свет', 'Поставить или убрать источник света (20 фт яркого + 20 тусклого)') + t('chest', '🧰 Сундук', 'Поставить сундук с добычей по уровню, замком и ловушкой; нажатие на сундук — изменить')
-      + (fogOn() ? t('reveal', '👁 Открыть', 'Кисть: открыть клетки для игроков') + t('conceal', '🌫 Скрыть', 'Кисть: закрыть клетки туманом') : ''))
-    + group('Карта', b('gen', '🎲 Генератор', 'Создать местность или локацию по шаблону: лес, река, горы, подземелье, замок, город…')
+  const base = t('move', '✋ Двигать', 'Перетаскивайте токены, по пустому месту — прокрутка') + t('ruler', '📏 Линейка', 'Протяните, чтобы измерить расстояние');
+  if (!isDM()) {
+    $('#tblTools').innerHTML = `<div class="seg">${base}${!(hasMine && inFight()) ? t('place', hasMine ? '📍 Переставить меня' : '📍 Поставить персонажа', 'Нажмите на клетку') : ''}
+      ${me() && me().charId && app.companions(me().charId).length ? b('compPick', '🐾 Спутник', 'Поставить спутника из листа на поле', tool === 'placeComp') : ''}${handouts}</div>`;
+    return;
+  }
+  // Мастер: выпадающие меню по группам; на кнопке меню — выбранный в нём инструмент
+  const TL = { wall: '▮ Стена', difficult: '▦ Трудная', water: '≈ Вода', erase: '⌫ Ластик', door: '🚪 Дверь', light: '💡 Свет', chest: '🧰 Сундук', reveal: '👁 Открыть туман',
+    conceal: '🌫 Скрыть туманом', enemy: '＋ Существо', area: '◯ Область', encPlace: '⚔ Столкновение', ...Object.fromEntries(brushes.map((k) => [k, `${TERRAIN[k].ic} ${TERRAIN[k].n}`])) };
+  const sep = '<div class="tm-sep"></div>';
+  const menu = (id, title, keys, html, on) => {
+    const cur = keys.includes(tool) ? TL[tool] : '';
+    return `<div class="tmenu"><button class="tm-btn ${cur || on ? 'on' : ''}" data-tmenu="${id}">${cur || title} ▾</button><div class="tm-pop" data-tmpop="${id}" hidden>${html}</div></div>`;
+  };
+  const drawKeys = ['wall', 'difficult', 'water', ...brushes, 'erase', 'door', 'light', 'chest', 'reveal', 'conceal'];
+  $('#tblTools').innerHTML = `<div class="seg">${base}</div>`
+    + menu('draw', '🖌 Рисовать', drawKeys, ['wall', 'difficult', 'water'].map((k) => t(k, TL[k])).join('') + sep + brushes.map((k) => t(k, TL[k])).join('') + sep
+      + t('erase', TL.erase) + t('door', TL.door, 'Поставить или убрать дверь. Открыть — нажатием с «Двигать», запереть — с Shift')
+      + t('light', TL.light, 'Поставить или убрать источник света (20 фт яркого + 20 тусклого)') + t('chest', TL.chest, 'Поставить сундук с добычей по уровню, замком и ловушкой; нажатие на сундук — изменить')
+      + (fogOn() ? sep + t('reveal', TL.reveal, 'Кисть: открыть клетки для игроков') + t('conceal', TL.conceal, 'Кисть: закрыть клетки туманом') : ''))
+    + menu('map', '🗺 Карта', [], b('gen', '🎲 Генератор', 'Создать местность или локацию по шаблону: лес, река, горы, подземелье, замок, город…')
       + b('mapCfg', '🗺 Карта и туман', 'Карта-подложка, размер поля, туман войны')
       + b('scenes', `🎬 Сцены${(game.meta || {}).scene && (game.scenes || {})[game.meta.scene] ? `: ${esc(game.scenes[game.meta.scene].n)}` : ''}`, 'Несколько полей: таверна, подземелье, логово — переключение одной кнопкой')
-      + (fogOn() ? b('fogPreview', '👁 Вид игроков', 'Показать поле так, как его видят игроки', fogPreview) : ''))
-    + group('Существа', t('enemy', '＋ Существо', 'Нажмите на клетку, чтобы поставить врага или NPC из бестиария')
+      + (fogOn() ? b('fogPreview', '👁 Вид игроков', 'Показать поле так, как его видят игроки', fogPreview) : ''), fogPreview)
+    + menu('mon', '🐉 Существа', ['enemy', 'encPlace'], t('enemy', TL.enemy, 'Нажмите на клетку, чтобы поставить врага или NPC из бестиария')
       + b('enc', '⚔ Столкновение', 'Собрать столкновение из бестиария, оценить сложность для группы и поставить его на поле', tool === 'encPlace')
       + b('pop', '👥 Заселить', 'Расставить противников по уровню группы или мирных NPC с торговцами')
-      + b('bestiary', '🐉 Бестиарий', 'Свои существа: создать, изменить встроенное, перенести файлом')
-      + b('freeMove', '🔓 Свободно', 'Двигать любые токены без учёта хода и скорости (толчок, перенос тела). То же — перетаскивание с Shift', freeMove))
-    + group('Игра', t('area', '◯ Область', 'Область со спасброском: дыхание, ловушка… Конус и линия — от выделенного существа')
-      + b('rest', '🏕 Отдых', 'Короткий или долгий отдых для всей группы') + handouts));
+      + b('bestiary', '🐉 Бестиарий', 'Свои существа: создать, изменить встроенное, перенести файлом') + sep
+      + b('freeMove', '🔓 Свободно', 'Двигать любые токены без учёта хода и скорости (толчок, перенос тела). То же — перетаскивание с Shift', freeMove), freeMove)
+    + menu('game', '🎲 Игра', ['area'], t('area', TL.area, 'Область со спасброском: дыхание, ловушка… Конус и линия — от выделенного существа')
+      + b('rest', '🏕 Отдых', 'Короткий или долгий отдых для всей группы') + handouts);
+  // Открытое меню остаётся открытым, когда стол перерисовывается от чужих действий
+  if (openMenu) placeMenu(openMenu);
 }
+// Меню поверх страницы, под своей кнопкой, не выходя за край экрана
+function placeMenu(id) {
+  const btn = $(`[data-tmenu="${id}"]`), pop = $(`[data-tmpop="${id}"]`);
+  if (!btn || !pop) { openMenu = null; return; }
+  pop.hidden = false;
+  const r = btn.getBoundingClientRect(), w = pop.offsetWidth;
+  pop.style.left = `${Math.max(8, Math.min(r.left, window.innerWidth - w - 8))}px`;
+  pop.style.top = `${r.bottom + 4}px`;
+}
+function closeMenu() { if (!openMenu) return; openMenu = null; $$('.tm-pop').forEach((p) => { p.hidden = true; }); }
+document.addEventListener('click', (e) => { if (openMenu && !e.target.closest('.tmenu')) closeMenu(); }, true);
+window.addEventListener('scroll', (e) => { if (!(e.target.closest && e.target.closest('.tm-pop'))) closeMenu(); }, true);
+window.addEventListener('resize', () => { if (openMenu) placeMenu(openMenu); });
 // Карточка хода: игроку — свой персонаж, мастеру — существо, чей сейчас ход
 function renderTurn() {
   const box = $('#tblTurn'), dm = isDM();
@@ -3944,6 +4022,10 @@ function renderMembers() {
 async function onClick(e) {
   const mt = e.target.closest('#tblMtabs [data-mt]');
   if (mt) { mtab(mt.dataset.mt); return; }
+  // Выпадающие меню панели: кнопка открывает или закрывает своё; выбор пункта закрывает меню и выполняется как обычно
+  const tm = e.target.closest('[data-tmenu]');
+  if (tm) { const id = tm.dataset.tmenu, was = openMenu; closeMenu(); if (was !== id) { openMenu = id; placeMenu(id); } return; }
+  if (e.target.closest('.tm-pop')) closeMenu();
   const toolBtn = e.target.closest('[data-tool]');
   if (toolBtn && toolBtn.dataset.tool === 'area') { dmAreaDialog(); return; }
   if (toolBtn) { tool = toolBtn.dataset.tool; renderTools(); $('#tblBoard').dataset.tool = tool; return; }

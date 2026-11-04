@@ -599,3 +599,12 @@ button.stat:hover { border-color: var(--gold); }
   .tbl-tools .seg { overflow: visible; max-width: none; }
   .tgroup { flex: 0 0 auto; }
 }
+/* Выпадающие меню панели мастера */
+.tmenu { position: relative; }
+.tm-btn { white-space: nowrap; }
+.tm-btn.on { border-color: var(--gold); color: var(--gold2); background: #3b2e17; }
+.tm-pop { position: fixed; z-index: 60; min-width: 210px; max-height: 70vh; overflow-y: auto; display: grid; gap: 3px; padding: 6px; border-radius: 10px;
+  background: var(--card); border: 1px solid var(--gold); box-shadow: 0 10px 28px rgba(0,0,0,.55); }
+.tm-pop[hidden] { display: none; }
+.tm-pop button { text-align: left; white-space: nowrap; }
+.tm-sep { height: 1px; margin: 3px 2px; background: var(--line); }
