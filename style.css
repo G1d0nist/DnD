@@ -608,3 +608,10 @@ button.stat:hover { border-color: var(--gold); }
 .tm-pop[hidden] { display: none; }
 .tm-pop button { text-align: left; white-space: nowrap; }
 .tm-sep { height: 1px; margin: 3px 2px; background: var(--line); }
+/* Обмен вещами и размер поля */
+.trade-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; margin-top: 8px; }
+.trade-grid .loot-box { min-width: 0; }
+@media (max-width: 560px) { .trade-grid { grid-template-columns: 1fr; } }
+.sc-grid { display: grid; grid-template-columns: repeat(3, minmax(0, 110px)); gap: 6px; justify-content: center; align-items: end; }
+.sc-grid input { width: 100%; }
+.sc-mid { text-align: center; font-size: 26px; align-self: center; }

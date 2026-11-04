@@ -242,6 +242,45 @@ window.dndApp = {
     return { ok: true, name, left: +coinGp(c.coins).toFixed(2) };
   },
   purse(id) { const c = state.chars[id]; return c ? +coinGp(c.coins).toFixed(2) : 0; },
+  // Вещи для стола (передача, обмен, продажа, «бросить на землю»): инвентарь и кошелёк в золоте
+  inventory(id) {
+    const c = state.chars[id];
+    if (!c) return null;
+    return { items: c.items.map((i) => ({ id: i.id, n: i.n, qty: +i.qty || 1, cat: i.cat || '', cost: i.cost || '', att: !!i.att, eq: !!i.eq })), gp: +coinGp(c.coins).toFixed(2) };
+  },
+  // Забрать из листа предметы [{ id, qty }] и золото. Возвращает снимки предметов для получателя (с атакой магического оружия)
+  // или null, если чего-то уже нет
+  takeItems(id, list = [], gp = 0) {
+    const c = state.chars[id];
+    if (!c || (+gp || 0) > coinGp(c.coins) + 1e-9) return null;
+    if (list.some(({ id: iid, qty }) => { const it = findById(c.items, iid); return !it || (+it.qty || 1) < (+qty || 1); })) return null;
+    if (state.current !== id) state.current = id;
+    const out = [];
+    tracked('передача вещей', () => {
+      list.forEach(({ id: iid, qty }) => {
+        const it = findById(c.items, iid), q = Math.min(+it.qty || 1, +qty || 1);
+        const atk = c.attacks.filter((a) => a.item === it.id).map(({ id: _a, item: _b, ...a }) => a);
+        const { id: _c, attuned: _d, ...snap } = it;
+        out.push({ ...snap, qty: q, eq: false, ...(atk.length ? { atk } : {}) });
+        if (q >= (+it.qty || 1)) { c.items = c.items.filter((x) => x !== it); c.attacks = c.attacks.filter((a) => a.item !== it.id); } else it.qty = (+it.qty || 1) - q;
+      });
+      if (+gp > 0) payCoins(c, +gp);
+    });
+    save(); render();
+    return out;
+  },
+  // Положить в лист снимки предметов (обычные — стопкой к таким же) и золото
+  giveItems(id, snaps = [], gp = 0) {
+    const c = state.chars[id];
+    if (!c) return false;
+    if (state.current !== id) state.current = id;
+    tracked('получение вещей', () => {
+      (snaps || []).forEach((S) => putSnap(c, S));
+      if (+gp > 0) addCoins(c, +gp);
+    });
+    save(); render();
+    return true;
+  },
   // Заклинания с областью или спасброском: подготовленные, всегда подготовленные и заговоры
   // extra — английские названия заклинаний, которые стол умеет применять без области (лечение, баффы)
   areaSpells(id, extra = []) {
@@ -2642,8 +2681,18 @@ function slotOptions(c, s) {
 }
 // Свободные ячейки для заклинания-реакции (без «без ячейки» и ритуала); заклинание должно быть подготовлено
 // Добыча или покупка в лист: золото — в кошелёк, магический предмет — как из каталога, прочее — в инвентарь; возвращает название
+// Положить в лист снимок предмета из другого листа: обычные — стопкой к таким же, с настройкой или атакой — отдельно
+function putSnap(c, S) {
+  const { atk, ...s } = S;
+  let it;
+  if (s.att || atk) { it = { ...s, id: uid(), attuned: false }; c.items.push(it); } else it = addInvItem(c, s);
+  (atk || []).forEach((a) => c.attacks.push({ ...a, id: uid(), item: it.id }));
+  return it;
+}
 function lootInto(c, L) {
   if (L.kind === 'gold') { c.coins.gp = (+c.coins.gp || 0) + (+L.gp || 0); return `${L.gp} зм`; }
+  // Предмет, брошенный игроком и переложенный в добычу, — снимок из листа (с атакой магического оружия)
+  if (L.snap) return putSnap(c, L.snap).n;
   const M = L.kind === 'magic' && MAGIC_ITEMS.find((m) => m.n === L.mn);
   if (M) {
     const base = !M.pick ? null : M.pick === 'w' ? WEAPONS.find((w) => w.n === L.base) : ARMOR.find((a) => a.id === L.base);
@@ -2653,6 +2702,12 @@ function lootInto(c, L) {
   const w = WEAPONS.find((x) => x.n === L.n), a = ARMOR.find((x) => x.n === L.n), g = GEAR.find((x) => x.n === L.n);
   const base = w ? { cat: 'Оружие', w: w.w, cost: w.cost } : a ? { cat: 'Доспехи', w: a.w, cost: a.cost } : g ? { cat: g.cat, w: g.w, cost: g.cost, x: g.x, chMax: g.ch || 0, ch: g.ch || 0 } : {};
   return addInvItem(c, { n: L.n, qty: +L.qty || 1, ...base, ...(L.cat ? { cat: L.cat } : {}), ...(L.cost ? { cost: L.cost } : {}), ...(L.x ? { x: L.x } : {}) }).n;
+}
+// Начислить сумму в золоте монетами: золото, серебро, медь (0,5 зм → 5 см)
+function addCoins(c, gp) {
+  let cp = Math.round(gp * 100);
+  c.coins.gp = (+c.coins.gp || 0) + Math.floor(cp / 100); cp %= 100;
+  c.coins.sp = (+c.coins.sp || 0) + Math.floor(cp / 10); c.coins.cp = (+c.coins.cp || 0) + (cp % 10);
 }
 // Оплата: сначала золотом, затем платиной, электрумом, серебром и медью; сдача — золотом, серебром и медью
 function payCoins(c, gp) {

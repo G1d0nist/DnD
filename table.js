@@ -53,7 +53,11 @@ const die = (n) => { const a = new Uint32Array(1); crypto.getRandomValues(a); re
 const colorOf = (s) => PALETTE[[...String(s)].reduce((h, ch) => (h * 31 + ch.charCodeAt(0)) >>> 0, 7) % PALETTE.length];
 const condName = (k) => ((typeof CONDITIONS !== 'undefined' && CONDITIONS.find((c) => c.k === k)) || { n: k }).n;
 const INCAP = ['incapacitated', 'paralyzed', 'petrified', 'stunned', 'unconscious'];
-const speedOf = (t) => (t.speed != null && t.speed !== '' ? +t.speed || 0 : 30);
+// Масштаб: футов в клетке (meta.ft: 5, 10, 30, 100 или 5280 — миля). Всё, что в футах (скорость, дальность, области, свет), пересчитывается в клетки
+const FT = () => +((game && game.meta && game.meta.ft) || 5);
+const miles = (n) => (!Number.isInteger(n) ? 'мили' : n % 10 === 1 && n % 100 !== 11 ? 'миля' : [2, 3, 4].includes(n % 10) && ![12, 13, 14].includes(n % 100) ? 'мили' : 'миль');
+const fmtFt = (ft) => { if (ft < 5280) return `${ft} фт`; const n = +(ft / 5280).toFixed(1); return `${n} ${miles(n)}`; };
+const speedOf = (t) =>(t.speed != null && t.speed !== '' ? +t.speed || 0 : 30);
 
 /* ---------- Запуск ---------- */
 function boot() {
@@ -143,6 +147,8 @@ function subscribe(gid, code) {
   on('loot', (v) => { game.loot = v || {}; syncChests(); });
   on('handouts', (v) => { game.handouts = v || {}; notifyHandouts(); });
   on('chests', (v) => { game.chests = v || {}; drawTerrain(); syncChests(); });
+  on('drops', (v) => { game.drops = v || {}; drawTerrain(); });
+  on('trades', (v) => { game.trades = v || {}; syncTrades(); });
   on(`lootAward/${user.uid}`, (v) => { game.lootAw = v; applyLoot(); });
   on('members', (v) => { game.members = v || {}; syncEffects(); applyXp(); applyLoot(); handleRest(); syncChests(); });
   on('tokens', (v) => { game.tokens = v || {}; cleanupInit(); syncEffects(); awardKills(); });
@@ -368,6 +374,8 @@ function drawTerrain() {
     g.font = '22px system-ui'; g.fillText(C.o ? '📭' : '🧰', C.x * CELL + 8, C.y * CELL + 29);
     if (isDM() && !C.o) { g.font = '11px system-ui'; if (+C.lock && !C.lk) g.fillText('🔒', C.x * CELL + 1, C.y * CELL + 12); if (C.trap && !C.toff) g.fillText('⚠', C.x * CELL + CELL - 12, C.y * CELL + 12); }
   });
+  // Брошенные вещи — маленький мешок в углу клетки (под токеном тоже видно)
+  Object.values(game.drops || {}).forEach((D) => { g.font = '15px system-ui'; g.fillText('🎒', D.x * CELL + CELL - 18, D.y * CELL + CELL - 4); });
   if (!bgImg || bg.grid) {
     g.strokeStyle = bgImg ? 'rgba(0,0,0,.35)' : 'rgba(255,255,255,.07)';
     g.beginPath();
@@ -403,7 +411,7 @@ function mapDialog() {
       <label class="check"><input type="checkbox" id="mGrid" ${bg.grid ? 'checked' : ''}> Сетка поверх карты</label>
       <label class="check"><input type="checkbox" id="mFit" checked> Подогнать поле под карту</label>
       <label>Поле, клеток в ширину<input type="number" id="mBw" min="5" max="80" value="${W()}"></label><label>…в высоту<input type="number" id="mBh" min="5" max="80" value="${H()}"></label></div>
-    <p class="muted small">Подгонка: посчитайте, сколько клеток по 5 фт помещается на карте в ширину, и укажите это число. Сдвигом совместите линии сетки с картой. Стены рисуйте по стенам карты — они закрывают обзор в тумане.</p>
+    <p class="muted small">Подгонка: посчитайте, сколько клеток (по ${fmtFt(FT())}) помещается на карте в ширину, и укажите это число. Сдвигом совместите линии сетки с картой. Стены рисуйте по стенам карты — они закрывают обзор в тумане.</p>
     ${bgSrc ? '<button class="danger" id="mDel">Убрать карту</button>' : ''}
     <h3 class="mt">Туман войны</h3>
     <div class="form-grid"><label>Режим<select id="fMode">${[['off', 'выключен'], ['vision', 'обзор персонажей + открытое мастером'], ['manual', 'только открытое мастером']].map(([v, n]) => `<option value="${v}" ${fog.mode === v ? 'selected' : ''}>${n}</option>`).join('')}</select></label>
@@ -462,7 +470,7 @@ function lightMap() {
   const srcs = [...Object.values(game.lights || {}).map((L) => ({ x: L.x + 0.5, y: L.y + 0.5, b: +L.b || 20, d: +L.d || 20 })),
     ...Object.values(game.tokens || {}).filter((t) => t.lt && !(t.hidden && !isDM())).map((t) => { const s = t.size || 1; return { x: t.x + s / 2, y: t.y + s / 2, b: +t.lt.b || 0, d: +t.lt.d || 0 }; })];
   srcs.forEach((L) => {
-    const rb = L.b / 5, rd = (L.b + L.d) / 5;
+    const rb = L.b / FT(), rd = (L.b + L.d) / FT();
     for (let x = Math.max(0, Math.floor(L.x - rd - 1)); x < Math.min(W(), Math.ceil(L.x + rd + 1)); x++)
       for (let y = Math.max(0, Math.floor(L.y - rd - 1)); y < Math.min(H(), Math.ceil(L.y + rd + 1)); y++) {
         const dd = Math.hypot(x + 0.5 - L.x, y + 0.5 - L.y), k = `${x}_${y}`;
@@ -479,9 +487,9 @@ function computeVision() {
   const f = fogSet(), vis = new Set(Object.keys(game.reveal || {}));
   fogDim = new Set(); fogDark = new Set();
   if (f.mode === 'vision') {
-    const R2 = f.sight / 5, L = lightMap();
+    const R2 = Math.max(1, f.sight / FT()), L = lightMap();
     Object.values(game.tokens || {}).filter((t) => team(t) === 'pc' && !isDown(t)).forEach((t) => {
-      const s = t.size || 1, ox = t.x + s / 2, oy = t.y + s / 2, dv = (+t.dv || 0) / 5;
+      const s = t.size || 1, ox = t.x + s / 2, oy = t.y + s / 2, dv = (+t.dv || 0) / FT();
       for (let x = Math.max(0, Math.floor(ox - R2 - 1)); x < Math.min(W(), Math.ceil(ox + R2 + 1)); x++)
         for (let y = Math.max(0, Math.floor(oy - R2 - 1)); y < Math.min(H(), Math.ceil(oy + R2 + 1)); y++) {
           const k = `${x}_${y}`, inside = x >= t.x && x < t.x + s && y >= t.y && y < t.y + s, dd = Math.hypot(x + 0.5 - ox, y + 0.5 - oy);
@@ -542,7 +550,7 @@ function occupancy(moverId) {
   });
   return occ;
 }
-// Стоимость пути до клеток (футы): 5 за клетку (по диагонали тоже, правила 2024), +5 в труднопроходимой, +5 ползком; стены непроходимы
+// Стоимость пути до клеток (футы): клетка по масштабу (5 фт) (по диагонали тоже, правила 2024), +5 в труднопроходимой, +5 ползком; стены непроходимы
 function reachMap(sx, sy, limit, occ, crawl) {
   const dist = new Map(), q = [[sx, sy, 0]];
   dist.set(`${sx}_${sy}`, 0);
@@ -555,7 +563,7 @@ function reachMap(sx, sy, limit, occ, crawl) {
       if (nx < 0 || ny < 0 || nx >= W() || ny >= H()) continue;
       const T = TERRAIN[(game.map || {})[k]], o = occ && occ.get(k);
       if ((T && T.block) || o === 'block' || doorShut(k)) continue;
-      const nd = d + 5 + ((T && T.cost) || o === 'pass' ? 5 : 0) + (crawl ? 5 : 0);
+      const nd = d + FT() * (1 + ((T && T.cost) || o === 'pass' ? 1 : 0) + (crawl ? 1 : 0));
       if (nd > limit || (dist.has(k) && dist.get(k) <= nd)) continue;
       dist.set(k, nd);
       q.push([nx, ny, nd]);
@@ -666,6 +674,8 @@ function onDown(e) {
   const chest = !tokEl && chestAt(p.x, p.y);
   if (tool === 'chest' && isDM()) { chestDialog(chest ? chest[0] : null, p.x, p.y); return; }
   if (tool === 'move' && chest) { if (isDM()) chestDialog(chest[0]); else chestPlayer(chest[0]); return; }
+  const drop = tool === 'move' && !tokEl && dropAt(p.x, p.y);
+  if (drop) { dropDialog(drop[0]); return; }
   if (TERRAIN[tool] || tool === 'erase' || tool === 'reveal' || tool === 'conceal') {
     drag = { kind: 'paint', pending: {}, root: tool === 'reveal' || tool === 'conceal' };
     paintAt(p);
@@ -689,10 +699,11 @@ function onDown(e) {
       const mv = moveInfo(id), occ = occupancy(id), counted = turn && !forced;
       if (!forced && !mv.left) { app.toast(mv.speed ? `Скорость на этот ход потрачена${mv.canDash ? ' — можно сделать Рывок' : ''}` : 'Скорость 0 — не может перемещаться'); return; }
       Object.assign(dg, { fight: true, counted, occ, left: counted ? mv.left : Infinity,
-        dist: reachMap(t.x, t.y, forced ? 9999 : mv.left + (mv.canDash ? mv.speed : 0), occ, mv.prone) });
+        dist: reachMap(t.x, t.y, forced ? Infinity : mv.left + (mv.canDash ? mv.speed : 0), occ, mv.prone) });
       drawRange(dg.dist, counted ? mv.left : speed * 2, occ);
     } else {
-      dg.dist = reachMap(t.x, t.y, speed * 2);
+      // Вне боя — до двойной скорости; на крупном масштабе (округа, путешествие) — свободнее: до 20 клеток
+      dg.dist = reachMap(t.x, t.y, FT() > 10 ? FT() * 20 : speed * 2);
       drawRange(dg.dist, speed);
     }
     drag = dg;
@@ -728,7 +739,7 @@ function onMove(e) {
   if (drag.kind === 'ruler') {
     Object.assign(ruler, { x1: p.x, y1: p.y });
     drawRuler();
-    hint(`${5 * Math.max(Math.abs(p.x - ruler.x0), Math.abs(p.y - ruler.y0))} фт`, e);
+    hint(fmtFt(FT() * Math.max(Math.abs(p.x - ruler.x0), Math.abs(p.y - ruler.y0))), e);
   } else if (drag.kind === 'pan') {
     const w = $('#tblWrap');
     w.scrollLeft = drag.sl - (e.clientX - drag.x); w.scrollTop = drag.st - (e.clientY - drag.y);
@@ -741,7 +752,7 @@ function onMove(e) {
     const d = drag.dist.get(`${tx}_${ty}`);
     let txt;
     if (tx === drag.sx && ty === drag.sy) txt = '';
-    else if (!drag.fight) txt = d == null ? 'дальше двойной скорости' : `${d} фт${d > drag.speed ? ' — с Рывком' : ''}`;
+    else if (!drag.fight) txt = d == null ? (FT() > 10 ? 'слишком далеко за один раз' : 'дальше двойной скорости') : `${fmtFt(d)}${d > drag.speed && FT() <= 10 ? ' — с Рывком' : ''}`;
     else if (drag.occ.has(`${tx}_${ty}`)) txt = 'клетка занята';
     else if (d == null) txt = drag.forced ? 'путь закрыт' : 'не хватает скорости';
     else if (!drag.counted) txt = `${d} фт`;
@@ -784,7 +795,7 @@ function onUp(e) {
         return;
       }
       if (d.counted) {
-        upd[`econ/${d.id}/move`] = (econ(d.id).move || 0) + (cost != null ? cost : 5 * Math.max(Math.abs(x - d.sx), Math.abs(y - d.sy)));
+        upd[`econ/${d.id}/move`] = (econ(d.id).move || 0) + (cost != null ? cost : FT() * Math.max(Math.abs(x - d.sx), Math.abs(y - d.sy)));
         checkOpportunity(d.id, { ...t, x, y }, d.sx, d.sy);
       }
     }
@@ -1400,11 +1411,13 @@ function renderLog() {
 }
 
 /* ---------- Атака по цели ---------- */
-// Расстояние между существами (фт): по ближайшим клеткам, диагональ — тоже 5 фт
+// Расстояние между существами (фт): по ближайшим клеткам, диагональ — как прямая. Соседние клетки — 5 фт (вплотную,
+// ближний бой при любом масштабе), каждая следующая — ещё клетка по масштабу
 function distFt(a, b) {
   const as = a.size || 1, bs = b.size || 1;
   const dx = Math.max(0, a.x - (b.x + bs - 1), b.x - (a.x + as - 1)), dy = Math.max(0, a.y - (b.y + bs - 1), b.y - (a.y + as - 1));
-  return 5 * Math.max(dx, dy);
+  const n = Math.max(dx, dy);
+  return n ? 5 + (n - 1) * FT() : 0;
 }
 // На нуле хитов: обычный монстр — сразу труп; персонажи и отмеченные мастером существа (боссы, важные NPC) —
 // без сознания со спасбросками от смерти, пока не стабилизируются или не наберут три провала
@@ -1771,14 +1784,17 @@ function geo(A) {
   const t = A.shape === 'aura' && A.from && game.tokens[A.from];
   if (!t) return A;
   const s = t.size || 1;
-  return { ...A, ox: t.x + s / 2, oy: t.y + s / 2, r: A.size / 5 + s / 2 };
+  return { ...A, ox: t.x + s / 2, oy: t.y + s / 2, r: A.size / FT() + s / 2 };
 }
+// Размер области в клетках при текущем масштабе (не меньше клетки) и полуширина линии
+const aLen = (A) => Math.max(1, (+A.size || 0) / FT());
+const aHalfW = (A) => Math.max(0.5, (+A.width || 5) / (2 * FT()));
 function ptIn(A, px, py) {
-  const vx = px - A.ox, vy = py - A.oy, L = A.size / 5, e = 1e-6;
+  const vx = px - A.ox, vy = py - A.oy, L = aLen(A), e = 1e-6;
   if (A.shape === 'sphere' || A.shape === 'aura') return Math.hypot(vx, vy) <= (A.r || L) + e;
   const ux = Math.cos(A.ang || 0), uy = Math.sin(A.ang || 0), along = vx * ux + vy * uy, across = -vx * uy + vy * ux;
   if (A.shape === 'cone') return along > 0 && Math.hypot(vx, vy) <= L + e && Math.abs(Math.atan2(across, along)) <= CONE_HALF + e;
-  if (A.shape === 'line') return along >= -e && along <= L + e && Math.abs(across) <= (A.width || 5) / 10 + e;
+  if (A.shape === 'line') return along >= -e && along <= L + e && Math.abs(across) <= aHalfW(A) + e;
   if (A.shape === 'cube') return along >= -e && along <= L + e && Math.abs(across) <= L / 2 + e;
   return false;
 }
@@ -1791,7 +1807,7 @@ function cellIn(A, x, y) {
 function areaCells(A) {
   const g = geo(A), out = [];
   if (g.shape === 'target') return out;
-  const R = Math.max(g.r || 0, g.size / 5) + 1;
+  const R = Math.max(g.r || 0, aLen(g)) + 1;
   for (let x = Math.max(0, Math.floor(g.ox - R)); x < Math.min(W(), Math.ceil(g.ox + R)); x++)
     for (let y = Math.max(0, Math.floor(g.oy - R)); y < Math.min(H(), Math.ceil(g.oy + R)); y++) if (cellIn(g, x, y)) out.push([x, y]);
   return out;
@@ -1808,10 +1824,10 @@ function areaTokens(A) {
   }).map(([id]) => id);
 }
 function shapePath(g, A) {
-  const ox = A.ox * CELL, oy = A.oy * CELL, L = (A.size / 5) * CELL, ang = A.ang || 0, ux = Math.cos(ang), uy = Math.sin(ang);
-  if (A.shape === 'sphere' || A.shape === 'aura') { g.arc(ox, oy, (A.r || A.size / 5) * CELL, 0, Math.PI * 2); return; }
+  const ox = A.ox * CELL, oy = A.oy * CELL, L = aLen(A) * CELL, ang = A.ang || 0, ux = Math.cos(ang), uy = Math.sin(ang);
+  if (A.shape === 'sphere' || A.shape === 'aura') { g.arc(ox, oy, (A.r || aLen(A)) * CELL, 0, Math.PI * 2); return; }
   if (A.shape === 'cone') { g.moveTo(ox, oy); g.arc(ox, oy, L, ang - CONE_HALF, ang + CONE_HALF); g.closePath(); return; }
-  const w = A.shape === 'line' ? ((A.width || 5) / 10) * CELL : L / 2, nx = -uy * w, ny = ux * w;
+  const w = A.shape === 'line' ? aHalfW(A) * CELL : L / 2, nx = -uy * w, ny = ux * w;
   g.moveTo(ox + nx, oy + ny); g.lineTo(ox + ux * L + nx, oy + uy * L + ny); g.lineTo(ox + ux * L - nx, oy + uy * L - ny); g.lineTo(ox - nx, oy - ny); g.closePath();
 }
 function drawAreas() {
@@ -1851,7 +1867,7 @@ function castFollow(mx, my) {
     Object.assign(A, { ang, ox: cx + Math.cos(ang) * (s / 2), oy: cy + Math.sin(ang) * (s / 2) });
   } else if (A.shape === 'sphere') Object.assign(A, { ox: Math.round(mx), oy: Math.round(my) });
   else if (A.shape === 'cube') {
-    const n = A.size / 5, snap = (v) => (n % 2 ? Math.floor(v) + 0.5 : Math.round(v)), cx = snap(mx), cy = snap(my);
+    const n = Math.round(aLen(A)), snap = (v) => (n % 2 ? Math.floor(v) + 0.5 : Math.round(v)), cx = snap(mx), cy = snap(my);
     Object.assign(A, { ang: 0, ox: cx - n / 2, oy: cy });
   }
 }
@@ -1860,7 +1876,7 @@ function castInRange() {
   const A = cast.area, src = cast.caster && game.tokens[cast.caster];
   if (!src || !cast.range || cast.self || A.shape === 'aura') return true;
   if (A.shape === 'target') { const ids = areaTokens(A); return ids.length > 0 && ids.every((id) => distFt(src, game.tokens[id]) <= cast.range); }
-  const cx = A.shape === 'cube' ? A.ox + A.size / 10 : A.ox;
+  const cx = A.shape === 'cube' ? A.ox + aLen(A) / 2 : A.ox;
   return distFt(src, { x: Math.floor(cx - 0.001), y: Math.floor(A.oy - 0.001), size: 1 }) <= cast.range
     || distFt(src, { x: Math.floor(cx), y: Math.floor(A.oy), size: 1 }) <= cast.range;
 }
@@ -2140,7 +2156,7 @@ function notifyAreas() {
 function renderSaves() {
   const box = $('#tblSaves');
   if (!box) return;
-  const dm = isDM(), rows = [];
+  const dm = isDM(), rows = tradeRows(), nTrade = rows.length;
   // «Контрзаклинание»: запрос моим существам и ожидание моего заклинания
   csMine().forEach(({ k, r, id }) => rows.push(`<div class="sv-area cs-ask"><div>🚫 <b>${esc((game.tokens[r.caster] || {}).name || '')}</b> творит «${esc(r.n)}»${r.lvl && !/ур\./.test(r.n) ? ` (${r.lvl} ур.)` : ''}</div>
     <div class="row between mt"><span>${esc(game.tokens[id].name)}: «Контрзаклинание»?${game.tokens[id].kind === 'npc' ? ` <span class="muted small">осталось ${+game.tokens[id].cs || 0}, СЛ ${+game.tokens[id].sdc || 13}</span>` : ''}</span>
@@ -2160,7 +2176,7 @@ function renderSaves() {
     rows.push(html + '</div>');
   });
   box.hidden = !rows.length;
-  box.innerHTML = `<h3>Области, спасброски и реакции</h3>${rows.join('')}`;
+  box.innerHTML = `<h3>${rows.length === nTrade ? '🤝 Передачи и обмен' : 'Области, спасброски и реакции'}</h3>${rows.join('')}`;
 }
 function renderCastBar() {
   const bar = $('#tblCastBar');
@@ -2292,6 +2308,7 @@ function syncEffects() {
 // Толчок: на n клеток прочь от источника, пока не упрётся в стену, закрытую дверь, край поля или другое существо
 function pushToken(id, fromId, n) {
   const t = game.tokens[id], src = fromId && game.tokens[fromId];
+  n = Math.round((n * 5) / FT()); // n — по 5 фт; в клетках при крупном масштабе толчок может не сдвинуть вовсе
   if (!t || !src || !n) return;
   const sx = Math.sign(t.x - src.x), sy = Math.sign(t.y - src.y), s = t.size || 1;
   if (!sx && !sy) return;
@@ -2310,7 +2327,7 @@ function pushToken(id, fromId, n) {
   }
   if (x !== t.x || y !== t.y) {
     R.update(ref(gpath(`tokens/${id}`)), { x, y }).catch(() => {});
-    addLog({ kind: 'act', who: t.name, txt: `отброшен на ${5 * Math.max(Math.abs(x - t.x), Math.abs(y - t.y))} фт` });
+    addLog({ kind: 'act', who: t.name, txt: `отброшен на ${fmtFt(FT() * Math.max(Math.abs(x - t.x), Math.abs(y - t.y)))}` });
   }
 }
 // Провал спасброска против заклинания или приёма: состояние / эффект на цель
@@ -3156,7 +3173,7 @@ async function genApply(res, o) {
   };
   if (o.asScene && (Object.keys(game.map || {}).length || Object.keys(game.tokens || {}).length)) await saveScene();
   const upd = { map: res.cells, doors: res.doors, lights, chests, reveal: null, seen: null, bgimg: null, 'meta/bg': null, 'meta/w': res.w, 'meta/h': res.h,
-    'meta/fog': fog, 'meta/ground': res.ground || null, areas: null, init: null, econ: null };
+    'meta/fog': fog, 'meta/ground': res.ground || null, 'meta/ft': null, drops: null, areas: null, init: null, econ: null };
   const pcs = {};
   Object.entries(game.tokens || {}).forEach(([id, t]) => {
     if (t.kind === 'npc') { if (o.clearNpc) upd[`tokens/${id}`] = null; return; }
@@ -3410,16 +3427,32 @@ function shopStock(kind, big) {
   return items;
 }
 // Игрок у торговца: список товаров с ценами, покупка за деньги из листа
-function shopDialog(id) {
+function shopDialog(id, sell = false) {
   const t = game.tokens[id], S = t && t.shop;
   if (!S) return;
   const dm = isDM(), m = me(), purse = !dm && m && m.charId ? app.purse(m.charId) : null, mine = user && game.tokens[`pc_${user.uid}`];
-  const near = dm || (mine && distFt(mine, t) <= 10);
+  const near = dm || (mine && distFt(mine, t) <= 5 + FT());
+  const inv = !dm && m && m.charId ? app.inventory(m.charId) : null;
+  sell = sell && !!inv;
+  const sellList = sell ? inv.items.map((i) => ({ ...i, p: sellPrice(i) })) : [];
   app.openModal(`<div><h2>🛒 ${esc(t.name)}</h2>
-    <p class="muted small">${SHOP_N[S.kind] || 'товары'}${purse != null ? ` · у вас ${fmtPrice(purse)}` : ''}${!near ? ' · <b>подойдите ближе (10 фт), чтобы купить</b>' : ''}</p>
-    <div class="list">${(S.items || []).map((it, i) => `<div class="enc-row"><span><b>${esc(it.n)}</b>${it.r >= 1 ? ` <span class="muted small">${RAR_N[it.r]}</span>` : ''}</span>
-      <span class="row gap"><b>${fmtPrice(it.price)}</b>${dm ? '' : `<button data-buy="${i}" ${near && purse >= it.price ? '' : 'disabled'}>Купить</button>`}</span></div>`).join('') || '<p class="muted">Прилавок пуст.</p>'}</div>
+    ${inv ? `<div class="seg mt"><button class="${sell ? '' : 'on'}" id="shBuy">Купить</button><button class="${sell ? 'on' : ''}" id="shSell">Продать</button></div>` : ''}
+    <p class="muted small">${SHOP_N[S.kind] || 'товары'}${purse != null ? ` · у вас ${fmtPrice(purse)}` : ''}${!near ? ` · <b>подойдите ближе (через клетку или вплотную), чтобы ${sell ? 'продать' : 'купить'}</b>` : ''}</p>
+    ${sell ? `<p class="muted small">Торговец платит половину цены; драгоценности и предметы искусства — полную стоимость. Надетый доспех сначала снимите.</p>
+    <div class="list">${sellList.map((i) => `<div class="enc-row"><span><b>${esc(i.n)}</b>${i.qty > 1 ? ` <span class="muted small">×${i.qty}</span>` : ''}${wornArmor(i) ? ' <span class="muted small">надет</span>' : ''}</span>
+      <span class="row gap">${i.p > 0 ? `<b>${fmtPrice(i.p)}</b><button data-sell="${i.id}" ${near && !wornArmor(i) ? '' : 'disabled'}>Продать</button>` : '<span class="muted small">не купит</span>'}</span></div>`).join('') || '<p class="muted">Продавать нечего.</p>'}</div>`
+    : `<div class="list">${(S.items || []).map((it, i) => `<div class="enc-row"><span><b>${esc(it.n)}</b>${it.r >= 1 ? ` <span class="muted small">${RAR_N[it.r]}</span>` : ''}</span>
+      <span class="row gap"><b>${fmtPrice(it.price)}</b>${dm ? '' : `<button data-buy="${i}" ${near && purse >= it.price ? '' : 'disabled'}>Купить</button>`}</span></div>`).join('') || '<p class="muted">Прилавок пуст.</p>'}</div>`}
     <div class="modal-actions"><button data-act="closeModal">Закрыть</button></div></div>`);
+  if ($('#shBuy')) { $('#shBuy').onclick = () => shopDialog(id, false); $('#shSell').onclick = () => shopDialog(id, true); }
+  $$('[data-sell]').forEach((b) => b.addEventListener('click', () => {
+    const i = sellList.find((x) => x.id === b.dataset.sell);
+    if (!i || !app.takeItems(m.charId, [{ id: i.id, qty: 1 }], 0)) { app.toast('Этого предмета уже нет'); return; }
+    app.giveItems(m.charId, [], i.p);
+    addLog({ kind: 'act', who: mine ? mine.name : myName(), txt: `💰 продаёт «${i.n}» ${t.name} за ${fmtPrice(i.p)}` });
+    app.toast(`💰 «${esc(i.n)}» продан за ${fmtPrice(i.p)}`, 'crit');
+    shopDialog(id, true);
+  }));
   $$('[data-buy]').forEach((b) => b.addEventListener('click', () => {
     const { price, ...L } = S.items[+b.dataset.buy];
     const r = app.mute(() => app.buy(m.charId, L, price));
@@ -3464,14 +3497,272 @@ function popApply(P) {
   app.toast(`👥 Поставлено: ${ids.length}`, 'crit');
 }
 
+/* ---------- Вещи игроков: передача, обмен, продажа, «на землю» ---------- */
+// games/{id}/trades/{k}: { a, b — uid сторон, gift — подарок (ответ нужен только от b), t, state: open | declined | failed,
+//   offer: { uid: { items: [{ id, n, qty }], gp } }, ok: { uid: true } — согласие (сбрасывается при любой правке),
+//   sent / got / recv — исполнение: каждая сторона сама забирает своё из листа (sent) и кладёт снимки другой стороне (got/{uid});
+//   получатель кладёт их в свой лист (recv) }. games/{id}/drops/{k}: { x, y, items: снимки, gp, by } — вещи на земле
+const myChar = () => { const m = me(); return m && m.charId ? m.charId : null; };
+const pnameU = (uid) => ((game.members[uid] || {}).char || {}).name || (game.members[uid] || {}).name || 'Игрок';
+const offerText = (O) => [...((O && O.items) || []).map((i) => `${i.n}${+i.qty > 1 ? ` ×${i.qty}` : ''}`), ...(O && +O.gp ? [`${fmtPrice(+O.gp)}`] : [])].join(', ') || 'ничего';
+const wornArmor = (i) => i.eq && /Доспех/.test(i.cat || '');
+const itemsFor = (L) => (L.items || []).map((i) => ({ id: i.id, qty: +i.qty || 1 }));
+// Окно «Вещи»: инвентарь из листа — передать игроку, бросить на землю; деньги; обмен
+function itemsDialog() {
+  const cid = myChar(), inv = cid && app.inventory(cid);
+  if (!inv) { app.toast('Персонаж не найден на этом устройстве'); return; }
+  const others = Object.entries(game.members || {}).filter(([uid, m]) => uid !== user.uid && m.role !== 'dm');
+  const who = `<option value="">— кому —</option>${others.map(([uid]) => `<option value="${uid}">${esc(pnameU(uid))}</option>`).join('')}`;
+  app.openModal(`<div><h2>🎒 Вещи</h2>
+    <p class="muted small">Деньги: ${fmtPrice(inv.gp)}. Передать можно другому игроку (он должен принять) или бросить на землю — подберёт любой, кто окажется рядом.</p>
+    ${others.length ? `<div class="enc-row"><span>🔁 Обмен с <select id="iwTradeWho" style="width:auto">${who}</select></span><button class="primary" id="iwTrade">Начать обмен</button></div>` : ''}
+    <div class="enc-row mt"><span>Деньги: <input type="number" id="iwGp" min="0" step="0.1" style="width:90px" placeholder="зм"></span>
+      <span class="row gap">${others.length ? `<select id="iwGpWho" style="width:auto">${who}</select><button id="iwGpGive">🤝 Передать</button>` : ''}<button id="iwGpDrop">⬇ Бросить</button></span></div>
+    ${nearDrops().map(([k, D]) => `<div class="enc-row mt"><span>🎒 Рядом на земле: ${esc(offerText(D))}</span><button class="primary" data-iwpick="${k}">Подобрать</button></div>`).join('')}
+    <div class="list mt">${inv.items.map((i) => `<div class="enc-row"><span><b>${esc(i.n)}</b>${i.qty > 1 ? ` <span class="muted small">×${i.qty}</span>` : ''}${wornArmor(i) ? ' <span class="muted small">надет — сначала снимите</span>' : ''}</span>
+      <span class="row gap">${wornArmor(i) ? '' : `${i.qty > 1 ? `<input type="number" min="1" max="${i.qty}" value="1" data-iwq="${i.id}" style="width:56px">` : ''}
+        ${others.length ? `<select data-iww="${i.id}" style="width:auto">${who}</select><button data-iwgive="${i.id}">🤝</button>` : ''}<button data-iwdrop="${i.id}" title="Бросить на землю">⬇</button>`}</span></div>`).join('') || '<p class="muted">Инвентарь пуст.</p>'}</div>
+    <div class="modal-actions"><button data-act="closeModal">Закрыть</button></div></div>`);
+  $$('[data-iwpick]').forEach((b) => b.addEventListener('click', () => pickDrop(b.dataset.iwpick)));
+  const qtyOf = (iid) => { const q = $(`[data-iwq="${iid}"]`); return q ? Math.max(1, +q.value || 1) : 1; };
+  const nameOf = (iid) => (inv.items.find((i) => i.id === iid) || {}).n || '';
+  $$('[data-iwgive]').forEach((b) => b.addEventListener('click', () => {
+    const iid = b.dataset.iwgive, to = $(`[data-iww="${iid}"]`).value;
+    if (!to) { app.toast('Выберите, кому передать'); return; }
+    giftOffer(to, { items: [{ id: iid, n: nameOf(iid), qty: qtyOf(iid) }], gp: 0 });
+  }));
+  $$('[data-iwdrop]').forEach((b) => b.addEventListener('click', () => dropItems({ items: [{ id: b.dataset.iwdrop, n: nameOf(b.dataset.iwdrop), qty: qtyOf(b.dataset.iwdrop) }], gp: 0 })));
+  if ($('#iwGpGive')) $('#iwGpGive').onclick = () => { const g = +$('#iwGp').value || 0, to = $('#iwGpWho').value; if (!g || !to) { app.toast('Укажите сумму и кому'); return; } giftOffer(to, { items: [], gp: g }); };
+  $('#iwGpDrop').onclick = () => { const g = +$('#iwGp').value || 0; if (!g) { app.toast('Укажите сумму'); return; } dropItems({ items: [], gp: g }); };
+  if ($('#iwTrade')) $('#iwTrade').onclick = async () => {
+    const to = $('#iwTradeWho').value;
+    if (!to) { app.toast('Выберите, с кем меняться'); return; }
+    const k = R.push(ref(gpath('trades'))).key, T = { a: user.uid, b: to, t: Date.now(), state: 'open' };
+    await R.set(ref(gpath(`trades/${k}`)), T);
+    game.trades = { ...(game.trades || {}), [k]: T }; // окно — сразу, не дожидаясь подписки
+    tradeDialog(k);
+  };
+}
+// Подарок: предложение с согласием дарителя; получатель видит «Принять / Отказаться»
+async function giftOffer(to, O) {
+  const cid = myChar(), inv = app.inventory(cid);
+  if (+O.gp > inv.gp + 1e-9) { app.toast('Столько денег нет'); return; }
+  const k = R.push(ref(gpath('trades'))).key;
+  await R.set(ref(gpath(`trades/${k}`)), { a: user.uid, b: to, gift: true, t: Date.now(), state: 'open', offer: { [user.uid]: O }, ok: { [user.uid]: true } });
+  app.closeModal();
+  app.toast(`🤝 ${esc(pnameU(to))} получит предложение: ${esc(offerText(O))}`);
+}
+// Бросить на землю: вещи уходят из листа и лежат на клетке рядом с персонажем
+async function dropItems(O) {
+  const cid = myChar(), mine = game.tokens[`pc_${user.uid}`];
+  if (!mine) { app.toast('Сначала поставьте персонажа на поле'); return; }
+  const snaps = app.takeItems(cid, itemsFor(O), +O.gp || 0);
+  if (!snaps) { app.toast('Этих вещей уже нет'); return; }
+  await R.set(ref(gpath(`drops/${R.push(ref(gpath('drops'))).key}`)), { x: mine.x, y: mine.y, items: snaps, gp: +O.gp || 0, by: user.uid, t: Date.now() });
+  addLog({ kind: 'act', who: mine.name, txt: `⬇ бросает на землю: ${offerText({ items: snaps, gp: O.gp })}` });
+  app.closeModal();
+}
+const dropAt = (x, y) => Object.entries(game.drops || {}).find(([, d]) => d.x === x && d.y === y);
+const nearDrops = () => { const mine = user && game.tokens[`pc_${user.uid}`]; return mine ? Object.entries(game.drops || {}).filter(([, D]) => distFt(mine, { x: D.x, y: D.y, size: 1 }) <= 5) : []; };
+async function pickDrop(k) {
+  const cur = (game.drops || {})[k], mine = game.tokens[`pc_${user.uid}`];
+  if (!cur) { app.closeModal(); app.toast('Кто-то уже подобрал'); return; }
+  await R.remove(ref(gpath(`drops/${k}`)));
+  app.giveItems(myChar(), cur.items || [], +cur.gp || 0);
+  addLog({ kind: 'act', who: mine ? mine.name : pnameU(user.uid), txt: `🎒 подбирает: ${offerText(cur)}` });
+  app.closeModal();
+  app.toast(`🎒 Подобрано: ${esc(offerText(cur))}`, 'crit');
+}
+// Подобрать: игрок рядом забирает всё в лист; мастер может убрать вещи или переложить их в добычу
+function dropDialog(k) {
+  const D = (game.drops || {})[k], mine = user && game.tokens[`pc_${user.uid}`];
+  if (!D) return;
+  const near = mine && distFt(mine, { x: D.x, y: D.y, size: 1 }) <= 5;
+  app.openModal(`<div><h2>🎒 На земле</h2><p>${esc(offerText(D))}</p>${!isDM() && !near ? '<p class="muted small">Подойдите вплотную, чтобы подобрать.</p>' : ''}
+    <div class="modal-actions"><button data-act="closeModal">Закрыть</button>${isDM() ? '<button id="dpLoot">💰 В добычу</button><button class="danger" id="dpDel">Убрать</button>' : ''}
+      ${!isDM() ? `<button class="primary" id="dpTake" ${near ? '' : 'disabled'}>Подобрать всё</button>` : ''}</div></div>`);
+  if ($('#dpTake')) $('#dpTake').onclick = () => pickDrop(k);
+  if ($('#dpDel')) $('#dpDel').onclick = async () => { await R.remove(ref(gpath(`drops/${k}`))); app.closeModal(); };
+  if ($('#dpLoot')) $('#dpLoot').onclick = async () => {
+    const upd = { [`drops/${k}`]: null, 'loot/gp': (+(game.loot || {}).gp || 0) + (+D.gp || 0) };
+    // snap — предмет целиком (магическое оружие с атакой), чтобы из добычи он вернулся в лист таким же
+    (D.items || []).forEach((S) => { const { atk, eq, ...it } = S; upd[`loot/items/${R.push(ref(gpath('loot'))).key}`] = { ...it, kind: 'item', snap: S }; });
+    await R.update(ref(gpath()), upd); app.closeModal(); app.toast('💰 Переложено в добычу');
+  };
+}
+// Окно обмена: свои предложения слева, чужие справа; любая правка сбрасывает согласия обоих
+let tradeOpen = null;
+function tradeDialog(k) {
+  const T = (game.trades || {})[k];
+  if (!T) { if (tradeOpen === k) { tradeOpen = null; app.closeModal(); } return; }
+  const meU = user.uid, other = T.a === meU ? T.b : T.a, mine = (T.offer || {})[meU] || { items: [], gp: 0 }, theirs = (T.offer || {})[other] || { items: [], gp: 0 };
+  const ok = T.ok || {}, inv = app.inventory(myChar()) || { items: [], gp: 0 };
+  tradeOpen = k;
+  app.openModal(`<div><h2>🔁 Обмен с ${esc(pnameU(other))}</h2>
+    <div class="trade-grid"><div class="loot-box"><b>Вы отдаёте</b>${ok[meU] ? ' <span class="tag g">согласны</span>' : ''}
+      <div class="list mt">${(mine.items || []).map((i, n) => `<div class="enc-row"><span>${esc(i.n)}${+i.qty > 1 ? ` ×${i.qty}` : ''}</span><button class="ghost" data-tdel="${n}">✕</button></div>`).join('') || '<p class="muted small">Ничего</p>'}</div>
+      <div class="row gap mt"><select id="tdItem" style="flex:1"><option value="">＋ предмет…</option>${inv.items.filter((i) => !wornArmor(i)).map((i) => `<option value="${i.id}">${esc(i.n)}${i.qty > 1 ? ` (${i.qty})` : ''}</option>`).join('')}</select>
+        <input type="number" id="tdQty" min="1" value="1" style="width:56px"></div>
+      <label class="mt">Деньги, зм<input type="number" id="tdGp" min="0" step="0.1" value="${+mine.gp || 0}"></label></div>
+      <div class="loot-box"><b>Вы получаете</b>${ok[other] ? ' <span class="tag g">согласен</span>' : ''}
+      <div class="list mt">${(theirs.items || []).map((i) => `<div class="enc-row"><span>${esc(i.n)}${+i.qty > 1 ? ` ×${i.qty}` : ''}</span></div>`).join('') || '<p class="muted small">Ничего</p>'}</div>
+      ${+theirs.gp ? `<p class="mt">Деньги: ${fmtPrice(+theirs.gp)}</p>` : ''}</div></div>
+    <p class="muted small">Сделка пройдёт, когда согласятся оба. Любая правка снимает согласие — посмотрите ещё раз.</p>
+    <div class="modal-actions"><button class="danger" id="tdCancel">Отменить сделку</button><button data-act="closeModal">Свернуть</button>
+      <button class="primary" id="tdOk">${ok[meU] ? '✓ Вы согласны' : '✓ Согласен'}</button></div></div>`);
+  const setOffer = (O) => R.update(ref(gpath(`trades/${k}`)), { [`offer/${meU}`]: O, ok: null }).catch(() => {});
+  $$('[data-tdel]').forEach((b) => b.addEventListener('click', () => { const items = (mine.items || []).filter((_, n) => n !== +b.dataset.tdel); setOffer({ ...mine, items }); }));
+  $('#tdItem').onchange = () => {
+    const iid = $('#tdItem').value, it = inv.items.find((i) => i.id === iid);
+    if (!it) return;
+    const have = (mine.items || []).filter((i) => i.id === iid).reduce((s, i) => s + (+i.qty || 1), 0), q = Math.min(it.qty - have, Math.max(1, +$('#tdQty').value || 1));
+    if (q <= 0) { app.toast('Больше нет'); return; }
+    setOffer({ ...mine, items: [...(mine.items || []), { id: iid, n: it.n, qty: q }] });
+  };
+  $('#tdGp').onchange = () => { const g = Math.max(0, Math.min(inv.gp, +$('#tdGp').value || 0)); setOffer({ ...mine, gp: g }); };
+  $('#tdOk').onclick = () => {
+    // Перед согласием — всё ли предложенное ещё есть в листе
+    const lack = (mine.items || []).find((i) => !inv.items.some((x) => x.id === i.id && x.qty >= (+i.qty || 1)));
+    if (lack || +mine.gp > inv.gp + 1e-9) { app.toast(lack ? `«${esc(lack.n)}» больше нет в инвентаре` : 'Столько денег нет'); return; }
+    R.update(ref(gpath(`trades/${k}/ok`)), { [meU]: true }).catch(() => {});
+  };
+  $('#tdCancel').onclick = () => { R.update(ref(gpath(`trades/${k}`)), { state: 'declined', by: meU }).catch(() => {}); tradeOpen = null; app.closeModal(); };
+}
+// Исполнение сделок в браузере каждой стороны: отдать своё, принять чужое; инициатор убирает завершённую сделку
+const tradeBusy = new Set(), tradeSeen = new Set();
+function syncTrades() {
+  if (!game || !user) return;
+  const meU = user.uid, cid = myChar();
+  Object.entries(game.trades || {}).forEach(([k, T]) => {
+    if (T.a !== meU && T.b !== meU) return;
+    const other = T.a === meU ? T.b : T.a, ok = T.ok || {};
+    // Новое предложение — уведомление получателю
+    if (T.b === meU && T.state === 'open' && !tradeSeen.has(k)) { tradeSeen.add(k); app.toast(T.gift ? `🎁 ${esc(pnameU(T.a))} передаёт вам: ${esc(offerText((T.offer || {})[T.a]))}` : `🔁 ${esc(pnameU(T.a))} предлагает обмен`, 'crit'); mtab('turn', true); }
+    if (T.state === 'declined' || T.state === 'failed') {
+      if (T.a === meU && !tradeBusy.has(k)) { tradeBusy.add(k); app.toast(T.state === 'failed' ? '🤝 Сделка не состоялась: у кого-то не оказалось вещей' : `🤝 ${esc(pnameU(T.by === meU ? other : T.by))} отказался`); R.remove(ref(gpath(`trades/${k}`))).catch(() => {}); }
+      if (tradeOpen === k) { tradeOpen = null; app.closeModal(); }
+      return;
+    }
+    if (!cid) return;
+    const key = `${k}:${meU}`;
+    if (ok[T.a] && ok[T.b] && !(T.sent || {})[meU] && !tradeBusy.has(`${key}:s`)) {
+      tradeBusy.add(`${key}:s`);
+      const O = (T.offer || {})[meU] || { items: [], gp: 0 }, snaps = app.takeItems(cid, itemsFor(O), +O.gp || 0);
+      if (!snaps) { R.update(ref(gpath(`trades/${k}`)), { state: 'failed' }).catch(() => {}); return; }
+      R.update(ref(gpath(`trades/${k}`)), { [`sent/${meU}`]: true, [`got/${other}`]: { items: snaps, gp: +O.gp || 0 } }).catch(() => {});
+    }
+    const G = (T.got || {})[meU];
+    if (G && !(T.recv || {})[meU] && !tradeBusy.has(`${key}:r`)) {
+      tradeBusy.add(`${key}:r`);
+      app.giveItems(cid, G.items || [], +G.gp || 0);
+      R.update(ref(gpath(`trades/${k}`)), { [`recv/${meU}`]: true }).catch(() => {});
+      if (tradeOpen === k) { tradeOpen = null; app.closeModal(); }
+      if ((G.items || []).length || +G.gp) app.toast(`🤝 Получено: ${esc(offerText(G))} — уже в листе`, 'crit');
+      else app.toast(`🤝 ${esc(pnameU(other))} принял передачу`);
+    }
+    const recv = T.recv || {};
+    if (T.a === meU && recv[T.a] && recv[T.b] && !tradeBusy.has(`${k}:done`)) {
+      tradeBusy.add(`${k}:done`);
+      R.remove(ref(gpath(`trades/${k}`))).catch(() => {});
+      const oa = (T.offer || {})[T.a], ob = (T.offer || {})[T.b];
+      addLog({ kind: 'act', who: pnameU(T.a), txt: T.gift ? `🤝 передаёт ${pnameU(T.b)}: ${offerText(oa)}` : `🔁 обмен с ${pnameU(T.b)}: отдаёт ${offerText(oa)}, получает ${offerText(ob)}` });
+    }
+    if (tradeOpen === k && $('#modal') && !$('#modal').hidden) tradeDialog(k);
+  });
+  if (tradeOpen && !(game.trades || {})[tradeOpen]) { tradeOpen = null; }
+}
+// Запросы в панели: подарок — принять/отказаться, обмен — открыть; у инициатора — ожидание
+function tradeRows() {
+  if (!game || !user) return [];
+  return Object.entries(game.trades || {}).filter(([, T]) => (T.a === user.uid || T.b === user.uid) && T.state === 'open').map(([k, T]) => {
+    const other = T.a === user.uid ? T.b : T.a;
+    if (T.gift && T.b === user.uid && !(T.ok || {})[user.uid]) return `<div class="sv-area"><div>🎁 <b>${esc(pnameU(T.a))}</b> передаёт вам: ${esc(offerText((T.offer || {})[T.a]))}</div>
+      <div class="row gap mt"><button class="primary" data-tbl="trAccept" data-k="${k}">Принять</button><button data-tbl="trDecline" data-k="${k}">Отказаться</button></div></div>`;
+    if (T.gift) return `<div class="sv-area"><div class="muted small">⏳ Ждём, пока ${esc(pnameU(other))} примет: ${esc(offerText((T.offer || {})[T.a]))}</div><button class="ghost" data-tbl="trDecline" data-k="${k}">Отменить</button></div>`;
+    return `<div class="sv-area"><div>🔁 Обмен с <b>${esc(pnameU(other))}</b>${(T.ok || {})[other] ? ' — он согласен' : ''}</div><div class="row gap mt"><button class="primary" data-tbl="trOpen" data-k="${k}">Открыть</button></div></div>`;
+  });
+}
+// Продажа торговцу: за полцены (драгоценности и предметы искусства — по полной); без цены торговец не берёт
+function sellPrice(i) {
+  const RARE = typeof RARITY !== 'undefined' ? RARITY[i.cost] : undefined;
+  if (RARE != null) { const p = RAR_PRICE[RARE] || 0; return Math.floor((/Расходник/.test(i.cat) || /^(Зелье|Свиток)/.test(i.n) ? p / 2 : p) / 2); }
+  const v = costGp(i.cost) || costGp(([...WEAPONS, ...ARMOR, ...GEAR].find((x) => x.n === i.n) || {}).cost);
+  return i.cat === 'Сокровище' ? v : Math.floor(v * 50) / 100;
+}
+
+/* ---------- Масштаб и размер поля ---------- */
+const SCALES = [[5, '5 фт — бой, комнаты'], [10, '10 фт — большие залы'], [30, '30 фт — поселение, крепость'], [100, '100 фт — округа'], [5280, '1 миля — путешествие']];
+// Границы нарисованного и поставленного: местность, двери, сундуки, свет, вещи, существа
+function drawnBounds() {
+  let x0 = Infinity, y0 = Infinity, x1 = -Infinity, y1 = -Infinity;
+  const add = (x, y, s = 1) => { x0 = Math.min(x0, x); y0 = Math.min(y0, y); x1 = Math.max(x1, x + s - 1); y1 = Math.max(y1, y + s - 1); };
+  [game.map, game.doors].forEach((M) => Object.keys(M || {}).forEach((k) => { const [x, y] = k.split('_').map(Number); add(x, y); }));
+  [game.chests, game.lights, game.drops].forEach((M) => Object.values(M || {}).forEach((o) => add(o.x, o.y)));
+  Object.values(game.tokens || {}).forEach((t) => add(t.x, t.y, t.size || 1));
+  return x0 === Infinity ? null : { x0, y0, x1, y1 };
+}
+function scaleDialog() {
+  const ft = FT(), bg = bgSet();
+  app.openModal(`<div><h2>📐 Масштаб и размер поля</h2>
+    <h3>Масштаб</h3>
+    <div class="form-grid"><label style="grid-column:1/-1">В одной клетке<select id="scFt">${SCALES.map(([v, n]) => `<option value="${v}" ${v === ft ? 'selected' : ''}>${n}</option>`).join('')}</select></label>
+      ${bgSrc ? `<label class="check" style="grid-column:1/-1"><input type="checkbox" id="scBg" checked> Пересчитать карту-подложку под новый масштаб</label>` : ''}</div>
+    <p class="muted small">Линейка, скорость, дальность, области заклинаний, свет и обзор считаются по новому масштабу. Нарисованное остаётся по клеткам. Соседние клетки — всегда «вплотную» (5 фт, ближний бой).</p>
+    <h3 class="mt">Размер поля: <span id="scSize"></span></h3>
+    <p class="muted small">Сколько рядов добавить (+) или убрать (−) с каждой стороны. Всё на поле сдвинется вместе с картой; то, что окажется за краем, пропадёт, существа встанут у края.</p>
+    <div class="sc-grid"><span></span><label>Сверху<input type="number" id="scT" value="0"></label><span></span>
+      <label>Слева<input type="number" id="scL" value="0"></label><span class="sc-mid">🗺</span><label>Справа<input type="number" id="scR" value="0"></label>
+      <span></span><label>Снизу<input type="number" id="scB" value="0"></label><span></span></div>
+    <div class="row gap wrap mt"><button id="scTrim" title="Убрать пустые края: оставить нарисованное и всё, что стоит на поле, плюс клетка запаса">✂ Обрезать по нарисованному</button><button id="scZero">Сбросить</button></div>
+    <div class="modal-actions"><button data-act="closeModal">Отмена</button><button class="primary" id="scOk">Применить</button></div></div>`);
+  const val = () => ({ t: Math.round(+$('#scT').value || 0), l: Math.round(+$('#scL').value || 0), r: Math.round(+$('#scR').value || 0), b: Math.round(+$('#scB').value || 0) });
+  const show = () => { const v = val(), nw = W() + v.l + v.r, nh = H() + v.t + v.b, bad = nw < 5 || nh < 5 || nw > 80 || nh > 80;
+    $('#scSize').innerHTML = `${W()}×${H()}${nw !== W() || nh !== H() ? ` → <b class="${bad ? 'warn-text' : ''}">${nw}×${nh}</b>${bad ? ' (от 5 до 80)' : ''}` : ''}`; };
+  ['#scT', '#scL', '#scR', '#scB'].forEach((s) => $(s).addEventListener('input', show));
+  show();
+  $('#scZero').onclick = () => { ['#scT', '#scL', '#scR', '#scB'].forEach((s) => { $(s).value = 0; }); show(); };
+  $('#scTrim').onclick = () => {
+    const B = drawnBounds();
+    if (!B) { app.toast('Поле пустое — обрезать не по чему'); return; }
+    let l = -Math.max(0, B.x0 - 1), t = -Math.max(0, B.y0 - 1), r = -Math.max(0, W() - 2 - B.x1), b = -Math.max(0, H() - 2 - B.y1);
+    // Не меньше 5×5 — недостающее добираем справа и снизу
+    if (W() + l + r < 5) r += 5 - (W() + l + r);
+    if (H() + t + b < 5) b += 5 - (H() + t + b);
+    $('#scT').value = t; $('#scL').value = l; $('#scR').value = r; $('#scB').value = b; show();
+  };
+  $('#scOk').onclick = async () => {
+    const v = val(), nw = W() + v.l + v.r, nh = H() + v.t + v.b, nft = +$('#scFt').value || 5;
+    if (nw < 5 || nh < 5 || nw > 80 || nh > 80) { app.toast('Поле — от 5 до 80 клеток в каждую сторону'); return; }
+    const dx = v.l, dy = v.t, inB = (x, y) => x >= 0 && y >= 0 && x < nw && y < nh, upd = {};
+    if (dx || dy || nw !== W() || nh !== H()) {
+      const keys = (M) => { const out = {}; Object.entries(M || {}).forEach(([k, val2]) => { const [x, y] = k.split('_').map(Number); if (inB(x + dx, y + dy)) out[`${x + dx}_${y + dy}`] = val2; }); return Object.keys(out).length ? out : null; };
+      const objs = (M) => { const out = {}; Object.entries(M || {}).forEach(([k, o]) => { if (inB(o.x + dx, o.y + dy)) out[k] = { ...o, x: o.x + dx, y: o.y + dy }; }); return Object.keys(out).length ? out : null; };
+      Object.assign(upd, { map: keys(game.map), doors: keys(game.doors), reveal: keys(game.reveal), seen: keys(game.seen), lights: objs(game.lights), chests: objs(game.chests), drops: objs(game.drops), areas: null, 'meta/w': nw, 'meta/h': nh });
+      Object.entries(game.tokens || {}).forEach(([id, t]) => { const s = t.size || 1;
+        upd[`tokens/${id}/x`] = Math.max(0, Math.min(nw - s, t.x + dx)); upd[`tokens/${id}/y`] = Math.max(0, Math.min(nh - s, t.y + dy)); });
+      const G = (game.meta || {}).gen;
+      if (G) upd['meta/gen'] = { ...G, rooms: (G.rooms || []).map((r) => ({ ...r, x: r.x + dx, y: r.y + dy })), start: G.start ? { x: Math.max(0, Math.min(nw - 1, G.start.x + dx)), y: Math.max(0, Math.min(nh - 1, G.start.y + dy)) } : null };
+    }
+    // Подложка: сдвиг вместе с полем; при новом масштабе — та же местность занимает меньше (или больше) клеток
+    const k = $('#scBg') && $('#scBg').checked ? ft / nft : 1;
+    if (bgSrc && (dx || dy || k !== 1)) upd['meta/bg'] = { ...bg, w: +((bg.w || W()) * k).toFixed(6), ox: +(bg.ox * k + dx * CELL).toFixed(3), oy: +(bg.oy * k + dy * CELL).toFixed(3) };
+    if (nft !== ft) upd['meta/ft'] = nft === 5 ? null : nft;
+    if (!Object.keys(upd).length) { app.closeModal(); return; }
+    await R.update(ref(gpath()), upd);
+    app.closeModal();
+    if (nft !== ft) addLog({ kind: 'sys', txt: `📐 Масштаб поля: ${fmtFt(nft)} в клетке` });
+    app.toast(`📐 Поле ${nw}×${nh}, клетка — ${fmtFt(nft)}`);
+  };
+}
+
 /* ---------- Сцены ---------- */
 // games/{id}/scenes/{sid}: { n, t } — список (его видят все); games/{id}/sceneData/{sid} — снимок поля: размер, карта, двери, свет,
 // туман, картинка, существа мастера и места персонажей. Его читает только мастер при переключении. meta.scene — текущая сцена
 function sceneSnap() {
   const npcs = {}, pcs = {}, m = game.meta || {};
   Object.entries(game.tokens || {}).forEach(([id, t]) => { if (t.kind === 'npc') npcs[id] = t; else pcs[id] = { x: t.x, y: t.y }; });
-  return { w: W(), h: H(), bg: m.bg || null, fog: m.fog || null, ground: m.ground || null, gen: m.gen || null, map: game.map || null, doors: game.doors || null, lights: game.lights || null, chests: game.chests || null,
-    reveal: game.reveal || null, seen: game.seen || null, bgimg: bgSrc ? { data: bgSrc } : null, npcs, pcs };
+  return { w: W(), h: H(), ft: m.ft || null, bg: m.bg || null, fog: m.fog || null, ground: m.ground || null, gen: m.gen || null, map: game.map || null, doors: game.doors || null, lights: game.lights || null, chests: game.chests || null,
+    reveal: game.reveal || null, seen: game.seen || null, drops: game.drops || null, bgimg: bgSrc ? { data: bgSrc } : null, npcs, pcs };
 }
 // Сохранить текущее поле в его сцену (или в новую «Сцена N»)
 function saveScene() {
@@ -3485,7 +3776,7 @@ async function loadScene(sid, empty, name) {
   const snap = empty ? { w: 30, h: 20 } : (await R.get(ref(gpath(`sceneData/${sid}`)))).val() || {};
   const upd = { map: snap.map || null, doors: snap.doors || null, lights: snap.lights || null, reveal: snap.reveal || null, seen: snap.seen || null,
     bgimg: snap.bgimg || null, 'meta/w': snap.w || 30, 'meta/h': snap.h || 20, 'meta/bg': snap.bg || null, 'meta/fog': snap.fog || null, 'meta/scene': sid,
-    chests: snap.chests || null, 'meta/ground': snap.ground || null, 'meta/gen': snap.gen || null,
+    chests: snap.chests || null, 'meta/ground': snap.ground || null, 'meta/gen': snap.gen || null, 'meta/ft': snap.ft || null, drops: snap.drops || null,
     areas: null, init: null, econ: null };
   Object.entries(game.tokens || {}).forEach(([id, t]) => {
     if (t.kind === 'npc') { upd[`tokens/${id}`] = null; return; }
@@ -3675,7 +3966,7 @@ function fxFrame(now) {
       g.fillStyle = rgba(f.color, alpha * 0.8); g.strokeStyle = `rgba(255,255,255,${alpha})`; g.lineWidth = 3;
       g.beginPath(); shapePath(g, s); g.fill(); g.stroke();
       if (f.shape === 'sphere') { // раскалённое ядро
-        const r = ((f.r || f.size / 5) * CELL) * grow * 0.55, gr = g.createRadialGradient(f.ox * CELL, f.oy * CELL, 0, f.ox * CELL, f.oy * CELL, Math.max(1, r));
+        const r = ((f.r || aLen(f)) * CELL) * grow * 0.55, gr = g.createRadialGradient(f.ox * CELL, f.oy * CELL, 0, f.ox * CELL, f.oy * CELL, Math.max(1, r));
         gr.addColorStop(0, `rgba(255,255,230,${alpha})`); gr.addColorStop(1, 'rgba(255,255,230,0)');
         g.fillStyle = gr; g.beginPath(); g.arc(f.ox * CELL, f.oy * CELL, Math.max(1, r), 0, Math.PI * 2); g.fill();
       }
@@ -3819,7 +4110,8 @@ function renderTools() {
   const base = t('move', '✋ Двигать', 'Перетаскивайте токены, по пустому месту — прокрутка') + t('ruler', '📏 Линейка', 'Протяните, чтобы измерить расстояние');
   if (!isDM()) {
     $('#tblTools').innerHTML = `<div class="seg">${base}${!(hasMine && inFight()) ? t('place', hasMine ? '📍 Переставить меня' : '📍 Поставить персонажа', 'Нажмите на клетку') : ''}
-      ${me() && me().charId && app.companions(me().charId).length ? b('compPick', '🐾 Спутник', 'Поставить спутника из листа на поле', tool === 'placeComp') : ''}${handouts}</div>`;
+      ${me() && me().charId && app.companions(me().charId).length ? b('compPick', '🐾 Спутник', 'Поставить спутника из листа на поле', tool === 'placeComp') : ''}
+      ${me() && me().charId ? b('items', '🎒 Вещи', 'Передать вещи или деньги другому игроку, обменяться, бросить на землю') : ''}${handouts}</div>`;
     return;
   }
   // Мастер: выпадающие меню по группам; на кнопке меню — выбранный в нём инструмент
@@ -3838,6 +4130,7 @@ function renderTools() {
       + (fogOn() ? sep + t('reveal', TL.reveal, 'Кисть: открыть клетки для игроков') + t('conceal', TL.conceal, 'Кисть: закрыть клетки туманом') : ''))
     + menu('map', '🗺 Карта', [], b('gen', '🎲 Генератор', 'Создать местность или локацию по шаблону: лес, река, горы, подземелье, замок, город…')
       + b('mapCfg', '🗺 Карта и туман', 'Карта-подложка, размер поля, туман войны')
+      + b('scale', `📐 Масштаб и размер · ${fmtFt(FT())}`, 'Сколько футов в клетке; добавить или убрать ряды с любой стороны; обрезать по нарисованному')
       + b('scenes', `🎬 Сцены${(game.meta || {}).scene && (game.scenes || {})[game.meta.scene] ? `: ${esc(game.scenes[game.meta.scene].n)}` : ''}`, 'Несколько полей: таверна, подземелье, логово — переключение одной кнопкой')
       + (fogOn() ? b('fogPreview', '👁 Вид игроков', 'Показать поле так, как его видят игроки', fogPreview) : ''), fogPreview)
     + menu('mon', '🐉 Существа', ['enemy', 'encPlace'], t('enemy', TL.enemy, 'Нажмите на клетку, чтобы поставить врага или NPC из бестиария')
@@ -4085,6 +4378,14 @@ async function onClick(e) {
     else if (['uncanny', 'deflect', 'rebuke', 'protect'].includes(a)) doReaction(a, b.dataset.id);
     else if (a === 'csUse') csUse(b.dataset.k, b.dataset.id);
     else if (a === 'csNo') await R.update(ref(gpath(`cs/${b.dataset.k}/no`)), { [b.dataset.id]: 1 });
+    else if (a === 'items') itemsDialog();
+    else if (a === 'scale') scaleDialog();
+    else if (a === 'trOpen') tradeDialog(b.dataset.k);
+    else if (a === 'trDecline') await R.update(ref(gpath(`trades/${b.dataset.k}`)), { state: 'declined', by: user.uid });
+    else if (a === 'trAccept') {
+      if (!myChar()) { app.toast('Персонаж не найден на этом устройстве'); return; }
+      await R.update(ref(gpath(`trades/${b.dataset.k}/ok`)), { [user.uid]: true });
+    }
     else if (a === 'lair') {
       const on = game.init && game.init.list && game.init.list.lair;
       if (on) await removeFromInit('lair');
