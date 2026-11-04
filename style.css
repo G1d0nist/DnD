@@ -620,3 +620,8 @@ button.stat:hover { border-color: var(--gold); }
 .tbl-cam { position: absolute; right: 8px; bottom: 8px; z-index: 6; padding: 5px 10px; border-radius: 99px; background: rgba(20,18,16,.85); border: 1px solid var(--line); color: var(--gold2); font-size: 14px; }
 .tbl-cam.free { border-color: var(--gold); box-shadow: 0 0 0 2px rgba(212,166,74,.25); }
 .tbl-cam[hidden] { display: none; }
+/* Клавиатура: выбранная клавишами цель, окно назначений */
+.tok.kpick .tok-face { outline: 3px dashed #f0c76a; outline-offset: 3px; }
+.key-list .enc-row { padding: 4px 8px; }
+.key-slot { min-width: 74px; font-family: ui-monospace, monospace; padding: 3px 8px; }
+.key-slot.on { border-color: var(--gold); color: var(--gold2); }

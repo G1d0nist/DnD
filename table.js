@@ -689,7 +689,7 @@ function renderTokens() {
     el.style.width = el.style.height = s * CELL + 'px';
     el.style.setProperty('--tc', t.kind === 'npc' ? SIDE_COLOR[t.side || 'enemy'] : t.color || '#d4a64a');
     const down = isDown(t), dead = down && isDead(t), label = down ? downLabel(t) : t.name;
-    el.className = `tok ${t.kind} side-${team(t)} ${canMove(t) ? 'mine' : ''} ${selId === id ? 'sel' : ''} ${cur && cur.tokenId === id ? 'turn' : ''} ${t.hidden ? 'hid' : ''} ${down ? 'down' : ''} ${dead ? 'dead' : ''}`;
+    el.className = `tok ${t.kind} side-${team(t)} ${canMove(t) ? 'mine' : ''} ${selId === id ? 'sel' : ''} ${cur && cur.tokenId === id ? 'turn' : ''} ${t.hidden ? 'hid' : ''} ${down ? 'down' : ''} ${dead ? 'dead' : ''} ${kbdPick === id && (aim || cast) ? 'kpick' : ''}`;
     const ec = inFight() ? econ(id) : {};
     el.title = `${label}${showNums ? ` · ${t.hp}/${t.hpMax} хитов${t.ac ? ` · КД ${t.ac}` : ''}` : ''}${(t.cond || []).length ? ` · ${t.cond.map(condName).join(', ')}` : ''}${ec.dodge ? ' · уклоняется' : ''}${ec.dis ? ' · отходит' : ''}`;
     const html = `${t.img && !dead ? `<div class="tok-face img" style="background-image:url('${t.img}')"></div>` : `<div class="tok-face">${dead ? '☠' : esc((t.name || '?').trim().slice(0, 2))}</div>`}
@@ -4214,7 +4214,8 @@ function renderTools() {
   const b = (a, label, title, on) => `<button class="${on ? 'on' : ''}" data-tbl="${a}" title="${title}">${label}${on && /Свободно|Вид игроков/.test(label) ? ' ✓' : ''}</button>`;
   const brushes = ['tree', 'rock', 'bush', 'road', 'sand', 'bridge', 'furn', 'floor'], rough = ['thicket', 'bog', 'rubble', 'slope', 'snow', 'ice'];
   const handouts = isDM() || hoMine().length ? b('handouts', `📜 Материалы${!isDM() && hoMine().length ? ` (${hoMine().length})` : ''}`, isDM() ? 'Показать игрокам картинку, письмо или карту' : 'Что показывал мастер') : '';
-  const base = t('move', '✋ Двигать', 'Перетаскивайте токены, по пустому месту — прокрутка') + t('ruler', '📏 Линейка', 'Протяните, чтобы измерить расстояние');
+  const base = t('move', '✋ Двигать', 'Перетаскивайте токены; шаг — WASD или стрелки') + t('ruler', '📏 Линейка', 'Протяните, чтобы измерить расстояние')
+    + b('keys', '⌨', 'Клавиши: шаг WASD, атака Q, заклинание E, спасбросок Alt… — посмотреть и переназначить (K)');
   if (!isDM()) {
     $('#tblTools').innerHTML = `<div class="seg">${base}${!(hasMine && inFight()) ? t('place', hasMine ? '📍 Переставить меня' : '📍 Поставить персонажа', 'Нажмите на клетку') : ''}
       ${me() && me().charId && app.companions(me().charId).length ? b('compPick', '🐾 Спутник', 'Поставить спутника из листа на поле', tool === 'placeComp') : ''}
@@ -4418,6 +4419,258 @@ function renderMembers() {
       ${isDM() && uid !== user.uid ? `<button class="ghost" data-tbl="kick" data-id="${uid}" title="Исключить">✕</button>` : ''}</div>`).join('');
 }
 
+/* ---------- Клавиатура ---------- */
+// Клавиши — по физическому положению (e.code), поэтому работают и в русской раскладке. Назначения хранятся на устройстве
+const KEY_ACTS = [
+  ['up', 'Шаг вверх', ['KeyW', 'ArrowUp']], ['down', 'Шаг вниз', ['KeyS', 'ArrowDown']], ['left', 'Шаг влево', ['KeyA', 'ArrowLeft']], ['right', 'Шаг вправо', ['KeyD', 'ArrowRight']],
+  ['attack', 'Атака — выбор атаки', ['KeyQ']], ['spell', 'Заклинание — выбор заклинания', ['KeyE']], ['saves', 'Спасбросок (запрос или вручную)', ['AltLeft', 'KeyR']],
+  ['next', 'Следующая цель', ['Tab']], ['ok', 'Подтвердить: удар, заклинание', ['Enter']],
+  ['endTurn', 'Закончить ход', ['Space']], ['dash', 'Рывок', ['KeyF']], ['dis', 'Отход', ['KeyG']], ['dodge', 'Уклонение', ['KeyH']],
+  ['items', 'Вещи', ['KeyI']], ['chat', 'Журнал и чат', ['KeyJ']], ['cam', 'Камера: к персонажу / свободная', ['KeyM']], ['keys', 'Это окно — клавиши', ['KeyK']],
+];
+const KEY_STORE = 'dnd55-keys';
+let keyMap = null;
+function keysLoad() {
+  let saved = {};
+  try { saved = JSON.parse(ls.get(KEY_STORE)) || {}; } catch (e) { saved = {}; }
+  keyMap = Object.fromEntries(KEY_ACTS.map(([k, , def]) => [k, Array.isArray(saved[k]) ? saved[k] : def]));
+}
+const keyAct = (code) => { if (!keyMap) keysLoad(); return Object.keys(keyMap).find((k) => keyMap[k].includes(code)) || null; };
+const keyName = (c) => ({ ArrowUp: '↑', ArrowDown: '↓', ArrowLeft: '←', ArrowRight: '→', Space: 'Пробел', Enter: 'Enter', Tab: 'Tab', Escape: 'Esc', AltLeft: 'Alt', AltRight: 'Alt (правый)',
+  ShiftLeft: 'Shift', ShiftRight: 'Shift (правый)', ControlLeft: 'Ctrl', Backquote: '`', Minus: '-', Equal: '=', BracketLeft: '[', BracketRight: ']', Semicolon: ';', Quote: "'", Comma: ',', Period: '.', Slash: '/', Backslash: '\\' }[c]
+  || c.replace(/^Key/, '').replace(/^Digit/, '').replace(/^Numpad/, 'Num '));
+// Окно «⌨ Клавиши»: нажмите на поле и затем клавишу; Backspace — очистить, Esc — отмена
+let keyCapture = null;
+function keysDialog() {
+  if (!keyMap) keysLoad();
+  const slot = (k, i) => { const c = keyMap[k][i]; return `<button class="key-slot ${keyCapture && keyCapture.k === k && keyCapture.i === i ? 'on' : ''}" data-ks="${k}" data-ki="${i}">${keyCapture && keyCapture.k === k && keyCapture.i === i ? 'нажмите клавишу…' : c ? esc(keyName(c)) : '—'}</button>`; };
+  app.openModal(`<div><h2>⌨ Клавиши</h2>
+    <p class="muted small">Нажмите на поле, затем клавишу. Backspace — очистить, Esc — отмена. Назначения хранятся на этом устройстве.
+      Удерживайте шаг — персонаж идёт дальше (по трудной местности медленнее); в бою он остановится, когда кончится скорость, — Рывок отдельной клавишей.
+      Alt + 1…6 — спасбросок Силы…Харизмы вручную. В окне выбора атаки или заклинания цифры 1–9 выбирают пункт.</p>
+    <div class="key-list">${KEY_ACTS.map(([k, n]) => `<div class="enc-row"><span>${esc(n)}</span><span class="row gap">${slot(k, 0)}${slot(k, 1)}</span></div>`).join('')}</div>
+    <div class="modal-actions"><button id="kReset">Как было</button><button data-act="closeModal">Готово</button></div></div>`);
+  $$('[data-ks]').forEach((b) => b.addEventListener('click', () => { keyCapture = { k: b.dataset.ks, i: +b.dataset.ki }; keysDialog(); }));
+  $('#kReset').onclick = () => { ls.set(KEY_STORE, ''); keyCapture = null; keysLoad(); keysDialog(); };
+}
+function keyAssign(code) {
+  const { k, i } = keyCapture;
+  keyCapture = null;
+  if (code !== 'Escape') {
+    Object.keys(keyMap).forEach((a) => { keyMap[a] = keyMap[a].filter((c) => c !== code); }); // одна клавиша — одно действие
+    const L = keyMap[k].slice();
+    if (code === 'Backspace') L.splice(i, 1); else L[i] = code;
+    keyMap[k] = L.filter(Boolean);
+    ls.set(KEY_STORE, JSON.stringify(keyMap));
+  }
+  keysDialog();
+}
+// Подсказка у токена (как при перетаскивании), сама гаснет
+let keyHintT = null;
+function keyHint(text, id) {
+  const el = id && $(`[data-tok="${id}"]`);
+  if (!el || !text) { hint(''); return; }
+  const r = el.getBoundingClientRect();
+  hint(text, { clientX: r.right, clientY: r.top + 8 });
+  clearTimeout(keyHintT); keyHintT = setTimeout(() => hint(''), 1800);
+}
+// Кого двигают клавиши: игрок — своего персонажа, мастер — выделенное существо
+const keyTokId = () => (isDM() ? (selId && game.tokens[selId] ? selId : null) : myTok() ? `pc_${user.uid}` : null);
+// Шаг на клетку: те же правила, что при перетаскивании. Возвращает { slow } — шаг по трудной местности; 'stop' — кончилась скорость
+function stepMove(dx, dy) {
+  const id = keyTokId(), t = id && game.tokens[id];
+  if (!t) { if (isDM()) keyHint(''); return false; }
+  const s = t.size || 1, forced = isDM() && freeMove, x = t.x + dx, y = t.y + dy;
+  if (isDown(t) && !forced) { keyHint(isDead(t) ? 'Это труп' : 'Без сознания — не может двигаться', id); return 'stop'; }
+  if (x < 0 || y < 0 || x + s > W() || y + s > H()) return false;
+  let mv = null;
+  if (inFight() && !forced) {
+    if (!(isTurnOf(id) || (t.comp && isTurnOf(`pc_${t.owner}`)))) { keyHint(isDM() ? 'Сейчас не его ход' : 'Сейчас не ваш ход', id); return 'stop'; }
+    mv = moveInfo(id);
+  }
+  const occ = occupancy(id);
+  for (let i = 0; i < s; i++) for (let j = 0; j < s; j++) {
+    const k = `${x + i}_${y + j}`, T = TERRAIN[(game.map || {})[k]];
+    if (T && T.block) { keyHint(`Там ${T.n.toLowerCase()}`, id); return false; }
+    if (doorShut(k)) { keyHint('Дверь закрыта', id); return false; }
+    if (occ.has(k) && !forced) { keyHint('Клетка занята', id); return false; }
+  }
+  const cost = reachMap(t.x, t.y, FT() * 4, forced ? null : occ, mv && mv.prone).get(`${x}_${y}`);
+  if (cost == null) return false;
+  const upd = { [`tokens/${id}/x`]: x, [`tokens/${id}/y`]: y };
+  if (mv) {
+    if (cost > mv.left) { keyHint(mv.left ? `Шаг ${cost} фт, осталось ${mv.left} фт` : `Скорость потрачена${mv.canDash ? ' — Рывок (F)' : ''}`, id); return 'stop'; }
+    const used = (econ(id).move || 0) + cost;
+    upd[`econ/${id}/move`] = used;
+    game.econ = { ...(game.econ || {}), [id]: { ...econ(id), move: used } }; // следующий шаг — от свежего остатка, не дожидаясь базы
+    checkOpportunity(id, { ...t, x, y }, t.x, t.y);
+  }
+  t.x = x; t.y = y;
+  renderTokens(); camUpdate();
+  R.update(ref(gpath()), upd).catch((err) => app.toast(`Не удалось переместить: ${esc(err.code || err.message)}`));
+  if (mv) keyHint(`осталось ${Math.max(0, mv.left - cost)} фт`, id);
+  return { slow: cost > FT() * (mv && mv.prone ? 2 : 1) };
+}
+// Ходьба при удержании: первый шаг сразу (с короткой паузой, чтобы поймать диагональ), дальше — размеренно
+const DIRS = { up: [0, -1], down: [0, 1], left: [-1, 0], right: [1, 0] }, WALK_MS = 280;
+const held = new Set();
+let walkT = null, walkN = 0, walkStop = false;
+const dirNow = () => { let dx = 0, dy = 0; held.forEach((k) => { dx += DIRS[k][0]; dy += DIRS[k][1]; }); return [Math.sign(dx), Math.sign(dy)]; };
+function walk() {
+  walkT = null;
+  const [dx, dy] = dirNow();
+  if ((!dx && !dy) || walkStop || !game) return;
+  if (cast) { castKey(dx, dy); walkT = setTimeout(walk, WALK_MS * (walkN++ ? 0.6 : 1.4)); return; }
+  if (aim) return;
+  const r = stepMove(dx, dy);
+  if (r === 'stop') { walkStop = true; return; }
+  if (!r) return;
+  walkT = setTimeout(walk, WALK_MS * (r.slow ? 2 : 1) * (walkN++ ? 1 : 1.4));
+}
+// Размещение области клавишами: сфера и куб двигаются по клетке, конус и линия от себя — поворачиваются
+function castKey(dx, dy) {
+  const A = cast.area, src = cast.caster && game.tokens[cast.caster];
+  if (A.shape === 'target' || A.shape === 'aura') return;
+  if ((A.shape === 'cone' || A.shape === 'line' || (A.shape === 'cube' && cast.self)) && src) {
+    const s = src.size || 1;
+    castFollow(src.x + s / 2 + dx * 3, src.y + s / 2 + dy * 3);
+  } else {
+    if (!cast.kp) cast.kp = A.ox != null ? { x: A.ox, y: A.oy } : src ? { x: src.x + (src.size || 1) / 2, y: src.y + (src.size || 1) / 2 } : { x: W() / 2, y: H() / 2 };
+    cast.kp.x = Math.max(0, Math.min(W(), cast.kp.x + dx)); cast.kp.y = Math.max(0, Math.min(H(), cast.kp.y + dy));
+    castFollow(cast.kp.x, cast.kp.y);
+  }
+  drawAreas();
+}
+// Tab: перебор целей атаки или заклинания — ближние первыми; выбранная обведена пунктиром
+let kbdPick = null;
+function pickNext(back) {
+  const from = aim ? game.tokens[aim.from] : cast && cast.caster ? game.tokens[cast.caster] : null;
+  if (!from) return;
+  const fromId = aim ? aim.from : cast.caster, reach = aim ? (aim.atk.rng.far || aim.atk.rng.reach || 5) : cast.range || Infinity;
+  const L = Object.entries(game.tokens).filter(([id, t]) => id !== fromId && !isDead(t) && !(t.hidden && !isDM()) && !fogHides(t) && distFt(from, t) <= reach)
+    .sort((a, b) => (hostile(b[1], from) - hostile(a[1], from)) || distFt(from, a[1]) - distFt(from, b[1])).map(([id]) => id);
+  if (!L.length) { keyHint(aim ? 'Нет целей в досягаемости' : 'Нет целей на дистанции', fromId); return; }
+  const i = L.indexOf(kbdPick);
+  kbdPick = L[(i + (back ? -1 : 1) + L.length) % L.length];
+  if (cast && cast.area.shape === 'target' && !cast.area.tgts) { cast.area.tgt = kbdPick; drawAreas(); }
+  renderTokens();
+  const T = game.tokens[kbdPick];
+  keyHint(`${T.name} · ${distFt(from, T)} фт · Enter`, kbdPick);
+  if (!camFollow()) camOn(T);
+}
+function keyOk() {
+  if (aim && kbdPick && game.tokens[kbdPick]) { const id = kbdPick; kbdPick = null; attackTarget(id); renderTokens(); return; }
+  if (!cast) return;
+  if (cast.area.shape === 'target') {
+    if (!kbdPick) { pickNext(); return; }
+    if (cast.area.tgts) {
+      const L = cast.area.tgts;
+      if (L.includes(kbdPick)) L.splice(L.indexOf(kbdPick), 1); else if (L.length < cast.info.nT) L.push(kbdPick);
+      drawAreas(); renderCastBar();
+      if (L.length >= cast.info.nT) { kbdPick = null; confirmCast(); }
+      return;
+    }
+    cast.area.tgt = kbdPick; kbdPick = null; confirmCast(); return;
+  }
+  if (cast.area.ox != null || cast.area.shape === 'aura') confirmCast();
+  else keyHint('Наведите область: мышью или клавишами шага', cast.caster);
+}
+// Нажать видимую кнопку стола (те же проверки, что у мыши); нет кнопки — подсказка
+function pressBtn(names, fallback) {
+  const b = names.map((n) => $$(`[data-tbl="${n}"]`).find((x) => x.offsetParent && !x.disabled)).find(Boolean);
+  if (b) { b.click(); return true; }
+  if (fallback) return fallback();
+  keyHint('Сейчас недоступно', keyTokId());
+  return false;
+}
+// Спасброски вручную: Alt + 1…6 или окно с шестью кнопками
+function manualSave(abil) {
+  const m = me();
+  if (!m || !m.charId) return;
+  const r = app.rollSave(m.charId, abil, undefined, { label: 'вручную' });
+  if (r) addLog({ kind: 'act', who: (myTok() || {}).name || myName(), txt: `🎲 спасбросок ${AB_N[abil]}: ${r.total}` });
+}
+function savesKey() {
+  if (pressBtn(['saveMine', 'trAccept'], () => false)) return;
+  const m = me();
+  if (!m || !m.charId) return;
+  app.openModal(`<div><h2>🎲 Спасбросок</h2><p class="muted small">Нет запросов на спасбросок. Бросить вручную (Alt + 1…6):</p>
+    <div class="slot-choice">${ABK.map((k, i) => `<button data-msv="${k}">${i + 1}. ${['Сила', 'Ловкость', 'Телосложение', 'Интеллект', 'Мудрость', 'Харизма'][i]}</button>`).join('')}</div>
+    <div class="modal-actions"><button data-act="closeModal">Закрыть</button></div></div>`);
+  $$('[data-msv]').forEach((b) => b.addEventListener('click', () => { app.closeModal(); manualSave(b.dataset.msv); }));
+}
+function keyAction(a) {
+  const pid = keyTokId();
+  if (a === 'keys') keysDialog();
+  else if (a === 'attack') pressBtn(['attack', 'npcAttack', 'compAttack'], () => { if (!isDM() && myTok()) { openAttack(`pc_${user.uid}`); return true; } return false; });
+  else if (a === 'spell') pressBtn(['spell'], () => { if (!isDM() && myTok()) { openCast(`pc_${user.uid}`); return true; } return false; });
+  else if (a === 'saves') savesKey();
+  else if (a === 'endTurn') pressBtn(['endTurn', 'next']);
+  else if (a === 'dash') pressBtn(['dash', 'dashB']);
+  else if (a === 'dis') pressBtn(['dis', 'disB']);
+  else if (a === 'dodge') pressBtn(['dodge']);
+  else if (a === 'items') { if (!isDM()) itemsDialog(); }
+  else if (a === 'chat') { mtab('log'); const c = $('#tblChat'); if (c) { c.focus(); c.scrollIntoView({ block: 'nearest' }); } }
+  else if (a === 'cam') { if (isDM() || camFree) camHome(); else camSetFree(true); }
+  else if (a === 'next') pickNext();
+  else if (a === 'ok') keyOk();
+  return pid;
+}
+let altCombo = false;
+function onKeyDown(e) {
+  if (keyCapture && !($('#modal') && !$('#modal').hidden && $('[data-ks]'))) keyCapture = null; // окно закрыли, не нажав клавишу
+  if (keyCapture) { e.preventDefault(); keyAssign(e.code); return; }
+  if (e.key === 'Enter' && e.target.id === 'tblChat') { e.preventDefault(); sendChat(); return; }
+  if (!game || !$('#tblBoard') || !$('#tblBoard').offsetParent) return; // стол не на экране
+  const typing = e.target.closest && e.target.closest('input, textarea, select, [contenteditable="true"]');
+  const modal = $('#modal') && !$('#modal').hidden;
+  if (e.key === 'Escape') {
+    if (modal || typing) return;
+    kbdPick = null;
+    if (cast) cancelCast(); else if (aim) { aim = null; hint(''); renderAll(); }
+    return;
+  }
+  if (typing) return;
+  // В окне выбора атаки, заклинания или ячейки цифры выбирают пункт
+  if (modal) {
+    const n = /^(Digit|Numpad)([1-9])$/.exec(e.code);
+    if (n) { const L = $$('#modalBody .atk-pick, #modalBody [data-slot], #modalBody [data-msv]').filter((b) => !b.disabled && b.offsetParent); if (L[+n[2] - 1]) { e.preventDefault(); L[+n[2] - 1].click(); } }
+    // Enter — главная кнопка окна («Сотворить», «Готово»…), если фокус не на другой кнопке
+    if (keyAct(e.code) === 'ok' && !(e.target.closest && e.target.closest('button'))) {
+      const p = $$('#modalBody .modal-actions .primary').find((b) => !b.disabled && b.offsetParent);
+      if (p) { e.preventDefault(); p.click(); }
+    }
+    return;
+  }
+  if (e.ctrlKey || e.metaKey) return;
+  // Alt + цифра — спасбросок вручную; одиночный Alt срабатывает при отпускании
+  if (e.altKey && /^Digit[1-6]$/.test(e.code)) { e.preventDefault(); altCombo = true; manualSave(ABK[+e.code.slice(5) - 1]); return; }
+  const a = keyAct(e.code);
+  if (!a) return;
+  e.preventDefault();
+  if (DIRS[a]) {
+    if (e.repeat) return;
+    held.add(a);
+    if (!walkT && !walkStop) { walkN = 0; walkT = setTimeout(walk, 45); }
+    return;
+  }
+  if (e.repeat) return;
+  if (a === 'saves' && /^Alt/.test(e.code)) { altCombo = false; return; }
+  if (a === 'next' && e.shiftKey) { pickNext(true); return; }
+  keyAction(a);
+}
+function onKeyUp(e) {
+  const a = keyAct(e.code);
+  if (a && DIRS[a]) {
+    // Короткое нажатие: клавишу отпустили раньше первого шага — шагнуть сейчас
+    if (walkT && walkN === 0 && held.has(a)) { clearTimeout(walkT); walk(); }
+    held.delete(a);
+    if (![...held].some((k) => DIRS[k])) { clearTimeout(walkT); walkT = null; walkStop = false; }
+  }
+  if (a === 'saves' && /^Alt/.test(e.code)) { e.preventDefault(); if (!altCombo && game && !($('#modal') && !$('#modal').hidden)) keyAction('saves'); altCombo = false; }
+}
+window.addEventListener('blur', () => { held.clear(); clearTimeout(walkT); walkT = null; walkStop = false; });
+
 /* ---------- Кнопки ---------- */
 async function onClick(e) {
   const mt = e.target.closest('#tblMtabs [data-mt]');
@@ -4488,6 +4741,7 @@ async function onClick(e) {
     else if (a === 'csNo') await R.update(ref(gpath(`cs/${b.dataset.k}/no`)), { [b.dataset.id]: 1 });
     else if (a === 'items') itemsDialog();
     else if (a === 'scale') scaleDialog();
+    else if (a === 'keys') keysDialog();
     else if (a === 'trOpen') tradeDialog(b.dataset.k);
     else if (a === 'trDecline') await R.update(ref(gpath(`trades/${b.dataset.k}`)), { state: 'declined', by: user.uid });
     else if (a === 'trAccept') {
@@ -4610,12 +4864,8 @@ document.addEventListener('change', (e) => {
   if (e.target.matches('[data-tbl-num]') && game && selId) R.update(ref(gpath(`tokens/${selId}`)), { [e.target.dataset.tblNum]: Math.max(0, +e.target.value || 0) });
   if (e.target.matches('[data-tbl-sv]') && game && selId) R.update(ref(gpath(`tokens/${selId}/sv`)), { [e.target.dataset.tblSv]: +e.target.value || 0 });
 });
-document.addEventListener('keydown', (e) => {
-  if (e.key === 'Enter' && e.target.id === 'tblChat') { e.preventDefault(); sendChat(); return; }
-  if (e.key !== 'Escape') return;
-  if (cast) cancelCast();
-  else if (aim) { aim = null; hint(''); renderAll(); }
-});
+document.addEventListener('keydown', onKeyDown);
+document.addEventListener('keyup', onKeyUp);
 const board = $('#tblBoard');
 board.addEventListener('pointerdown', onDown);
 // Движение и отпускание слушаем на всём окне: палец может «уйти» с поля или с токена во время перетаскивания
