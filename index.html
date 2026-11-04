@@ -76,6 +76,9 @@
     <div class="grid g-main">
       <div class="card span-all">
         <h2>Основное</h2>
+        <div class="basics">
+        <div class="portrait-box" id="portraitBox" data-act="portraitPick" title="Портрет персонажа: нажмите, чтобы загрузить и кадрировать" role="button" tabindex="0"></div>
+        <div class="basics-body">
         <div class="form-grid">
           <label class="w2">Имя<input data-bind="info.name"></label>
           <label>Класс<input data-bind="info.cls" list="dlClasses"></label>
@@ -95,6 +98,7 @@
           <button data-act="calcHp">❤ Рассчитать макс. хиты (среднее)</button>
           <span class="muted small" id="xpHint"></span>
         </div>
+        </div></div>
       </div>
 
       <div class="card">

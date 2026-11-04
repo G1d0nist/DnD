@@ -1091,6 +1091,50 @@ const openSet = new Set();
 let curTab = lsGet('dnd55-tab') || 'main';
 let refMode = 'spells';
 
+// Портрет в «Основном»: квадрат слева; нажатие — загрузить и кадрировать. Он же — на токене, в панели хода и в очереди стола
+function renderPortrait() {
+  const box = $('#portraitBox');
+  if (!box) return;
+  const p = ch().info.portrait || '';
+  if (box.dataset.src === p) return;
+  box.dataset.src = p;
+  box.classList.toggle('has', !!p);
+  box.innerHTML = p ? `<img src="${p}" alt="Портрет"><button class="portrait-del" data-act="portraitDel" title="Убрать портрет">✕</button>` : '<span>🖼<br>Портрет</span>';
+}
+// Кадрирование: картинку двигают и приближают в квадрате, сохраняется 256×256 JPEG
+function portraitCrop(file) {
+  const url = URL.createObjectURL(file), img = new Image();
+  img.onerror = () => { URL.revokeObjectURL(url); toast('Не удалось открыть картинку'); };
+  img.onload = () => {
+    const V = 260, nw = img.naturalWidth, nh = img.naturalHeight, base = V / Math.min(nw, nh);
+    let z = 1, sc = base, ox = (V - nw * sc) / 2, oy = (V - nh * sc) / 2, dragP = null;
+    openModal(`<h2>🖼 Портрет</h2><p class="muted small">Перетащите картинку и приблизьте, чтобы в квадрате оказалось лицо.</p>
+      <div class="crop-view" id="cropView" style="width:${V}px;height:${V}px"><img id="cropImg" src="${url}" alt="" draggable="false"></div>
+      <label class="mt">Приближение<input type="range" id="cropZ" min="1" max="4" step="0.01" value="1"></label>
+      <div class="modal-actions"><button data-act="closeModal">Отмена</button><button class="primary" id="cropOk">Сохранить</button></div>`);
+    const view = $('#cropView'), im = $('#cropImg');
+    const clampO = () => { ox = Math.min(0, Math.max(V - nw * sc, ox)); oy = Math.min(0, Math.max(V - nh * sc, oy)); };
+    const draw = () => { clampO(); im.style.width = `${nw * sc}px`; im.style.height = `${nh * sc}px`; im.style.transform = `translate(${ox}px, ${oy}px)`; };
+    const zoomTo = (nz, cx = V / 2, cy = V / 2) => { const ix = (cx - ox) / sc, iy = (cy - oy) / sc; z = Math.max(1, Math.min(4, nz)); sc = base * z; ox = cx - ix * sc; oy = cy - iy * sc; $('#cropZ').value = z; draw(); };
+    draw();
+    view.addEventListener('pointerdown', (e) => { dragP = { x: e.clientX, y: e.clientY, ox, oy }; view.setPointerCapture(e.pointerId); e.preventDefault(); });
+    view.addEventListener('pointermove', (e) => { if (!dragP) return; ox = dragP.ox + e.clientX - dragP.x; oy = dragP.oy + e.clientY - dragP.y; draw(); });
+    view.addEventListener('pointerup', () => { dragP = null; });
+    view.addEventListener('wheel', (e) => { e.preventDefault(); const r = view.getBoundingClientRect(); zoomTo(z * (e.deltaY < 0 ? 1.1 : 1 / 1.1), e.clientX - r.left, e.clientY - r.top); }, { passive: false });
+    $('#cropZ').addEventListener('input', (e) => zoomTo(+e.target.value));
+    $('#cropOk').onclick = () => {
+      const S = 256, cv = document.createElement('canvas');
+      cv.width = cv.height = S;
+      cv.getContext('2d').drawImage(img, -ox / sc, -oy / sc, V / sc, V / sc, 0, 0, S, S);
+      URL.revokeObjectURL(url);
+      const c = ch();
+      c.info.portrait = cv.toDataURL('image/jpeg', 0.85); c.updatedAt = Date.now();
+      closeModal(); save(); render();
+      toast('🖼 Портрет сохранён — он появится и на столе');
+    };
+  };
+  img.src = url;
+}
 function render() {
   const c = ch();
   // Класс выбран (или сменён) — применить его шаблон автоматически
@@ -1115,6 +1159,7 @@ function render() {
   });
   fillBound();
   renderUndo();
+  renderPortrait();
   renderHeader(); renderAbil(); renderSkills(); renderProfs(); renderCombat(); renderClassPanel(); renderQuickSpells(); renderSpells(); renderInventory(); renderFeatures();
   document.dispatchEvent(new Event('dnd-render')); // игровой стол обновляет токен персонажа
 }
@@ -2929,6 +2974,13 @@ function showSpellDb() {
 }
 
 const ACT = {
+  portraitPick() {
+    const inp = document.createElement('input');
+    inp.type = 'file'; inp.accept = 'image/*';
+    inp.onchange = () => { if (inp.files[0]) portraitCrop(inp.files[0]); };
+    inp.click();
+  },
+  portraitDel() { const c = ch(); if (!c.info.portrait || !confirmBox('Убрать портрет?')) return; c.info.portrait = ''; c.updatedAt = Date.now(); save(); render(); },
   newChar() { openWizard('new'); },
   newBlank() { closeModal(); const c = blankChar(); state.chars[c.id] = c; state.current = c.id; openSet.clear(); switchTab('main'); toast('Создан новый персонаж'); },
   originWizard() { openWizard('origin'); },

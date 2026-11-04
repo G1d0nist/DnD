@@ -265,12 +265,12 @@ function placeCompanion(x, y) {
   R.set(ref(gpath(`tokens/pc_${user.uid}_${p.id}`)), { kind: 'pc', comp: p.id, owner: user.uid, name: p.n, x, y, size: 1, color: colorOf(user.uid),
     hp: p.hp, hpMax: p.hpMax, ac: p.ac, speed: parseInt(p.speed) || 30, cond: [], ...compStats(p) }).catch((err) => app.toast(`Не удалось: ${esc(err.code || err.message)}`));
 }
-// Портрет: квадрат 160×160 из середины картинки
+// Портрет: квадрат 256×256 из середины картинки
 function portraitFrom(file) {
   return new Promise((ok, fail) => {
     const url = URL.createObjectURL(file), img = new Image();
     img.onload = () => {
-      const S = 160, cv = document.createElement('canvas'), k = Math.min(img.naturalWidth, img.naturalHeight);
+      const S = 256, cv = document.createElement('canvas'), k = Math.min(img.naturalWidth, img.naturalHeight);
       cv.width = cv.height = S;
       cv.getContext('2d').drawImage(img, (img.naturalWidth - k) / 2, (img.naturalHeight - k) / 2, k, k, 0, 0, S, S);
       URL.revokeObjectURL(url);
