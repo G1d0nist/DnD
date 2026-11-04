@@ -20,9 +20,16 @@ const TERRAIN = {
   bridge: { n: 'Мост', color: 'rgba(120,80,40,.85)', ic: '🌉' },
   furn: { n: 'Мебель', color: 'rgba(110,70,35,.9)', block: true, ic: '🪑' },
   floor: { n: 'Пол', color: 'rgba(170,148,112,.42)', ic: '⬜' },
+  // Труднопроходимая местность разного вида (правила 2024: каждый фут стоит 2)
+  thicket: { n: 'Густой лес', color: 'rgba(24,62,26,.62)', cost: 2, ic: '🌳' },
+  bog: { n: 'Глубокое болото', color: 'rgba(52,66,34,.72)', cost: 2, ic: '🐸' },
+  rubble: { n: 'Завалы', color: 'rgba(105,96,84,.55)', cost: 2, ic: '🧱' },
+  slope: { n: 'Крутой склон', color: 'rgba(122,100,70,.42)', cost: 2, ic: '⛰' },
+  snow: { n: 'Снег', color: 'rgba(228,234,244,.55)', cost: 2, ic: '❄' },
+  ice: { n: 'Лёд', color: 'rgba(160,210,236,.55)', cost: 2, ic: '🧊' },
 };
 // Цвет земли под картой (meta.ground) — задаёт генератор
-const GROUND = { grass: '#24301d', stone: '#2a2622', sand: '#4a3f2a', swamp: '#222b1f', dirt: '#302820', wood: '#33261a' };
+const GROUND = { grass: '#24301d', stone: '#2a2622', sand: '#4a3f2a', swamp: '#222b1f', dirt: '#302820', wood: '#33261a', snow: '#4b525a' };
 const SIZE_N = { 'Крошечный': 1, 'Маленький': 1, 'Средний': 1, 'Большой': 2, 'Огромный': 3, 'Громадный': 4 };
 const PALETTE = ['#d4a64a', '#5b8fc9', '#5a9e5a', '#9b6fd1', '#c97a3d', '#3db0a8', '#c95b8f'];
 
@@ -174,7 +181,7 @@ function tryRejoin() {
 function leaveLocal() {
   unsubs.forEach((u) => u());
   unsubs = [];
-  game = null; selId = null; aim = null; cast = null; ruler = null; bgImg = null; bgSrc = '';
+  game = null; selId = null; aim = null; cast = null; ruler = null; bgImg = null; bgSrc = ''; camFree = false; camKey = '';
   ls.set(GAME_KEY, '');
 }
 async function leaveGame() {
@@ -281,11 +288,70 @@ function layoutBoard() {
   const w = W() * CELL, h = H() * CELL;
   const b = $('#tblBoard');
   b.style.width = w + 'px'; b.style.height = h + 'px';
-  b.style.transform = `scale(${zoom})`;
-  $('#tblSizer').style.width = w * zoom + 'px';
-  $('#tblSizer').style.height = h * zoom + 'px';
+  camClamp();
+  b.style.transform = `translate(${-cam.x}px, ${-cam.y}px) scale(${zoom})`;
   ['#tblTerrain', '#tblAreas', '#tblRange', '#tblFog', '#tblFxCv'].forEach((s) => { const cv = $(s); if (cv.width !== w || cv.height !== h) { cv.width = w; cv.height = h; } });
   $('#tblZoom').textContent = Math.round(zoom * 100) + '%';
+}
+/* ---------- Камера ---------- */
+// Поле сдвигается целиком, без полос прокрутки. Игрок: камера следует за своим персонажем; нажатие колёсика мыши
+// (или перетаскивание пальцем по пустому месту) — свободная камера, ещё одно нажатие колёсика или «◎» — снова к персонажу.
+// Мастер: камера всегда свободная, «◎» и колёсико — к выделенному существу или к тому, чей ход
+let cam = { x: 0, y: 0 }, camFree = false, camKey = '', camMid = null;
+const myTok = () => (user && game ? game.tokens[`pc_${user.uid}`] : null);
+const camFollow = () => !isDM() && !camFree && !!myTok();
+const ZMIN = 0.3, ZMAX = 2.5;
+function camClamp() {
+  const w = $('#tblWrap'), vw = w.clientWidth, vh = w.clientHeight;
+  if (!vw || !vh) return;
+  const bw = W() * CELL * zoom, bh = H() * CELL * zoom, m = Math.min(vw, vh) * 0.3;
+  // Поле меньше окна — по центру; больше — не дальше трети окна за край
+  cam.x = bw <= vw ? -(vw - bw) / 2 : Math.max(-m, Math.min(bw - vw + m, cam.x));
+  cam.y = bh <= vh ? -(vh - bh) / 2 : Math.max(-m, Math.min(bh - vh + m, cam.y));
+}
+// Плавно (или сразу) поставить клетку x, y (можно дробную) в центр окна
+function camCenter(x, y, smooth) {
+  const w = $('#tblWrap'), b = $('#tblBoard');
+  cam.x = x * CELL * zoom - w.clientWidth / 2; cam.y = y * CELL * zoom - w.clientHeight / 2;
+  if (smooth) { b.style.transition = 'transform .3s ease'; clearTimeout(camCenter.t); camCenter.t = setTimeout(() => { b.style.transition = ''; }, 320); }
+  layoutBoard();
+}
+const camOn = (t) => camCenter(t.x + (t.size || 1) / 2, t.y + (t.size || 1) / 2, true);
+// После каждой перерисовки: если персонаж сдвинулся (или поменялся масштаб, размер окна) — камера за ним
+function camUpdate() {
+  renderCam();
+  const t = camFollow() && myTok(), w = $('#tblWrap');
+  if (!t || (drag && drag.kind === 'token' && drag.id === `pc_${user.uid}`)) return;
+  const key = `${t.x}_${t.y}_${zoom}_${W()}x${H()}_${w.clientWidth}x${w.clientHeight}`;
+  if (key === camKey) return;
+  const first = !camKey;
+  camKey = key;
+  camCenter(t.x + (t.size || 1) / 2, t.y + (t.size || 1) / 2, !first);
+}
+function camHome() {
+  if (isDM()) { const c = currentEntry(), t = game.tokens[selId] || (c && game.tokens[c.tokenId]); if (t) camOn(t); else zoomFit(); return; }
+  camFree = false; camKey = ''; camUpdate();
+}
+function camSetFree(on) { if (camFree === on) return; camFree = on; if (!on) camKey = ''; camUpdate(); }
+// Значок в углу поля: свободная камера и кнопка «◎»
+function renderCam() {
+  let el = $('#tblCam');
+  if (!el) { el = document.createElement('button'); el.id = 'tblCam'; el.className = 'tbl-cam'; el.dataset.tbl = 'camHome'; $('#tblWrap').appendChild(el); }
+  const dm = isDM(), mine = myTok();
+  el.hidden = !game || (!dm && !mine);
+  el.classList.toggle('free', !dm && camFree);
+  el.textContent = dm ? '◎' : camFree ? '🎥 Свободно · ◎ к персонажу' : '◎';
+  el.title = dm ? 'К выделенному существу или к тому, чей ход (нажатие колёсика мыши)' : camFree ? 'Вернуть камеру к персонажу (нажатие колёсика мыши)' : 'Камера следует за персонажем. Нажатие колёсика мыши — свободная камера';
+}
+// Масштаб вокруг точки окна (ox, oy); при слежении — вокруг персонажа
+function zoomAt(z, ox, oy) {
+  z = Math.max(ZMIN, Math.min(ZMAX, +z.toFixed(2)));
+  if (z === zoom) return;
+  const bx = (cam.x + ox) / zoom, by = (cam.y + oy) / zoom;
+  zoom = z;
+  cam.x = bx * zoom - ox; cam.y = by * zoom - oy;
+  layoutBoard();
+  camUpdate();
 }
 /* ---------- Карта-подложка ---------- */
 // Картинка хранится в games/{id}/bgimg/data (уменьшенный JPEG в base64 или ссылка), настройки — meta.bg:
@@ -323,6 +389,27 @@ function drawCell(g, type, px, py, v) {
     for (let i = 8; i < CELL; i += 8) { g.beginPath(); g.moveTo(px + i, py + 1); g.lineTo(px + i, py + CELL - 1); g.stroke(); }
   } else if (type === 'furn') {
     g.strokeStyle = '#d4a64a'; g.lineWidth = 1.5; g.strokeRect(px + 4, py + 4, CELL - 8, CELL - 8);
+  } else if (type === 'thicket') { // подлесок: несколько тёмных крон внахлёст
+    [[11, 13, 9], [27, 12, 8], [19, 26, 10], [31, 29, 7]].forEach(([dx, dy, r], i) => {
+      g.fillStyle = ['#1f4a20', '#28592a', '#224f22', '#2c5f2b'][(i + v) % 4]; g.beginPath(); g.arc(px + dx, py + dy, r, 0, Math.PI * 2); g.fill();
+    });
+  } else if (type === 'bog') { // трясина: тёмные лужи и пузыри
+    g.fillStyle = 'rgba(30,40,22,.75)'; g.beginPath(); g.ellipse(px + c - 2 + v, py + c + 3, 13, 7, 0.3, 0, Math.PI * 2); g.fill();
+    g.strokeStyle = 'rgba(150,170,110,.55)'; g.lineWidth = 1.2;
+    [[10, 10, 3], [30, 14, 2.5], [26, 31, 2]].forEach(([dx, dy, r]) => { g.beginPath(); g.arc(px + dx, py + dy - v, r, 0, Math.PI * 2); g.stroke(); });
+  } else if (type === 'rubble') { // камни и обломки
+    g.fillStyle = ['#8a8274', '#7a7366', '#968d7e'][v % 3]; g.strokeStyle = 'rgba(0,0,0,.35)';
+    [[6, 24, 10], [20, 10, 9], [24, 26, 11], [10, 8, 6]].forEach(([dx, dy, s]) => { g.beginPath(); g.moveTo(px + dx, py + dy + s); g.lineTo(px + dx + s * 0.3, py + dy); g.lineTo(px + dx + s, py + dy + s * 0.25); g.lineTo(px + dx + s * 0.9, py + dy + s); g.closePath(); g.fill(); g.stroke(); });
+  } else if (type === 'slope') { // склон: шевроны вверх
+    g.strokeStyle = 'rgba(225,195,140,.6)'; g.lineWidth = 2.5;
+    [12, 26].forEach((dy) => { g.beginPath(); g.moveTo(px + 8, py + dy + 6); g.lineTo(px + c, py + dy - 2); g.lineTo(px + CELL - 8, py + dy + 6); g.stroke(); });
+  } else if (type === 'snow') { // снег: сугробы и снежинки
+    g.fillStyle = 'rgba(255,255,255,.55)'; g.beginPath(); g.ellipse(px + c, py + CELL - 9, 15, 5, 0, 0, Math.PI * 2); g.fill();
+    g.fillStyle = '#fff'; [[9, 9], [28, 7], [18, 18], [32, 22], [8, 24]].forEach(([dx, dy]) => { g.beginPath(); g.arc(px + dx + v, py + dy, 1.6, 0, Math.PI * 2); g.fill(); });
+  } else if (type === 'ice') { // лёд: блики и трещины
+    g.strokeStyle = 'rgba(255,255,255,.7)'; g.lineWidth = 1.5;
+    g.beginPath(); g.moveTo(px + 8, py + 30); g.lineTo(px + 18, py + 20); g.moveTo(px + 20, py + 34); g.lineTo(px + 33, py + 21); g.stroke();
+    g.strokeStyle = 'rgba(40,90,120,.45)'; g.lineWidth = 1; g.beginPath(); g.moveTo(px + 6 + v, py + 8); g.lineTo(px + 16, py + 14); g.lineTo(px + 14, py + 22); g.stroke();
   } else if (type === 'wall') {
     g.strokeStyle = 'rgba(0,0,0,.25)'; g.beginPath(); g.moveTo(px, py + c); g.lineTo(px + CELL, py + c); g.moveTo(px + c * (v % 2), py); g.lineTo(px + c * (v % 2), py + c); g.stroke();
   }
@@ -348,7 +435,7 @@ function drawTerrain() {
     g.fillStyle = bgImg && type === 'wall' ? 'rgba(40,30,22,.55)' : T.color;
     g.fillRect(x * CELL, y * CELL, CELL, CELL);
     if (bgImg && type === 'wall') { g.strokeStyle = 'rgba(255,190,120,.45)'; g.strokeRect(x * CELL + 1.5, y * CELL + 1.5, CELL - 3, CELL - 3); }
-    if (type === 'difficult' || type === 'bush') { // штриховка трудной местности
+    if (type === 'difficult' || type === 'bush' || (bgImg && T.cost)) { // штриховка трудной местности (на карте-подложке — у всей)
       g.strokeStyle = type === 'bush' ? 'rgba(120,190,90,.45)' : 'rgba(200,150,70,.5)';
       g.beginPath();
       for (let i = -CELL; i < CELL; i += 10) { g.moveTo(x * CELL + i, y * CELL + CELL); g.lineTo(x * CELL + i + CELL, y * CELL); }
@@ -592,7 +679,13 @@ function renderTokens() {
     if (!el) { el = document.createElement('div'); el.className = 'tok'; el.dataset.tok = id; box.appendChild(el); }
     const s = t.size || 1, pct = Math.max(0, Math.min(1, (t.hp || 0) / (t.hpMax || 1)));
     const showNums = t.kind === 'pc' || isDM();
-    if (!(drag && drag.kind === 'token' && drag.id === id)) { el.style.left = t.x * CELL + 'px'; el.style.top = t.y * CELL + 'px'; }
+    if (!(drag && drag.kind === 'token' && drag.id === id)) {
+      // Шаг — плавно; чем дальше, тем дольше (но не дольше секунды), чтобы было видно, куда пошёл
+      const n = el._pos ? Math.max(Math.abs(el._pos[0] - t.x), Math.abs(el._pos[1] - t.y)) : 0;
+      if (n) el.style.transitionDuration = `${Math.min(1, 0.2 + n * 0.12).toFixed(2)}s`;
+      el._pos = [t.x, t.y];
+      el.style.left = t.x * CELL + 'px'; el.style.top = t.y * CELL + 'px';
+    }
     el.style.width = el.style.height = s * CELL + 'px';
     el.style.setProperty('--tc', t.kind === 'npc' ? SIDE_COLOR[t.side || 'enemy'] : t.color || '#d4a64a');
     const down = isDown(t), dead = down && isDead(t), label = down ? downLabel(t) : t.name;
@@ -704,14 +797,17 @@ function onDown(e) {
     } else {
       // Вне боя — до двойной скорости; на крупном масштабе (округа, путешествие) — свободнее: до 20 клеток
       dg.dist = reachMap(t.x, t.y, FT() > 10 ? FT() * 20 : speed * 2);
-      drawRange(dg.dist, speed);
+      // Вне боя игрок не видит, докуда может дойти, — только расстояние под указателем; мастеру — подсказка
+      if (isDM()) drawRange(dg.dist, speed);
     }
     drag = dg;
     tokEl.classList.add('dragging');
   } else {
-    const w = $('#tblWrap');
-    drag = { kind: 'pan', x: e.clientX, y: e.clientY, sl: w.scrollLeft, st: w.scrollTop };
+    // Пустое место: мастер и свободная камера — сдвиг поля; игроку пальцем — тоже, камера становится свободной;
+    // мышью при слежении за персонажем поле не сдвигается (для этого — нажатие колёсика)
     if (selId) { selId = null; renderSide(); renderTokens(); }
+    if (camFollow() && e.pointerType !== 'touch') return;
+    drag = { kind: 'pan', x: e.clientX, y: e.clientY, cx: cam.x, cy: cam.y };
   }
   try { $('#tblBoard').setPointerCapture(e.pointerId); } catch (err) { /* указатель уже отпущен */ }
   e.preventDefault();
@@ -722,6 +818,13 @@ function aimHint(e) {
   if (!T || !from) { hint('', e); return; }
   const d = distFt(from, T), r = aim.atk.rng;
   hint(r.reach && d <= r.reach ? `${d} фт — ближний бой` : r.near && d <= r.far ? `${d} фт${d > r.near ? ' — большая дистанция (помеха)' : ''}` : `${d} фт — не достать`, e);
+}
+// Токен тащат к краю окна — поле подъезжает (без полос прокрутки иначе дальше края не дотянуться)
+function edgePan(e) {
+  const r = $('#tblWrap').getBoundingClientRect(), E = 36, sp = 14;
+  const dx = e.clientX < r.left + E ? -sp : e.clientX > r.right - E ? sp : 0, dy = e.clientY < r.top + E ? -sp : e.clientY > r.bottom - E ? sp : 0;
+  if (!dx && !dy) return;
+  cam.x += dx; cam.y += dy; layoutBoard();
 }
 function onMove(e) {
   if (!drag) {
@@ -741,11 +844,14 @@ function onMove(e) {
     drawRuler();
     hint(fmtFt(FT() * Math.max(Math.abs(p.x - ruler.x0), Math.abs(p.y - ruler.y0))), e);
   } else if (drag.kind === 'pan') {
-    const w = $('#tblWrap');
-    w.scrollLeft = drag.sl - (e.clientX - drag.x); w.scrollTop = drag.st - (e.clientY - drag.y);
+    const dx = e.clientX - drag.x, dy = e.clientY - drag.y;
+    if (!drag.moved && Math.hypot(dx, dy) < 6) return;
+    if (!drag.moved) { drag.moved = true; if (!isDM()) camSetFree(true); }
+    cam.x = drag.cx - dx; cam.y = drag.cy - dy; layoutBoard();
   } else if (drag.kind === 'paint') paintAt(p);
   else if (drag.kind === 'token') {
     drag.moved = true;
+    edgePan(e);
     const el = $(`[data-tok="${drag.id}"]`);
     if (el) { el.style.left = p.px - drag.offX + 'px'; el.style.top = p.py - drag.offY + 'px'; }
     const tx = Math.round((p.px - drag.offX) / CELL), ty = Math.round((p.py - drag.offY) / CELL);
@@ -2206,6 +2312,7 @@ function checkMyTurn() {
   if (ls.get('dnd55-turn') === key) return;
   ls.set('dnd55-turn', key);
   mtab('turn', true);
+  camSetFree(false); // свой ход — камера к персонажу
   const mine = game.tokens[`pc_${user.uid}`];
   app.toast(mine && isDown(mine) && !isStable(mine) && !isDead(mine) ? '💀 Ваш ход: вы без сознания — бросьте спасбросок от смерти' : '⚔ Ваш ход!', 'crit');
   // С начала 2-го раунда каждый ваш ход сдвигает эффекты в листе на раунд
@@ -3997,6 +4104,7 @@ function renderAll() {
   drawFog();
   drawAreas();
   renderTokens();
+  camUpdate();
   renderTurn();
   renderInit();
   renderSide();
@@ -4030,8 +4138,11 @@ function renderMtabs() {
 }
 function zoomFit() {
   const w = $('#tblWrap');
-  zoom = Math.max(0.3, Math.min(2, +Math.min(w.clientWidth / (W() * CELL), w.clientHeight / (H() * CELL)).toFixed(2)));
-  layoutBoard();
+  zoom = Math.max(ZMIN, Math.min(ZMAX, +Math.min(w.clientWidth / (W() * CELL), w.clientHeight / (H() * CELL)).toFixed(2)));
+  // Всё поле целиком — значит, камера не привязана к персонажу
+  if (!isDM() && myTok()) camFree = true;
+  camCenter(W() / 2, H() / 2);
+  renderCam();
 }
 // Два пальца: масштаб с центром между ними; начатое перетаскивание отменяется
 $('#tblWrap').addEventListener('pointerdown', (e) => {
@@ -4049,12 +4160,8 @@ window.addEventListener('pointermove', (e) => {
   if (!touchPts.has(e.pointerId)) return;
   touchPts.set(e.pointerId, { x: e.clientX, y: e.clientY });
   if (!pinch || touchPts.size < 2) return;
-  const [a, b] = [...touchPts.values()], w = $('#tblWrap'), r = w.getBoundingClientRect();
-  const z = Math.max(0.3, Math.min(2, +((pinch.z * Math.hypot(a.x - b.x, a.y - b.y)) / pinch.d).toFixed(2)));
-  if (z === zoom) return;
-  const ox = pinch.mx - r.left, oy = pinch.my - r.top, bx = (w.scrollLeft + ox) / zoom, by = (w.scrollTop + oy) / zoom;
-  zoom = z; layoutBoard();
-  w.scrollLeft = bx * zoom - ox; w.scrollTop = by * zoom - oy;
+  const [a, b] = [...touchPts.values()], r = $('#tblWrap').getBoundingClientRect();
+  zoomAt((pinch.z * Math.hypot(a.x - b.x, a.y - b.y)) / pinch.d, pinch.mx - r.left, pinch.my - r.top);
 }, true);
 const touchEnd = (e) => { touchPts.delete(e.pointerId); if (touchPts.size < 2) pinch = null; };
 window.addEventListener('pointerup', touchEnd, true);
@@ -4105,7 +4212,7 @@ function renderTools() {
   const hasMine = user && game.tokens[`pc_${user.uid}`];
   $('#tblBoard').dataset.tool = tool; // курсор поля соответствует инструменту
   const b = (a, label, title, on) => `<button class="${on ? 'on' : ''}" data-tbl="${a}" title="${title}">${label}${on && /Свободно|Вид игроков/.test(label) ? ' ✓' : ''}</button>`;
-  const brushes = ['tree', 'rock', 'bush', 'road', 'sand', 'bridge', 'furn', 'floor'];
+  const brushes = ['tree', 'rock', 'bush', 'road', 'sand', 'bridge', 'furn', 'floor'], rough = ['thicket', 'bog', 'rubble', 'slope', 'snow', 'ice'];
   const handouts = isDM() || hoMine().length ? b('handouts', `📜 Материалы${!isDM() && hoMine().length ? ` (${hoMine().length})` : ''}`, isDM() ? 'Показать игрокам картинку, письмо или карту' : 'Что показывал мастер') : '';
   const base = t('move', '✋ Двигать', 'Перетаскивайте токены, по пустому месту — прокрутка') + t('ruler', '📏 Линейка', 'Протяните, чтобы измерить расстояние');
   if (!isDM()) {
@@ -4116,15 +4223,15 @@ function renderTools() {
   }
   // Мастер: выпадающие меню по группам; на кнопке меню — выбранный в нём инструмент
   const TL = { wall: '▮ Стена', difficult: '▦ Трудная', water: '≈ Вода', erase: '⌫ Ластик', door: '🚪 Дверь', light: '💡 Свет', chest: '🧰 Сундук', reveal: '👁 Открыть туман',
-    conceal: '🌫 Скрыть туманом', enemy: '＋ Существо', area: '◯ Область', encPlace: '⚔ Столкновение', ...Object.fromEntries(brushes.map((k) => [k, `${TERRAIN[k].ic} ${TERRAIN[k].n}`])) };
+    conceal: '🌫 Скрыть туманом', enemy: '＋ Существо', area: '◯ Область', encPlace: '⚔ Столкновение', ...Object.fromEntries([...rough, ...brushes].map((k) => [k, `${TERRAIN[k].ic} ${TERRAIN[k].n}`])) };
   const sep = '<div class="tm-sep"></div>';
   const menu = (id, title, keys, html, on) => {
     const cur = keys.includes(tool) ? TL[tool] : '';
     return `<div class="tmenu"><button class="tm-btn ${cur || on ? 'on' : ''}" data-tmenu="${id}">${cur || title} ▾</button><div class="tm-pop" data-tmpop="${id}" hidden>${html}</div></div>`;
   };
-  const drawKeys = ['wall', 'difficult', 'water', ...brushes, 'erase', 'door', 'light', 'chest', 'reveal', 'conceal'];
+  const drawKeys = ['wall', 'difficult', 'water', ...rough, ...brushes, 'erase', 'door', 'light', 'chest', 'reveal', 'conceal'];
   $('#tblTools').innerHTML = `<div class="seg">${base}</div>`
-    + menu('draw', '🖌 Рисовать', drawKeys, ['wall', 'difficult', 'water'].map((k) => t(k, TL[k])).join('') + sep + brushes.map((k) => t(k, TL[k])).join('') + sep
+    + menu('draw', '🖌 Рисовать', drawKeys, ['wall', 'difficult', 'water'].map((k) => t(k, TL[k])).join('') + sep + rough.map((k) => t(k, TL[k], 'Труднопроходимая местность: перемещение вдвое дороже')).join('') + sep + brushes.map((k) => t(k, TL[k])).join('') + sep
       + t('erase', TL.erase) + t('door', TL.door, 'Поставить или убрать дверь. Открыть — нажатием с «Двигать», запереть — с Shift')
       + t('light', TL.light, 'Поставить или убрать источник света (20 фт яркого + 20 тусклого)') + t('chest', TL.chest, 'Поставить сундук с добычей по уровню, замком и ловушкой; нажатие на сундук — изменить')
       + (fogOn() ? sep + t('reveal', TL.reveal, 'Кисть: открыть клетки для игроков') + t('conceal', TL.conceal, 'Кисть: закрыть клетки туманом') : ''))
@@ -4339,7 +4446,8 @@ async function onClick(e) {
     } else if (a === 'leave') await leaveGame();
     else if (a === 'resume') { subscribe(b.dataset.id, b.dataset.code); app.toast('▶ Игра продолжается — код для игроков: <b>' + esc(b.dataset.code) + '</b>', 'crit'); }
     else if (a === 'gameDel') { if (app.confirm('Удалить игру навсегда? Сцены, существа и всё на поле пропадут.')) { await deleteGame(b.dataset.id, b.dataset.code); renderAll(); } }
-    else if (a === 'zoomIn' || a === 'zoomOut') { zoom = Math.max(0.4, Math.min(2, +(zoom + (a === 'zoomIn' ? 0.2 : -0.2)).toFixed(1))); layoutBoard(); }
+    else if (a === 'zoomIn' || a === 'zoomOut') { const w = $('#tblWrap'); zoomAt(zoom * (a === 'zoomIn' ? 1.25 : 0.8), w.clientWidth / 2, w.clientHeight / 2); }
+    else if (a === 'camHome') camHome();
     else if (a === 'rollInit') {
       const m = me(), roll = app.mute(() => app.rollInit(m.charId)), s = app.summary(m.charId);
       await R.set(ref(gpath(`init/list/${user.uid}`)), { name: s.name, roll, owner: user.uid, kind: 'pc', tokenId: `pc_${user.uid}` });
@@ -4514,10 +4622,35 @@ board.addEventListener('pointerdown', onDown);
 window.addEventListener('pointermove', onMove);
 window.addEventListener('pointerup', onUp);
 window.addEventListener('pointercancel', onUp);
+// Колесо — масштаб к указателю (прокрутки у поля больше нет)
 $('#tblWrap').addEventListener('wheel', (e) => {
-  if (!e.ctrlKey && !e.metaKey) return; // масштаб — Ctrl + колесо, обычное колесо прокручивает
+  if (!game) return;
   e.preventDefault();
-  zoom = Math.max(0.4, Math.min(2, +(zoom + (e.deltaY < 0 ? 0.1 : -0.1)).toFixed(1)));
-  layoutBoard();
+  const r = $('#tblWrap').getBoundingClientRect();
+  zoomAt(zoom * (e.deltaY < 0 ? 1.12 : 1 / 1.12), e.clientX - r.left, e.clientY - r.top);
 }, { passive: false });
+// Колёсико мыши (нажатие): без сдвига — переключить свободную камеру; с перетаскиванием — сдвинуть поле
+$('#tblWrap').addEventListener('pointerdown', (e) => {
+  if (e.button !== 1 || !game) return;
+  e.preventDefault();
+  camMid = { x: e.clientX, y: e.clientY, cx: cam.x, cy: cam.y, moved: false, id: e.pointerId };
+  try { $('#tblWrap').setPointerCapture(e.pointerId); } catch (err) { /* уже отпущен */ }
+});
+$('#tblWrap').addEventListener('pointermove', (e) => {
+  if (!camMid || e.pointerId !== camMid.id) return;
+  const dx = e.clientX - camMid.x, dy = e.clientY - camMid.y;
+  if (!camMid.moved && Math.hypot(dx, dy) < 6) return;
+  if (!camMid.moved) { camMid.moved = true; if (!isDM()) camSetFree(true); }
+  cam.x = camMid.cx - dx; cam.y = camMid.cy - dy; layoutBoard();
+});
+$('#tblWrap').addEventListener('pointerup', (e) => {
+  if (!camMid || e.pointerId !== camMid.id) return;
+  const was = camMid; camMid = null;
+  if (was.moved) return;
+  if (isDM() || camFree) camHome(); else camSetFree(true);
+});
+// Без автопрокрутки браузера по колёсику
+$('#tblWrap').addEventListener('mousedown', (e) => { if (e.button === 1) e.preventDefault(); });
+$('#tblWrap').addEventListener('auxclick', (e) => { if (e.button === 1) e.preventDefault(); });
+window.addEventListener('resize', () => { if (game) { layoutBoard(); camUpdate(); } });
 renderAll();

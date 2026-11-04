@@ -110,6 +110,8 @@ const MAPGEN = (() => {
     blobs(G, R, 'tree', Math.round((G.w * G.h) / 60 * (0.6 + d * 2)), 2, 4, 0.55 + d * 0.4);
     for (let i = 0; i < G.w * G.h * d * 0.12; i++) { const x = R.i(0, G.w - 1), y = R.i(0, G.h - 1); if (G.get(x, y) === '') G.set(x, y, 'tree'); }
     blobs(G, R, 'bush', Math.round((G.w * G.h) / 80), 1, 3, 0.6);
+    // Чащи — густой подлесок: пройти можно, но вдвое медленнее
+    blobs(G, R, 'thicket', Math.round(((G.w * G.h) / 160) * (0.5 + d * 2)), 2, 3, 0.7);
     const cx = R.i(Math.floor(G.w * 0.35), Math.floor(G.w * 0.65)), cy = R.i(Math.floor(G.h * 0.35), Math.floor(G.h * 0.65));
     clearCircle(G, cx, cy, Math.max(2, Math.floor(Math.min(G.w, G.h) / 5)));
     if (o.road) band(G, R, 'road', 2, false);
@@ -134,8 +136,8 @@ const MAPGEN = (() => {
       r.kind = 'hut';
       if (abandoned) {
         r.abandoned = true;
-        for (let k = 0; k < 2; k++) { const bx = x + R.i(1, w - 2), by = R.pick([y, y + h - 1]); if (!out.doors[`${bx}_${by}`]) G.set(bx, by, 'difficult'); }
-        G.set(x + 1, y + 1, 'difficult');
+        for (let k = 0; k < 2; k++) { const bx = x + R.i(1, w - 2), by = R.pick([y, y + h - 1]); if (!out.doors[`${bx}_${by}`]) G.set(bx, by, 'rubble'); }
+        G.set(x + 1, y + 1, 'rubble');
         if (o.chests || R.ch(0.5)) out.chests.push({ x: x + w - 2, y: y + h - 2 });
       } else {
         G.set(x + w - 2, y + 1, 'furn');
@@ -188,11 +190,20 @@ const MAPGEN = (() => {
   function mountains(G, R, o, out) {
     automaton(G, R, 'rock', 0.36 + o.density * 0.2, 4, false);
     keepLargest(G, (v) => v === 'rock', 'rock');
-    for (let y = 0; y < G.h; y++) for (let x = 0; x < G.w; x++) if (G.g[y][x] === '' && near8(G, x, y, 'rock') >= 2 && R.ch(0.5)) G.g[y][x] = 'difficult';
+    // У скал — крутые склоны, кое-где осыпи
+    for (let y = 0; y < G.h; y++) for (let x = 0; x < G.w; x++) if (G.g[y][x] === '' && near8(G, x, y, 'rock') >= 2 && R.ch(0.5)) G.g[y][x] = 'slope';
+    blobs(G, R, 'rubble', Math.round(2 + o.density * 4), 1, 2, 0.6);
     if (o.road) band(G, R, 'road', 2, false, (v) => false);
     blobs(G, R, 'tree', 3, 1, 2, 0.5);
     if (R.ch(0.4)) blobs(G, R, 'water', 1, 1, 2, 0.9);
-    out.ground = 'stone'; out.start = openNear(G, 1, Math.floor(G.h / 2));
+    // Заснеженные горы: снег на открытых местах, озёра подо льдом
+    const snowy = R.ch(0.35);
+    if (snowy) for (let y = 0; y < G.h; y++) for (let x = 0; x < G.w; x++) {
+      const v = G.g[y][x];
+      if (v === 'water') G.g[y][x] = 'ice';
+      else if ((v === '' || v === 'slope') && R.ch(v === 'slope' ? 0.5 : 0.35)) G.g[y][x] = 'snow';
+    }
+    out.ground = snowy ? 'snow' : 'stone'; out.start = openNear(G, 1, Math.floor(G.h / 2));
     feature(G, R, o, out, o.variant || (R.ch(0.5) ? 'none' : R.pick(['goblins', 'bandits', 'ruin', 'goblins'])));
   }
   function plains(G, R, o, out) {
@@ -206,11 +217,14 @@ const MAPGEN = (() => {
   }
   function swamp(G, R, o, out) {
     automaton(G, R, 'water', 0.42 + o.density * 0.1, 3, false);
-    for (let y = 0; y < G.h; y++) for (let x = 0; x < G.w; x++) if (G.g[y][x] === '' && R.ch(0.45)) G.g[y][x] = 'difficult';
-    blobs(G, R, 'bush', Math.round((G.w * G.h) / 70), 1, 2, 0.6, (v) => v === '' || v === 'difficult');
-    blobs(G, R, 'tree', Math.round((G.w * G.h) / 120 * (0.5 + o.density * 2)), 1, 2, 0.5, (v) => v === '' || v === 'difficult');
+    // Топь у воды — глубокое болото, дальше — просто вязкая земля
+    for (let y = 0; y < G.h; y++) for (let x = 0; x < G.w; x++) if (G.g[y][x] === '' && R.ch(0.45)) G.g[y][x] = near8(G, x, y, 'water') >= 2 ? 'bog' : 'difficult';
+    const soft = (v) => v === '' || v === 'difficult' || v === 'bog';
+    blobs(G, R, 'bush', Math.round((G.w * G.h) / 70), 1, 2, 0.6, soft);
+    blobs(G, R, 'tree', Math.round((G.w * G.h) / 120 * (0.5 + o.density * 2)), 1, 2, 0.5, soft);
+    blobs(G, R, 'thicket', Math.round((G.w * G.h) / 260), 1, 2, 0.6, soft);
     if (o.road) band(G, R, 'bridge', 1, false);
-    out.ground = 'swamp'; out.start = openNear(G, 1, Math.floor(G.h / 2), (v) => v === '' || v === 'difficult' || v === 'bridge');
+    out.ground = 'swamp'; out.start = openNear(G, 1, Math.floor(G.h / 2), (v) => soft(v) || v === 'bridge');
   }
   function desert(G, R, o, out) {
     for (let y = 0; y < G.h; y++) for (let x = 0; x < G.w; x++) G.g[y][x] = 'sand';
@@ -300,7 +314,7 @@ const MAPGEN = (() => {
     for (let y = 0; y < G.h; y++) for (let x = 0; x < G.w; x++) {
       if (G.g[y][x] !== '') continue;
       if (pools.g[y][x] === 'water' && near8(G, x, y, 'wall') <= 1 && R.ch(0.5)) G.g[y][x] = 'water';
-      else if (near8(G, x, y, 'wall') >= 3 && R.ch(0.25)) G.g[y][x] = 'difficult';
+      else if (near8(G, x, y, 'wall') >= 3 && R.ch(0.25)) G.g[y][x] = 'rubble'; // обвалы у стен
     }
     // Тупики и ниши — места для сундуков и логова
     const spots = reg.filter(([x, y]) => G.g[y][x] === '' && near8(G, x, y, 'wall') >= 5);
@@ -691,7 +705,7 @@ const MAPGEN = (() => {
       }
       for (let k = hit; k; k = prev.get(k)) {
         const [cx, cy] = k.split('_').map(Number);
-        if (SOLID.has(G.g[cy][cx])) G.g[cy][cx] = G.g[cy][cx] === 'rock' ? 'difficult' : '';
+        if (SOLID.has(G.g[cy][cx])) G.g[cy][cx] = G.g[cy][cx] === 'rock' ? 'rubble' : G.g[cy][cx] === 'tree' ? 'thicket' : '';
         reach.add(k);
       }
       // Заодно всё, что связано с этой клеткой
@@ -715,8 +729,8 @@ const MAPGEN = (() => {
     if (T.connect || T.kind === 'terrain') {
       const seen = new Set([`${out.start.x}_${out.start.y}`]), q = [[out.start.x, out.start.y]], pass = (x, y) => G.inb(x, y) && !SOLID.has(G.g[y][x]);
       while (q.length) { const [x, y] = q.pop(); for (let dy = -1; dy <= 1; dy++) for (let dx = -1; dx <= 1; dx++) { const k = `${x + dx}_${y + dy}`; if (!seen.has(k) && pass(x + dx, y + dy)) { seen.add(k); q.push([x + dx, y + dy]); } } }
-      const fill = out.ground === 'stone' || out.ground === 'sand' ? 'rock' : 'tree';
-      for (let y = 0; y < G.h; y++) for (let x = 0; x < G.w; x++) if (!seen.has(`${x}_${y}`) && ['', 'bush', 'difficult', 'sand', 'road'].includes(G.g[y][x])) G.g[y][x] = fill;
+      const fill = ['stone', 'sand', 'snow'].includes(out.ground) ? 'rock' : 'tree';
+      for (let y = 0; y < G.h; y++) for (let x = 0; x < G.w; x++) if (!seen.has(`${x}_${y}`) && ['', 'bush', 'difficult', 'sand', 'road', 'thicket', 'bog', 'rubble', 'slope', 'snow', 'ice'].includes(G.g[y][x])) G.g[y][x] = fill;
     }
     // Двери и сундуки — только на проходимых клетках
     out.cells = {};
