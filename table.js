@@ -569,12 +569,14 @@ function mapDialog() {
 const fogSet = () => ({ mode: 'off', sight: 60, ...((game && game.meta && game.meta.fog) || {}) });
 const fogOn = () => fogSet().mode !== 'off';
 // Видимость клетки из точки: луч не должен проходить через стену (сама стена видна)
-function lineClear(x0, y0, x1, y1) {
+// sight — для обзора: ещё и облака, туман, магическая тьма (свет сквозь туман проходит, сквозь тьму — нет)
+function lineClear(x0, y0, x1, y1, sight) {
   const dx = x1 - x0, dy = y1 - y0, n = Math.ceil(Math.hypot(dx, dy) * 3);
   for (let i = 1; i < n; i++) {
     const cx = Math.floor(x0 + (dx * i) / n), cy = Math.floor(y0 + (dy * i) / n);
     if (cx === Math.floor(x1) && cy === Math.floor(y1)) return true;
-    if ((TERRAIN[(game.map || {})[`${cx}_${cy}`]] || {}).opaque || doorShut(`${cx}_${cy}`) || WALL.opaque.has(`${cx}_${cy}`)) return false;
+    const k = `${cx}_${cy}`;
+    if ((TERRAIN[(game.map || {})[k]] || {}).opaque || doorShut(k) || WALL.opaque.has(k) || (sight ? WALL.obsc.has(k) : WALL.dark.has(k))) return false;
   }
   return true;
 }
@@ -583,7 +585,7 @@ function lineClear(x0, y0, x1, y1) {
 const AMB = { bright: 2, dim: 1, dark: 0 };
 function lightMap() {
   const base = AMB[fogSet().amb || 'bright'] ?? 2, lv = new Map();
-  if (base >= 2) return { at: () => 2 };
+  if (base >= 2) return { at: (k) => (WALL.dark.has(k) ? 0 : 2) }; // магическая тьма гасит и дневной свет
   const srcs = [...Object.values(game.lights || {}).map((L) => ({ x: L.x + 0.5, y: L.y + 0.5, b: +L.b || 20, d: +L.d || 20 })),
     ...Object.values(game.tokens || {}).filter((t) => t.lt && !(t.hidden && !isDM())).map((t) => { const s = t.size || 1; return { x: t.x + s / 2, y: t.y + s / 2, b: +t.lt.b || 0, d: +t.lt.d || 0 }; })];
   srcs.forEach((L) => {
@@ -595,7 +597,7 @@ function lightMap() {
         lv.set(k, Math.max(lv.get(k) || 0, dd <= rb + 0.5 ? 2 : 1));
       }
   });
-  return { at: (k) => Math.max(base, lv.get(k) || 0) };
+  return { at: (k) => (WALL.dark.has(k) ? 0 : Math.max(base, lv.get(k) || 0)) };
 }
 // Что видит отряд: клетки в дальности обзора персонажей и союзников, где достаточно света (или в пределах
 // тёмного зрения), + открытые мастером. dark — клетки, видимые только тёмным зрением; dim — в тусклом свете
@@ -610,9 +612,9 @@ function computeVision() {
       for (let x = Math.max(0, Math.floor(ox - R2 - 1)); x < Math.min(W(), Math.ceil(ox + R2 + 1)); x++)
         for (let y = Math.max(0, Math.floor(oy - R2 - 1)); y < Math.min(H(), Math.ceil(oy + R2 + 1)); y++) {
           const k = `${x}_${y}`, inside = x >= t.x && x < t.x + s && y >= t.y && y < t.y + s, dd = Math.hypot(x + 0.5 - ox, y + 0.5 - oy);
-          if (!inside && (dd > R2 + 0.5 || !lineClear(ox, oy, x + 0.5, y + 0.5))) continue;
+          if (!inside && (dd > R2 + 0.5 || !lineClear(ox, oy, x + 0.5, y + 0.5, true))) continue;
           const lit = L.at(k);
-          if (lit >= 1 || inside || dd <= dv + 0.5) {
+          if (lit >= 1 || inside || (dd <= dv + 0.5 && !WALL.dark.has(k))) {
             if (!vis.has(k) || fogDark.has(k) || fogDim.has(k)) {
               // Тусклый свет и тёмное зрение — клетка видна, но приглушена (у кого лучше видно — того и берём)
               const kind = lit >= 2 || inside ? 2 : lit === 1 ? 1 : 0;
@@ -705,11 +707,18 @@ function concName(id, t) {
   const A = Object.values(game.areas || {}).find((a) => a.conc === id), e = Object.values(game.effects || {}).find((x) => x.conc === id);
   return (A && A.spell) || (e && e.spell) || '';
 }
+// Существо целиком в густом облаке или магической тьме: игроки его не видят, если не стоят вплотную
+function cloudHides(t) {
+  if (isDM() || team(t) === 'pc' || !WALL.obsc.size) return false;
+  for (let dx = 0; dx < (t.size || 1); dx++) for (let dy = 0; dy < (t.size || 1); dy++) if (!WALL.obsc.has(`${t.x + dx}_${t.y + dy}`)) return false;
+  const mine = myTok();
+  return !(mine && distFt(mine, t) <= 5);
+}
 function renderTokens() {
   const box = $('#tblTokens'), cur = currentEntry();
   const seen = new Set();
   Object.entries(game.tokens || {}).forEach(([id, t]) => {
-    if ((t.hidden && !isDM()) || fogHides(t)) return;
+    if ((t.hidden && !isDM()) || fogHides(t) || cloudHides(t)) return;
     seen.add(id);
     let el = box.querySelector(`[data-tok="${id}"]`);
     if (!el) { el = document.createElement('div'); el.className = 'tok'; el.dataset.tok = id; box.appendChild(el); }
@@ -786,6 +795,7 @@ function onDown(e) {
     }
     castFollow(p.px / CELL, p.py / CELL);
     if (cast.area.shape === 'wall' && !cast.moveK) { if (!castInRange()) { app.toast(`Слишком далеко: дистанция ${cast.range} фт`); return; } wallClick(); return; }
+    if (cast.area.shape === 'multi') { multiClick(); return; }
     confirmCast();
     return;
   }
@@ -1614,6 +1624,7 @@ function openAttack(id) {
     <div class="modal-actions"><button data-act="closeModal">Отмена</button></div>`);
   $$('.atk-pick').forEach((b) => b.addEventListener('click', () => {
     const A = atks.find((x) => x.id === b.dataset.atk) || SPECIAL_ATK.find((x) => x.id === b.dataset.atk);
+    if (A.spell && silenced(id) && needsV(spellComp(A.n))) { app.toast('🔇 В Тишине нельзя заклинания со словесным компонентом'); return; }
     const man = ($('#atkMan') || {}).value || '', smite = ($('#atkSmite') || {}).value || '';
     let way = ($('input[name="atkWay"]:checked') || {}).value;
     if (A.cantrip) {
@@ -1691,6 +1702,13 @@ function specialAttack(a, tid) {
   addLog({ kind: 'act', who: me_.name, txt: `${A.n.replace(/^\S+\s/, '')} → ${T.name} (спасбросок ${AB_N[abil]} СЛ ${dc})` });
   return true;
 }
+// Густой туман или магическая тьма на линии между существами, включая их собственные клетки
+function obscuredBetween(A, T) {
+  if (!WALL.obsc.size) return false;
+  const x0 = A.x + (A.size || 1) / 2, y0 = A.y + (A.size || 1) / 2, x1 = T.x + (T.size || 1) / 2, y1 = T.y + (T.size || 1) / 2, n = Math.ceil(Math.hypot(x1 - x0, y1 - y0) * 3) + 1;
+  for (let i = 0; i <= n; i++) if (WALL.obsc.has(`${Math.floor(x0 + ((x1 - x0) * i) / n)}_${Math.floor(y0 + ((y1 - y0) * i) / n)}`)) return true;
+  return false;
+}
 // Что между атакующим и целью: линия между центрами, клетки самих существ не считаются
 function coverOf(A, T, aid, tid) {
   const as = A.size || 1, ts = T.size || 1, x0 = A.x + as / 2, y0 = A.y + as / 2, x1 = T.x + ts / 2, y1 = T.y + ts / 2;
@@ -1732,6 +1750,8 @@ function attackTarget(tid) {
   if (tc.includes('prone') || tc.includes('unconscious')) (d <= 5 ? adv : dis).push('цель лежит');
   ['blinded', 'paralyzed', 'petrified', 'restrained', 'stunned'].forEach((k) => { if (tc.includes(k)) adv.push(`цель: ${condName(k).toLowerCase()}`); });
   if (tc.includes('invisible')) dis.push('цель невидима');
+  // Густой туман или магическая тьма между ними (или на ком-то из них): друг друга не видят — преимущество и помеха гасят друг друга
+  if (obscuredBetween(me_, T)) { dis.push('цель в тумане или тьме'); adv.push('атакующего тоже не видно'); }
   if (ranged && d > r.near) dis.push('большая дистанция');
   if (ranged && foesNear(me_, a.from).length) dis.push('враг рядом');
   // Эффекты: «Огонь фей» на цели, «Ослабление» на атакующем (помеха на одну атаку), «Досаждение» (преимущество по этой цели)
@@ -1949,7 +1969,7 @@ function doReaction(a, id) {
 //   abil, dc, half, expr, dmg, dtype, keep, t, tg: { tokenId: { done, ok, roll, dmg } } }
 // Координаты в клетках (дробные): ox, oy — точка начала, ang — направление. Аура следует за существом from.
 const AB_N = { str: 'Силы', dex: 'Ловкости', con: 'Телосложения', int: 'Интеллекта', wis: 'Мудрости', cha: 'Харизмы' };
-const SHAPE_N = { sphere: 'сфера', cone: 'конус', line: 'линия', cube: 'куб', aura: 'вокруг себя', target: 'одна цель', wall: 'стена' };
+const SHAPE_N = { sphere: 'сфера', cone: 'конус', line: 'линия', cube: 'куб', aura: 'вокруг себя', target: 'одна цель', wall: 'стена', multi: 'несколько областей' };
 const CONE_HALF = Math.atan(0.5); // ширина конуса равна расстоянию от точки начала
 const AUTO_FAIL_T = ['paralyzed', 'stunned', 'unconscious', 'petrified'];
 
@@ -1986,6 +2006,7 @@ function areaCells(A) {
   const g = geo(A), out = [];
   if (g.shape === 'target') return out;
   if (g.shape === 'wall') return (g.cells || []).map((k) => k.split('_').map(Number));
+  if (g.shape === 'multi') return multiCells(g);
   const R = Math.max(g.r || 0, aLen(g)) + 1;
   for (let x = Math.max(0, Math.floor(g.ox - R)); x < Math.min(W(), Math.ceil(g.ox + R)); x++)
     for (let y = Math.max(0, Math.floor(g.oy - R)); y < Math.min(H(), Math.ceil(g.oy + R)); y++) if (cellIn(g, x, y)) out.push([x, y]);
@@ -2026,10 +2047,16 @@ function drawAreas() {
         if (t) { const s = (t.size || 1) * CELL; g.beginPath(); g.arc(t.x * CELL + s / 2, t.y * CELL + s / 2, s / 2 + 4, 0, Math.PI * 2); g.stroke(); }
       });
     } else {
-      const G = geo(A);
-      g.fillStyle = rgba(col, A.preview ? 0.32 : 0.22);
-      areaCells(A).forEach(([x, y]) => g.fillRect(x * CELL, y * CELL, CELL, CELL));
-      g.beginPath(); shapePath(g, G); g.stroke();
+      const G = geo(A), Z = A.z || (cast && A.preview && cast.info.zone) || {};
+      // Облака и тьма — плотной заливкой: тьма чёрная, туман серый, тишина — с 🔇
+      g.fillStyle = Z.dark ? 'rgba(4,4,8,.82)' : Z.obscure === 'heavy' ? 'rgba(190,195,205,.55)' : Z.obscure === 'light' ? 'rgba(190,195,205,.28)' : rgba(col, A.preview ? 0.32 : 0.22);
+      const cells = A.shape === 'multi' ? multiCells(A, true) : areaCells(A);
+      cells.forEach(([x, y]) => g.fillRect(x * CELL, y * CELL, CELL, CELL));
+      if (Z.obscure === 'heavy' && !Z.dark) cells.forEach(([x, y], i) => { if ((x * 7 + y * 3) % 4) return; g.fillStyle = 'rgba(235,238,245,.35)'; g.beginPath(); g.arc(x * CELL + 20, y * CELL + 20, 14 + (i % 5), 0, Math.PI * 2); g.fill(); });
+      if (Z.silence) { g.save(); g.font = '18px system-ui'; cells.forEach(([x, y]) => { if ((x + y) % 3 === 0) g.fillText('🔇', x * CELL + 10, y * CELL + 27); }); g.restore(); }
+      g.beginPath();
+      if (A.shape === 'multi') (A.parts || []).concat(A.cur && A.preview ? [A.cur] : []).forEach((P) => shapePath(g, P)); else shapePath(g, G);
+      g.stroke();
       g.setLineDash([]); g.font = '600 12px system-ui, sans-serif'; g.fillStyle = '#fff'; g.shadowColor = '#000'; g.shadowBlur = 3;
       g.fillText(A.n || '', G.ox * CELL + 6, G.oy * CELL - 6);
     }
@@ -2039,10 +2066,18 @@ function drawAreas() {
 /* ---------- Стены (Стена огня, Каменная стена…) ---------- */
 // Стена — цепочка клеток (A.cells: 'x_y'); A.band — клетки опасной стороны (Стена огня). Свойства — из A.wall (spellmech.js).
 // WALL — сводка по всем стенам на поле: что непроходимо, что заслоняет обзор и свет, где укрытие, где ветер
-let WALL = { block: new Set(), opaque: new Set(), cover: new Map(), wind: new Set() };
+// Заодно — облака и зоны: obsc — сильно заслонено (сквозь не видно), dark — магическая тьма (гасит свет и тёмное зрение),
+// sil — тишина (нельзя заклинания со словесным компонентом)
+let WALL = { block: new Set(), opaque: new Set(), cover: new Map(), wind: new Set(), obsc: new Set(), dark: new Set(), sil: new Set() };
 function rebuildWalls() {
-  const S = { block: new Set(), opaque: new Set(), cover: new Map(), wind: new Set() };
+  const S = { block: new Set(), opaque: new Set(), cover: new Map(), wind: new Set(), obsc: new Set(), dark: new Set(), sil: new Set() };
   Object.values((game && game.areas) || {}).forEach((A) => {
+    if (A.keep && A.z && (A.z.obscure === 'heavy' || A.z.dark || A.z.silence)) areaCells(A).forEach(([x, y]) => {
+      const k = `${x}_${y}`;
+      if (A.z.obscure === 'heavy' || A.z.dark) S.obsc.add(k);
+      if (A.z.dark) S.dark.add(k);
+      if (A.z.silence) S.sil.add(k);
+    });
     if (A.shape !== 'wall' || !A.keep || !A.wall) return;
     (A.cells || []).forEach((k) => {
       if (A.wall.block) S.block.add(k);
@@ -2185,10 +2220,44 @@ function drawWall(g, A) {
   const first = (A.cells || [])[0];
   if (first) { const [x, y] = first.split('_').map(Number); g.setLineDash([]); g.font = '600 12px system-ui, sans-serif'; g.fillStyle = '#fff'; g.shadowColor = '#000'; g.shadowBlur = 3; g.fillText(A.n || '', x * CELL + 4, y * CELL - 4); }
 }
+/* ---------- Составные области (Огненная буря, Метеоритный дождь) ---------- */
+// A.parts — поставленные части (куб или сфера), A.cur — часть под указателем; существо в нескольких частях — один раз
+function multiCells(A, withCur) {
+  const set = new Map();
+  (A.parts || []).concat(withCur && A.cur ? [A.cur] : []).forEach((P) => areaCells(P).forEach(([x, y]) => set.set(`${x}_${y}`, [x, y])));
+  return [...set.values()];
+}
+function partAt(A, mx, my) {
+  const P = { shape: A.part.shape, size: A.part.size, width: 5 };
+  if (P.shape === 'sphere') Object.assign(P, { ox: Math.round(mx), oy: Math.round(my) });
+  else { const n = Math.round(aLen(P)), snap = (v) => (n % 2 ? Math.floor(v) + 0.5 : Math.round(v)), cx = snap(mx), cy = snap(my); Object.assign(P, { ang: 0, ox: cx - n / 2, oy: cy }); }
+  return P;
+}
+function partInRange(P) {
+  const src = cast.caster && game.tokens[cast.caster];
+  if (!src || !cast.range) return true;
+  const cx = P.shape === 'cube' ? P.ox + aLen(P) / 2 : P.ox;
+  return distFt(src, { x: Math.floor(cx - 0.001), y: Math.floor(P.oy - 0.001), size: 1 }) <= cast.range || distFt(src, { x: Math.floor(cx), y: Math.floor(P.oy), size: 1 }) <= cast.range;
+}
+// Нажатие: поставить часть (Огненная буря — касаясь уже поставленных); последняя часть — сразу к сотворению
+function multiClick() {
+  const A = cast.area, P = A.cur;
+  if (!P) return;
+  if (!partInRange(P)) { app.toast(`Слишком далеко: дистанция ${fmtFt(cast.range)}`); return; }
+  if (A.contiguous && A.parts.length) {
+    const have = new Set(multiCells(A).map(([x, y]) => `${x}_${y}`));
+    const touch = areaCells(P).some(([x, y]) => have.has(`${x}_${y}`) || [[1, 0], [-1, 0], [0, 1], [0, -1]].some(([dx, dy]) => have.has(`${x + dx}_${y + dy}`)));
+    if (!touch) { app.toast('Части должны касаться друг друга'); return; }
+  }
+  A.parts.push({ ...P });
+  if (A.parts.length >= A.nParts) { confirmCast(); return; }
+  drawAreas(); renderCastBar();
+}
 // Размещение: «от себя» — конус, линия, куб тянутся от существа к указателю; сфера и куб на расстоянии — центр под указателем
 function castFollow(mx, my) {
   const A = cast.area, src = cast.caster && game.tokens[cast.caster];
   if (A.shape === 'wall') { wallFollow(mx, my); return; }
+  if (A.shape === 'multi') { const P = partAt(A, mx, my); A.cur = P; A.ox = P.ox; A.oy = P.oy; return; }
   if (A.shape === 'target' || A.shape === 'aura') return;
   if ((A.shape === 'cone' || A.shape === 'line' || (A.shape === 'cube' && cast.self)) && src) {
     const s = src.size || 1, cx = src.x + s / 2, cy = src.y + s / 2;
@@ -2204,7 +2273,8 @@ function castFollow(mx, my) {
 // Центр размещённой области в пределах дистанции заклинания
 function castInRange() {
   const A = cast.area, src = cast.caster && game.tokens[cast.caster];
-  if (cast.moveK) return Math.hypot(A.ox - cast.orig.x, A.oy - cast.orig.y) * FT() <= cast.moveFt + 0.1;
+  if (cast.moveK) return cast.self || Math.hypot(A.ox - cast.orig.x, A.oy - cast.orig.y) * FT() <= cast.moveFt + 0.1;
+  if (A.shape === 'multi') return (A.parts || []).every(partInRange);
   // Стена: начальная точка (или центр кольца) — в пределах дистанции
   if (A.shape === 'wall') {
     if (!src || !cast.range) return true;
@@ -2226,6 +2296,9 @@ function startCast(c) {
   const I = c.info;
   cast = { ...c, self: !!I.self, range: I.range || 0,
     area: { n: I.n, shape: I.shape, size: I.size, width: I.width || 5, color: colorFor(I.dtype), from: I.shape === 'aura' ? c.caster : null } };
+  // Область растёт с уровнем ячейки (Туманное облако: +20 фт за уровень)
+  if (I.upSize && c.lvl > I.l) cast.area.size = I.size + I.upSize * (c.lvl - I.l);
+  if (I.shape === 'multi') Object.assign(cast.area, { part: I.part, nParts: I.nParts || 1, contiguous: !!I.contiguous, parts: [] });
   if (I.shape === 'aura') { cast.area.ox = 0; confirmCast(); return; }
   if (I.shape === 'target' && (I.nT || 1) > 1) cast.area.tgts = [];
   // Стена: режим разметки, наибольшая длина в клетках, радиус кольца; опасная сторона — по умолчанию «первая»
@@ -2255,17 +2328,27 @@ function openCast(id) {
     return `${s.save ? ` · спасбросок ${AB_N[s.save]} СЛ ${s.dc}` : ''}${s.f ? ` · ${esc(s.f)}${s.dtype ? ' ' + esc(s.dtype) : ''}` : ''}${F && F.fail && F.fail.cond ? ` · ${condName(F.fail.cond).toLowerCase()}` : ''}`;
   };
   app.openModal(`<h2>✨ Заклинание</h2>
-    <div class="list">${list.map((s) => `<button class="atk-pick" data-sp="${esc(s.id)}" ${can(s.act) ? '' : 'disabled'}>
+    <div class="list">${list.map((s) => `<button class="atk-pick" data-sp="${esc(s.id)}" ${can(s.act) && !(silenced(id) && needsV(s.comp)) ? '' : 'disabled'}>
       <b>${esc(s.n)} <span class="muted small">${s.l ? `${s.l} ур.` : 'заговор'}</span></b>
-      <span class="muted small">${SHAPE_N[s.shape]}${s.size ? ` ${s.size} фт` : ''}${s.range ? ` · дистанция ${s.range} фт` : s.self ? ' · от себя' : ''}${what(s)} · ${ACT_N[s.act]}</span></button>`).join('')
+      <span class="muted small">${SHAPE_N[s.shape]}${s.size ? ` ${s.size} фт` : ''}${s.range ? ` · дистанция ${s.range} фт` : s.self ? ' · от себя' : ''}${what(s)} · ${ACT_N[s.act]}${silenced(id) && needsV(s.comp) ? ' · 🔇 в Тишине нельзя' : ''}</span></button>`).join('')
       || '<p class="muted">Нет подготовленных заклинаний, которые можно применить на столе.</p>'}</div>
     <div class="modal-actions"><button data-act="closeModal">Отмена</button></div>`);
   $$('[data-sp]').forEach((b) => b.addEventListener('click', () => spellPick(id, list.find((x) => x.id === b.dataset.sp))));
 }
+// Тишина: существо хоть одной клеткой в ней — заклинания со словесным компонентом (В) недоступны
+function silenced(id) {
+  const t = game.tokens[id];
+  if (!t || !WALL.sil.size) return false;
+  for (let dx = 0; dx < (t.size || 1); dx++) for (let dy = 0; dy < (t.size || 1); dy++) if (WALL.sil.has(`${t.x + dx}_${t.y + dy}`)) return true;
+  return false;
+}
+const needsV = (comp) => /В/.test(comp || '');
+const spellComp = (name) => ((typeof SPELLS !== 'undefined' && SPELLS.find((s) => s.n === name)) || {}).c || '';
 // Заклинание выбрано (из меню или с панели): ячейка — и размещение на поле
 function spellPick(id, I) {
   const m = me(), F = SPELL_FX[I.e];
   if (!m || !m.charId) return;
+  if (silenced(id) && needsV(I.comp)) { app.toast('🔇 В Тишине нельзя заклинания со словесным компонентом'); return; }
   // Число целей растёт с уровнем ячейки («Благословение»: 3 + 1 за уровень выше 1)
   const go = (slotKey, lvl) => {
     app.closeModal();
@@ -2371,7 +2454,7 @@ function doCastArea(chosen, gated) {
   const src = c.caster && game.tokens[c.caster], F = I.fxDef || null, names = chosen.map((id) => game.tokens[id].name).join(', ');
   const lvlTxt = roll && roll.castLvl > I.l ? ` (${roll.castLvl} ур.)` : '', who = src ? src.name : 'Мастер';
   const spend = () => castSpend(c);
-  const until = inFight() ? (game.init.round || 1) + durRounds(I.dur) : null, conc = I.cn ? c.caster : null;
+  const until = inFight() && !I.persist ? (game.init.round || 1) + durRounds(I.dur) : null, conc = I.cn ? c.caster : null;
   // Лечение: всем выбранным столько, сколько выпало; применяют владельцы целей
   if (F && F.heal) {
     const amt = roll ? roll.dmg || 0 : 0;
@@ -2388,7 +2471,7 @@ function doCastArea(chosen, gated) {
     return;
   }
   // Область на поле остаётся, если заклинание длится; одиночные цели с эффектом держатся эффектом, а не областью
-  const keep = c.dm ? !!I.keepAlways : (!!I.cn || !/мгновен/i.test(I.dur || '')) && A.shape !== 'target';
+  const keep = c.dm ? !!I.keepAlways : (!!I.cn || !!I.persist || !/мгновен/i.test(I.dur || '')) && A.shape !== 'target' && A.shape !== 'multi';
   const entry = { ...A, by: user.uid, who, n: I.n + lvlTxt, abil: I.save || '', dc: I.dc || 0, half: !!I.half,
     expr: (roll && roll.expr) || I.f || '', dmg: roll ? roll.dmg || roll.total || 0 : 0, dmgDetail: roll ? roll.dmgDetail || roll.detail || '' : '', dtype: I.dtype || '', keep, t: Date.now(),
     pick: !!I.pick, ck: src ? team(src) : '', from: c.caster || null, spell: I.n, conc, until,
@@ -2399,6 +2482,9 @@ function doCastArea(chosen, gated) {
     entry.wall = I.wall; entry.keep = true;
     if (I.wall && I.wall.hp) entry.seg = Object.fromEntries((entry.cells || []).map((c) => [c, I.wall.hp]));
   }
+  if (entry.shape === 'multi') { delete entry.cur; delete entry.part; }
+  // Повторный удар (Призыв молнии) — от первой точки
+  if (I.zone && I.zone.restrike) entry.home = { x: entry.ox, y: entry.oy };
   // Постоянная область (spellmech.js): правила срабатывания, кто уже внутри — они своё при сотворении прошли
   if (I.zone && entry.keep) {
     entry.z = { ...I.zone };
@@ -2417,8 +2503,14 @@ function doCastArea(chosen, gated) {
   // Способность существа с перезарядкой (дыхание) — до броска к6 в начале его хода
   if (c.npcAct != null && src && ((src.acts || [])[c.npcAct] || {}).rech) R.update(ref(gpath(`tokens/${c.caster}/rech`)), { [c.npcAct]: 1 }).catch(() => {});
   addLog({ kind: 'area', who: entry.who, txt: `✨ ${entry.n}${entry.dmg ? ` — ${entry.dmg} ${entry.dtype || ''}` : ''}${I.save ? ` · спасбросок ${AB_N[I.save]} СЛ ${entry.dc}` : ''}${chosen.length ? ` · цели: ${chosen.map((id) => game.tokens[id].name).join(', ')}` : ''}`,
-    detail: entry.dmgDetail, fx: entry.shape === 'wall' ? null : fxShape(entry) });
+    detail: entry.dmgDetail, fx: entry.shape === 'wall' || entry.shape === 'multi' ? null : fxShape(entry) });
   if (!keep && !entry.tg) setTimeout(() => R.remove(ref(gpath(`areas/${k}`))).catch(() => {}), 8000);
+  // След мгновенного заклинания (лёд после Града): труднопроходимо до конца следующего хода заклинателя
+  if (I.leave && !keep) {
+    const L = { n: I.leave.n, shape: A.shape, size: A.size, width: A.width, ox: A.ox, oy: A.oy, ang: A.ang || 0, color: '#9fd3ef', by: user.uid, who: entry.who, keep: true, t: Date.now(),
+      z: { trig: [], difficult: !!I.leave.difficult }, ...(inFight() ? { until: (game.init.round || 1) + (I.leave.rounds || 1) } : {}) };
+    R.set(ref(gpath(`areas/${R.push(ref(gpath('areas'))).key}`)), L).catch(() => {});
+  }
   cast = null; hint('');
   renderAll();
 }
@@ -2613,6 +2705,11 @@ function zoneTurn() {
   if (curId && game.tokens[curId]) {
     zones.forEach(([k, A]) => {
       if (((A.z.trig || []).includes('start') || A.z.startDmg) && zoneMembers(A).includes(curId)) zoneFire(k, A, curId, 'start');
+      // Метель, Землетрясение: начавший ход внутри, держащий концентрацию, — спасбросок Телосложения, иначе теряет её
+      if (A.z.concCheck && zoneMembers(A).includes(curId) && game.tokens[curId] && concName(curId, game.tokens[curId]))
+        saveRequest(curId, { n: `${A.n}: концентрация`, who: A.who, abil: 'con', dc: A.dc || 13, fail: { n: 'Потеря концентрации', breakConc: true, once: true }, from: A.from || null });
+      // Землетрясение: в начале хода заклинателя — все внутри
+      if ((A.z.trig || []).includes('cstart') && A.from === curId) zoneMembers(A).forEach((id) => zoneFire(k, A, id, 'start'));
     });
     // Облако смерти, Испепеляющее облако: в начале хода заклинателя уходят на autoFt от него
     zones.forEach(([k, A]) => {
@@ -2636,27 +2733,37 @@ function zoneDiff(moverId) {
   return out;
 }
 // Сдвинуть свою область бонусным действием (Лунный луч): та же разметка, что при сотворении, но в пределах moveFt от прежнего места
-function zoneMoveStart(k) {
+// strike — повторный удар действием (Призыв молнии — в пределах moveFt от первой точки, Солнечный луч — снова от себя)
+function zoneMoveStart(k, strike) {
   const A = (game.areas || {})[k];
-  if (!A || !A.z || A.z.move !== 'bonus') return;
+  if (!A || !A.z || (strike ? !A.z.restrike : A.z.move !== 'bonus')) return;
+  const act = strike ? 'a' : 'b';
   if (inFight() && A.from && !isDM()) {
-    if (!isTurnOf(A.from)) { app.toast('Сдвинуть можно в свой ход'); return; }
-    if (econ(A.from).b) { app.toast('Бонусное действие уже потрачено'); return; }
+    if (!isTurnOf(A.from)) { app.toast(strike ? 'Ударить снова можно в свой ход' : 'Сдвинуть можно в свой ход'); return; }
+    if (econ(A.from)[act]) { app.toast(strike ? 'Действие уже потрачено' : 'Бонусное действие уже потрачено'); return; }
   }
+  const self = !!(strike && A.z.self);
   aim = null;
-  cast = { moveK: k, orig: { x: A.ox, y: A.oy }, moveFt: A.z.moveFt || 30, caster: null, self: false, range: 0, info: { n: `${A.n} — сдвиг`, shape: A.shape, nT: 1 },
-    area: { n: A.n, shape: A.shape, size: A.size, width: A.width, color: A.color, ox: A.ox, oy: A.oy, ang: A.ang || 0 } };
+  cast = { moveK: k, strike: !!strike, orig: strike ? A.home || { x: A.ox, y: A.oy } : { x: A.ox, y: A.oy }, moveFt: A.z.moveFt || 30, caster: self ? A.from : null, self, range: 0,
+    info: { n: `${A.n} — ${strike ? 'удар' : 'сдвиг'}`, shape: A.shape, nT: 1 },
+    area: { n: A.n, shape: A.shape, size: A.size, width: A.width, color: A.color, ox: A.ox, oy: A.oy, ang: A.ang || 0, from: A.from } };
   renderAll();
-  app.toast(`⤧ ${esc(A.n)}: наведите и нажмите — до ${fmtFt(A.z.moveFt || 30)} · Esc — отмена`);
+  app.toast(`${strike ? '⚡' : '⤧'} ${esc(A.n)}: наведите и нажмите${self ? '' : ` — до ${fmtFt(A.z.moveFt || 30)}`} · Esc — отмена`);
 }
 function finishZoneMove() {
   const c = cast, A = (game.areas || {})[c.moveK];
   if (!A) { cancelCast(); return; }
   const d = Math.hypot(c.area.ox - c.orig.x, c.area.oy - c.orig.y) * FT();
-  if (d > c.moveFt + 0.1) { app.toast(`Слишком далеко: не больше ${fmtFt(c.moveFt)}`); return; }
-  R.update(ref(gpath(`areas/${c.moveK}`)), { ox: c.area.ox, oy: c.area.oy, ang: c.area.ang || 0 }).catch(() => {});
-  if (inFight() && A.from && !isDM()) R.update(ref(gpath(`econ/${A.from}`)), { b: 1 }).catch(() => {});
-  addLog({ kind: 'act', who: A.who, txt: `⤧ ${A.n} — сдвинута${inFight() ? ' (бонусное действие)' : ''}` });
+  if (!c.self && d > c.moveFt + 0.1) { app.toast(`Слишком далеко: не больше ${fmtFt(c.moveFt)}`); return; }
+  const upd = { ox: c.area.ox, oy: c.area.oy, ang: c.area.ang || 0 };
+  // Удар: новый бросок урона, спасброски для всех, кто теперь в области
+  if (c.strike) {
+    const ids = zoneMembers({ ...A, ...upd }), r = A.expr ? app.mute(() => app.rollFormula(A.expr, A.n)) : null;
+    Object.assign(upd, { dmg: r ? r.total : 0, dmgDetail: r ? r.detail : '', tg: Object.fromEntries(ids.map((id) => [id, { done: false }])), zin: ids });
+    addLog({ kind: 'area', who: A.who, txt: `⚡ ${A.n}${r ? ` — ${r.total} ${A.dtype || ''}` : ''} · цели: ${ids.map((id) => game.tokens[id].name).join(', ') || 'нет'}`, detail: r ? r.detail : '', fx: fxShape({ ...A, ...upd }) });
+  } else addLog({ kind: 'act', who: A.who, txt: `⤧ ${A.n} — сдвинута${inFight() ? ' (бонусное действие)' : ''}` });
+  R.update(ref(gpath(`areas/${c.moveK}`)), upd).catch(() => {});
+  if (inFight() && A.from && !isDM()) R.update(ref(gpath(`econ/${A.from}`)), { [c.strike ? 'a' : 'b']: 1 }).catch(() => {});
   cast = null; hint(''); renderAll();
 }
 // Концентрация существ: мастер бросает спасбросок Телосложения, когда существо, держащее заклинание, получает урон
@@ -2717,9 +2824,10 @@ function renderSaves() {
     const mine = pend.filter(([id]) => game.tokens[id].kind === 'pc' && game.tokens[id].owner === user.uid);
     const own = dm || A.by === user.uid;
     // Во весь экран панель висит над полем — только то, где нужно действие (спасброски, сдвиг своей области)
-    if (fullOn && !pend.length && !(own && A.z && A.z.move === 'bonus')) return;
+    if (fullOn && !pend.length && !(own && A.z && (A.z.move === 'bonus' || A.z.restrike))) return;
     let html = `<div class="sv-area"><div class="row between"><b style="color:${A.color}">${esc(A.n)}</b><span>
       ${own && A.keep && A.z && A.z.move === 'bonus' ? `<button class="ghost" data-tbl="zoneMove" data-k="${k}" title="Сдвинуть бонусным действием (до ${fmtFt(A.z.moveFt || 30)})">⤧</button>` : ''}
+      ${own && A.keep && A.z && A.z.restrike ? `<button class="ghost" data-tbl="zoneStrike" data-k="${k}" title="Ударить снова (действие)">⚡</button>` : ''}
       ${own && A.keep && A.abil && !A.z ? `<button class="ghost" data-tbl="areaAgain" data-k="${k}" title="Сработать снова: новый урон и спасброски">⟳</button>` : ''}
       ${own ? `<button class="ghost" data-tbl="areaDel" data-k="${k}" title="Убрать с поля">✕</button>` : ''}</span></div>`;
     if (A.abil) html += `<div class="muted small">Спасбросок ${AB_N[A.abil]} СЛ ${A.dc}${A.dmg ? ` · ${A.dmg} ${esc(A.dtype || 'урона')}${A.half ? ', половина при успехе' : ''}` : ''}</div>`;
@@ -2737,6 +2845,12 @@ function renderCastBar() {
   bar.hidden = !cast;
   if (!cast) return;
   const multi = cast.area.tgts, A = cast.area;
+  // Составная область: сколько частей поставлено
+  if (A.shape === 'multi') {
+    bar.innerHTML = `✨ <b>${esc(cast.info.n)}</b>: часть ${(A.parts || []).length + 1} из ${A.nParts}${A.contiguous ? ' (касаясь поставленных)' : ''} — нажмите на поле
+      <span>${(A.parts || []).length ? '<button class="primary" data-tbl="multiDone">Готово</button>' : ''}<button data-tbl="castOff">Отмена</button></span>`;
+    return;
+  }
   // Стена: режимы и что делать дальше
   if (A.shape === 'wall') {
     const MN = { line: '― прямая', path: '〰 по участкам', ring: '◯ кольцо' }, len = (A.cells || []).length * FT();
@@ -2836,6 +2950,11 @@ function syncEffects() {
     if (e.once) { // разовое: состояние (сбит с ног) или толчок — применить и убрать эффект
       if (!fxApplied.has(k)) {
         fxApplied.set(k, null);
+        // Потеря концентрации (Метель): персонаж — в своём листе, существо — его области и эффекты снимает мастер
+        if (e.breakConc) {
+          if (t.kind === 'pc' && !t.comp) { const m = me(); if (m && m.charId) app.dropConc(m.charId); }
+          else if (isDM()) { const held = concOf(e.tgt); if (held.length) R.update(ref(gpath()), Object.fromEntries(held.map(([p, x]) => [`${p}/${x}`, null]))).catch(() => {}); }
+        }
         [e.cond, e.cond2].forEach((c) => setTokCond(e.tgt, c, true));
         if (e.push) pushToken(e.tgt, e.from, +e.push);
         R.remove(ref(gpath(`effects/${k}`))).catch(() => {});
@@ -2911,7 +3030,9 @@ function pushToken(id, fromId, n) {
 // Провал спасброска против заклинания или приёма: состояние / эффект на цель
 function applyFail(A, tid) {
   if (!A.fail) return;
-  addEffect(tid, { ...A.fail, by: A.by, from: A.from, spell: A.spell, conc: A.conc, until: A.until, rep: A.rep && !A.fail.once ? A.rep : null });
+  // fail.rounds — на столько раундов (Солнечный луч: слепота до следующего хода), иначе — пока длится заклинание
+  const until = A.fail.rounds && inFight() ? (game.init.round || 1) + A.fail.rounds : A.until;
+  addEffect(tid, { ...A.fail, by: A.by, from: A.from, spell: A.spell, conc: A.fail.rounds ? null : A.conc, until, rep: A.rep && !A.fail.once ? A.rep : null });
 }
 // Запрос спасброска одной цели (приём оружия, атака чудовища, повторный спасбросок): та же панель «Спасброски»
 function saveRequest(tid, spec) {
@@ -5151,7 +5272,7 @@ function hudSlots(id) {
       [...app.attacks(m.charId), ...SPECIAL_ATK].forEach((a) => S.push({ label: a.special ? a.n : `⚔ ${a.n}`, sub: a.special ? 'приём' : `${fmtMod(a.bonus)} · ${a.dmg || ''}`, act: 'hudAtk', data: { id, atk: a.id }, ok: !mv.incap && a.ammo !== 0 && (((turn || !fight) && (e.atk > 0 || !e.a || !e.b)) || !e.r) }));
     }
   } else if (hudTab === 'spell' && !dm && m && m.charId) {
-    app.areaSpells(m.charId, Object.keys(SPELL_FX)).forEach((s) => S.push({ label: `✨ ${s.n}`, sub: s.l ? `${s.l} ур. · ${s.slots.filter((x) => x.left > 0).length ? 'есть ячейки' : 'нет ячеек'}` : 'заговор', act: 'hudSpell', data: { id, sp: s.id }, ok: !mv.incap && spellCan(id, s.act) && (!s.l || s.slots.some((x) => x.left > 0)) }));
+    app.areaSpells(m.charId, Object.keys(SPELL_FX)).forEach((s) => S.push({ label: `✨ ${s.n}`, sub: s.l ? `${s.l} ур. · ${s.slots.filter((x) => x.left > 0).length ? 'есть ячейки' : 'нет ячеек'}` : 'заговор', act: 'hudSpell', data: { id, sp: s.id }, ok: !mv.incap && spellCan(id, s.act) && (!s.l || s.slots.some((x) => x.left > 0)) && !(silenced(id) && needsV(s.comp)) }));
   } else if (hudTab === 'act') {
     const can = !mv.incap && (turn || dm || !fight);
     [['dash', '🏃 Рывок', 'действие', !e.a && mv.speed > 0], ['dis', '↩ Отход', 'действие', !e.a && !e.dis], ['dodge', '🛡 Уклонение', 'действие', !e.a && !e.dodge],
@@ -5204,6 +5325,7 @@ function quickAttack(id, atkId) {
   if (incapTok(t)) { app.toast('Вы недееспособны и не можете атаковать'); return; }
   const A = app.attacks(m.charId).find((a) => a.id === atkId) || SPECIAL_ATK.find((a) => a.id === atkId);
   if (!A) return;
+  if (A.spell && silenced(id) && needsV(spellComp(A.n))) { app.toast('🔇 В Тишине нельзя заклинания со словесным компонентом'); return; }
   const per = (app.summary(m.charId) || {}).atks || 1, fight = inFight();
   let way = (turn || !fight) && (e.atk > 0 || !e.a) ? 'action' : turn && !e.b ? 'bonus' : !e.r ? 'reaction' : null;
   if (A.cantrip) {
@@ -5384,6 +5506,7 @@ function keyOk() {
     cast.area.tgt = kbdPick; kbdPick = null; confirmCast(); return;
   }
   if (cast.area.shape === 'wall') { if (cast.area.cur) wallClick(); else keyHint('Наведите стену: мышью или клавишами шага', cast.caster); return; }
+  if (cast.area.shape === 'multi') { if ((cast.area.parts || []).length && !cast.area.cur) confirmCast(); else multiClick(); return; }
   if (cast.area.ox != null || cast.area.shape === 'aura') confirmCast();
   else keyHint('Наведите область: мышью или клавишами шага', cast.caster);
 }
@@ -5661,6 +5784,8 @@ async function onClick(e) {
     else if (a === 'zoneMove') zoneMoveStart(b.dataset.k);
     else if (a === 'wallMode' && cast) wallSetMode(b.dataset.m);
     else if (a === 'wallDone' && cast) { if ((cast.area.cells || []).length) confirmCast(); }
+    else if (a === 'multiDone' && cast) { if ((cast.area.parts || []).length) confirmCast(); }
+    else if (a === 'zoneStrike') zoneMoveStart(b.dataset.k, true);
     else if (a === 'concSave') concSaveMine();
     else if (a === 'areaDel') await R.remove(ref(gpath(`areas/${b.dataset.k}`)));
     else if (a === 'logClear') { if (app.confirm('Очистить журнал для всех?')) await R.remove(ref(gpath('log'))); }

@@ -20,7 +20,38 @@
 //   cover — укрытие для атак сквозь неё (+2/+5), difficult — сквозь неё — как по труднопроходимой, side — одна сторона опасна на
 //   side фт (выбирает заклинатель), wind — дальнобойные атаки оружием сквозь неё отклоняются, hp/ac — прочность участка (5 фт),
 //   permanent — если концентрация продержалась всё время, стена остаётся навсегда, style — как рисовать, prism — радужные слои
+// Ещё: upSize — область растёт на столько футов за каждый уровень ячейки выше; persist — остаётся на поле, пока её не уберут;
+//   leave — после мгновенного заклинания остаётся след { n, difficult, rounds } (лёд после Града);
+//   shape 'multi' — несколько частей: part { shape, size }, nParts, contiguous (части касаются друг друга);
+//   zone.trig 'cstart' — в начале хода заклинателя срабатывает для всех внутри (Землетрясение);
+//   zone.restrike — действием (act) можно ударить снова: та же форма в пределах moveFt от первой точки (Призыв молнии) или от себя (Солнечный луч);
+//   zone.concCheck — начавшие ход внутри проверяют концентрацию (Метель); fail.rounds — эффект провала на столько раундов
 const SPELL_MECH = {
+  // Туманное облако: сфера 20 фт (+20 за уровень), сильно заслонено — сквозь неё не видно
+  'Fog Cloud': { shape: 'sphere', size: 20, upSize: 20, range: 120, zone: { trig: [], obscure: 'heavy' } },
+  // Тьма: сфера 15 фт магической тьмы — гасит свет, тёмное зрение не помогает
+  'Darkness': { shape: 'sphere', size: 15, range: 60, zone: { trig: [], dark: true, obscure: 'heavy' } },
+  // Тишина: сфера 20 фт — внутри нельзя творить заклинания со словесным компонентом
+  'Silence': { shape: 'sphere', size: 20, range: 120, zone: { trig: [], silence: true } },
+  // Метель: цилиндр радиусом 40 фт — сильно заслонено, труднопроходимо; вход и начало хода — Ловкость или падает; концентрация под угрозой
+  'Sleet Storm': { shape: 'sphere', size: 40, range: 150, save: 'dex',
+    zone: { trig: ['enter', 'start'], obscure: 'heavy', difficult: true, concCheck: true, fail: { n: 'Скольжение', cond: 'prone', once: true } } },
+  // Град: цилиндр радиусом 20 фт, 2к10 дробящего + 4к6 холодом; земля — труднопроходима до конца следующего хода заклинателя
+  'Ice Storm': { shape: 'sphere', size: 20, range: 300, save: 'dex', half: true, dtype: 'дробящим и холодом', leave: { n: 'Лёд после града', difficult: true, rounds: 1 } },
+  // Рост растений: всё в радиусе 100 фт зарастает — труднопроходимо, пока не расчистят
+  'Plant Growth': { shape: 'sphere', size: 100, range: 150, persist: true, zone: { trig: [], difficult: true } },
+  // Огненная буря: до десяти кубов по 10 фт, каждый касается другого; Ловкость, 7к10 огнём
+  'Fire Storm': { shape: 'multi', part: { shape: 'cube', size: 10 }, nParts: 10, contiguous: true, range: 150, save: 'dex', half: true, dtype: 'огнём' },
+  // Метеоритный дождь: четыре сферы по 40 фт; кто в нескольких — урон один раз
+  'Meteor Swarm': { shape: 'multi', part: { shape: 'sphere', size: 40 }, nParts: 4, range: 5280, save: 'dex', half: true, dtype: 'огнём и дробящим' },
+  // Землетрясение: радиус 100 фт; в начале каждого хода заклинателя все на земле внутри — Ловкость или падают; труднопроходимо
+  'Earthquake': { shape: 'sphere', size: 100, range: 500, save: 'dex',
+    zone: { trig: ['cstart'], difficult: true, concCheck: true, fail: { n: 'Землетрясение', cond: 'prone', once: true } } },
+  // Призыв молнии: удар радиусом 5 фт — 3к10 электричеством; потом действием — снова, в пределах 60 фт
+  'Call Lightning': { shape: 'sphere', size: 5, range: 120, save: 'dex', half: true, dtype: 'электричеством', zone: { trig: [], restrike: true, act: 'action', moveFt: 60 } },
+  // Солнечный луч: линия 60 фт от себя, Телосложение — 6к8 излучением и слепота до следующего хода; действием — снова
+  'Sunbeam': { shape: 'line', size: 60, width: 5, range: 0, save: 'con', half: true, dtype: 'излучением',
+    zone: { trig: [], restrike: true, act: 'action', self: true, fail: { n: 'Ослеплён солнцем', ic: '☀', cond: 'blinded', rounds: 1 } } },
   // Стена огня: прямая до 60 фт или кольцо диаметром 20 фт; непрозрачна; при появлении — спасбросок Ловкости 5к8;
   // одна сторона жжёт тех, кто заканчивает ход в 10 фт от неё или в стене, и тех, кто входит в стену — 5к8 без спасброска
   'Wall of Fire': { shape: 'wall', range: 120, save: 'dex', half: true, dtype: 'огнём',
