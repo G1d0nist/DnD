@@ -2391,7 +2391,7 @@ function summonClick() {
   if (!r) return;
   castSpend(c);
   const L = r.castLvl || I.l, V = { L, M: r.mod, HP: r.hpMax }, k = Math.max(0, L - I.l), dm = isDM();
-  const until = inFight() ? (game.init.round || 1) + durRounds(I.dur) : null, conc = I.cn ? c.caster : null, upd = {};
+  const until = inFight() && !/мгновен/i.test(I.dur || '') ? (game.init.round || 1) + durRounds(I.dur) : null, conc = I.cn ? c.caster : null, upd = {};
   A.placed.forEach(([x, y], i) => {
     const key = R.push(ref(gpath('tokens'))).key, id = dm ? key : `pc_${user.uid}_s${key}`;
     let t;
