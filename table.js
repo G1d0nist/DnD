@@ -247,6 +247,10 @@ function pushMyChar() {
         [`tokens/pc_${user.uid}/size`]: SIZE_N[s.size] || 1, [`tokens/pc_${user.uid}/init`]: s.init,
         [`tokens/pc_${user.uid}/dsS`]: s.dsS || 0, [`tokens/pc_${user.uid}/dsF`]: s.dsF || 0, [`tokens/pc_${user.uid}/dv`]: s.dv || 0, [`tokens/pc_${user.uid}/img`]: img || null,
         [`tokens/pc_${user.uid}/sense`]: s.sense || null });
+      // Ярость включили или сняли в листе — эффект на поле следом (сопротивление, свечение)
+      const myId = `pc_${user.uid}`, rg = fxOf(myId).filter(([, f]) => f.rage);
+      if (!s.rage) rg.forEach(([k]) => { upd[`effects/${k}`] = null; });
+      else if (!rg.length) upd[`effects/${R.push(ref(gpath('effects'))).key}`] = { tgt: myId, n: 'Ярость', ic: '😡', rage: true, resist: ['bps'], by: user.uid, from: myId, t: Date.now() };
     }
     // Спутники на поле: хиты, КД и имя — из карточки в листе; убранный из листа спутник уходит и с поля
     Object.entries(game.tokens).forEach(([id, t]) => {
@@ -753,7 +757,7 @@ function renderTokens() {
     el.style.width = el.style.height = s * CELL + 'px';
     el.style.setProperty('--tc', t.kind === 'npc' ? SIDE_COLOR[t.side || 'enemy'] : t.color || '#d4a64a');
     const down = isDown(t), dead = down && isDead(t), label = down ? downLabel(t) : t.name;
-    el.className = `tok ${t.kind} side-${team(t)} ${canMove(t) ? 'mine' : ''} ${selId === id ? 'sel' : ''} ${cur && cur.tokenId === id ? 'turn' : ''} ${t.hidden ? 'hid' : ''} ${down ? 'down' : ''} ${dead ? 'dead' : ''} ${kbdPick === id && (aim || cast) ? 'kpick' : ''} ${concName(id, t) ? 'conc' : ''} ${invis ? 'invis' : ''} ${banned ? 'banished' : ''} ${t.illus && (t.owner === user.uid || isDM() || illusSeen.has(id)) ? 'illus' : ''}`;
+    el.className = `tok ${t.kind} side-${team(t)} ${canMove(t) ? 'mine' : ''} ${selId === id ? 'sel' : ''} ${cur && cur.tokenId === id ? 'turn' : ''} ${t.hidden ? 'hid' : ''} ${down ? 'down' : ''} ${dead ? 'dead' : ''} ${kbdPick === id && (aim || cast) ? 'kpick' : ''} ${concName(id, t) ? 'conc' : ''} ${invis ? 'invis' : ''} ${banned ? 'banished' : ''} ${fxOf(id).some(([, f]) => f.rage) ? 'raging' : ''} ${econ(id).reck ? 'reckless' : ''} ${t.illus && (t.owner === user.uid || isDM() || illusSeen.has(id)) ? 'illus' : ''}`;
     const ec = inFight() ? econ(id) : {};
     el.title = `${label}${showNums ? ` · ${t.hp}/${t.hpMax} хитов${t.ac ? ` · КД ${t.ac}` : ''}` : ''}${(t.cond || []).length ? ` · ${t.cond.map(condName).join(', ')}` : ''}${ec.dodge ? ' · уклоняется' : ''}${ec.dis ? ' · отходит' : ''}${concName(id, t) ? ` · 🌀 концентрация: ${concName(id, t)}` : ''}`;
     const html = `${t.img && !dead ? `<div class="tok-face img" style="background-image:url('${t.img}')"></div>` : `<div class="tok-face${t.ic ? ' ic' : ''}">${dead ? '☠' : t.ic ? esc(t.ic) : esc((t.name || '?').trim().slice(0, 2))}</div>`}
@@ -1448,6 +1452,7 @@ function moveInfo(id) {
   // Скорость с эффектами: «Ускорение» — вдвое, «Замедление» — вдвое меньше, приём «Замедление» — −10 фт
   let speed = speedOf(t);
   fxOf(id).forEach(([, f]) => { if (f.spd === 'x2') speed *= 2; else if (f.spd === 'half') speed = Math.floor(speed / 10) * 5; else if (+f.spd) speed = Math.max(0, speed + +f.spd); });
+  if (e.zero) speed = 0; // Верный прицел: скорость 0 до конца хода
   const incap = isDown(t) || cond.some((k) => INCAP.includes(k)), bonus = (charOf(t) || {}).bonus || [];
   const total = speed * (1 + (e.dash || 0));
   return { speed, total, used: e.move || 0, left: Math.max(0, total - (e.move || 0)), prone: cond.includes('prone'), incap, bonus,
@@ -1470,6 +1475,44 @@ async function econAct(a, id, k) {
   await R.update(ref(gpath(`econ/${id}`)), upd);
   const ACT_LOG = { dash: 'Рывок', dashB: 'Рывок (бонусное действие)', dis: 'Отход', disB: 'Отход (бонусное действие)', dodge: 'Уклонение', stand: 'встаёт' };
   if (ACT_LOG[a]) addLog({ kind: 'act', who: t.name, txt: ACT_LOG[a] });
+}
+// Умения воинских классов (кнопки хода): ресурс тратится в листе, на поле — эффект, флаг хода или атака
+function classAction(a, id) {
+  const t = game.tokens[id], m = me(), e = econ(id), fight = inFight();
+  if (!t || !m || !m.charId || !canMove(t)) return;
+  const K = app.classActs(m.charId) || {}, eu = (u) => R.update(ref(gpath(`econ/${id}`)), u).catch(() => {});
+  if (a === 'cRage') {
+    const r = app.classAct(m.charId, 'rage');
+    if (!r) return;
+    // Эффект на поле (сопротивление дробящему, колющему и рубящему, красное свечение) ставит и снимает синхронизация листа
+    if (r.on) { if (fight) eu({ b: 1 }); addLog({ kind: 'act', who: t.name, txt: `😡 впадает в ярость (+${K.rage ? K.rage.dmg : 2} к урону Силой, сопротивление физическому урону)` }); }
+    else addLog({ kind: 'act', who: t.name, txt: '😡 ярость заканчивается' });
+    pushMyChar();
+  } else if (a === 'cReck') { eu({ reck: 1 }); addLog({ kind: 'act', who: t.name, txt: '⚡ Безрассудная атака: атаки Силой с преимуществом, по нему — тоже' }); }
+  else if (a === 'cWind') {
+    const r = app.classAct(m.charId, 'secondWind');
+    if (!r) return;
+    if (fight) eu({ b: 1 });
+    floatText(id, `+${r.heal}`, 'fx-heal');
+    addLog({ kind: 'act', who: t.name, txt: `💚 Второе дыхание: +${r.heal} хитов`, detail: r.detail });
+  } else if (a === 'cSurge') {
+    if (!app.classAct(m.charId, 'surge')) return;
+    eu({ a: null, atk: null, surge: 1 });
+    addLog({ kind: 'act', who: t.name, txt: '⚡ Всплеск действий — ещё одно действие' });
+  } else if (a === 'cFlurry') {
+    const A = K.flurry && app.attacks(m.charId).find((x) => x.id === K.flurry.atk);
+    if (!A) { app.toast('В листе нет безоружного удара'); return; }
+    if (!app.spendFocus(m.charId, 1)) { app.toast('Нет очков сосредоточенности'); return; }
+    if (fight) eu({ b: 1 });
+    addLog({ kind: 'act', who: t.name, txt: `👊 Шквал ударов: ${K.flurry.n} безоружных удара` });
+    aim = { from: id, charId: m.charId, atk: A, way: 'flurry', left: K.flurry.n, man: '', smite: '' };
+    renderAll();
+    app.toast(`👊 Шквал ударов: выберите цель (${K.flurry.n} удара)`);
+  } else if (a === 'cSteady') {
+    if (e.move > 0) { app.toast('Вы уже перемещались в этом ходу'); return; }
+    eu({ b: 1, steady: 1, zero: 1 });
+    addLog({ kind: 'act', who: t.name, txt: '🎯 Верный прицел: следующая атака с преимуществом, скорость 0' });
+  }
 }
 
 /* ---------- Журнал ---------- */
@@ -1665,7 +1708,7 @@ const hostile = (a, b) => { const x = team(a), y = team(b); return x !== y && x 
 const SIDE_COLOR = { enemy: '#c94a3d', neutral: '#7f8a99', ally: '#5a9e5a' };
 // Враги рядом (5 фт), способные действовать
 const foesNear = (t, id) => Object.entries(game.tokens).filter(([k, o]) => k !== id && hostile(t, o) && !incapTok(o) && !(o.hidden && !isDM()) && distFt(t, o) <= 5);
-const WAYS = { action: 'действие «Атака»', magic: 'действие «Магия»', bonus: 'бонусное действие', reaction: 'реакция', legend: 'легендарное действие' };
+const WAYS = { action: 'действие «Атака»', magic: 'действие «Магия»', bonus: 'бонусное действие', reaction: 'реакция', legend: 'легендарное действие', flurry: 'Шквал ударов', free: 'при сотворении' };
 function openAttack(id) {
   const t = game.tokens[id], m = me(), e = econ(id), turn = isTurnOf(id);
   if (!t || !m || !m.charId) return;
@@ -1678,9 +1721,10 @@ function openAttack(id) {
   if (!ways.length) { app.toast('Нет доступных действий для атаки'); return; }
   const rng = (r) => (r.near ? `${r.reach ? `${r.reach} фт / бросок ` : ''}${r.near}${r.far > r.near ? `/${r.far}` : ''} фт` : `досягаемость ${r.reach} фт`);
   // Классовые возможности: приём превосходства, Божественная кара (бонусное действие), Скрытая атака — считается сама
-  const O = app.combatOpts(m.charId);
+  const O = app.combatOpts(m.charId), K = app.classActs(m.charId) || {};
   const opts = `${O.maneuvers && O.maneuvers.length && O.supLeft ? `<label>Приём превосходства (к${O.supDie}, осталось ${O.supLeft})<select id="atkMan"><option value="">— не тратить кость —</option>${O.maneuvers.map((n) => `<option>${esc(n)}</option>`).join('')}</select></label>` : ''}
     ${O.smiteSlots && O.smiteSlots.length && (!inFight() || !e.b) ? `<label>Божественная кара при попадании<select id="atkSmite"><option value="">— нет —</option>${O.smiteSlots.map((s) => `<option value="${s.key}">${esc(s.label)}</option>`).join('')}</select></label>` : ''}
+    ${K.stun && K.stun.focus > 0 && !e.stun ? `<label class="check" title="Раз в ход: попадание в ближнем бою — цель проходит спасбросок Телосложения или ошеломлена до начала вашего следующего хода"><input type="checkbox" id="atkStun"> 💫 Ошеломляющий удар при попадании (1 очко, СЛ ${K.stun.dc})</label>` : ''}
     ${O.sneak ? `<p class="muted small">Скрытая атака ${O.sneak}к6 добавится сама — раз в ход, фехтовальным или дальнобойным оружием при преимуществе или если рядом с целью ваш союзник.${e.sa ? ' <b>В этом ходу уже была.</b>' : ''}</p>` : ''}`;
   app.openModal(`<h2>⚔ Атака</h2>
     <div class="atk-ways">${ways.map(([k, n], i) => `<label class="check"><input type="radio" name="atkWay" value="${k}" ${i ? '' : 'checked'}> ${esc(n)}</label>`).join('')}</div>
@@ -1699,9 +1743,9 @@ function openAttack(id) {
       if (!turn || e.atk > 0 || e.a) { app.toast(turn ? 'Заговор накладывается действием «Магия», а действие уже потрачено' : 'Заговор накладывается действием — только в свой ход'); return; }
       way = 'magic';
     }
-    const left = way === 'action' ? (e.atk > 0 ? e.atk : per) : way === 'magic' ? A.beams || 1 : 1;
+    const left = way === 'action' ? (e.atk > 0 ? e.atk : per) : way === 'magic' ? A.beams || 1 : 1, stunOn = !!($('#atkStun') || {}).checked;
     app.closeModal();
-    aim = { from: id, charId: m.charId, atk: A, way, left, man, smite };
+    aim = { from: id, charId: m.charId, atk: A, way, left, man, smite, ...(stunOn ? { stun: true, stunDc: K.stun.dc } : {}) };
     renderAll();
   }));
 }
@@ -1910,6 +1954,11 @@ function attackTarget(tid) {
   // Направленный снаряд: следующая атака по цели — с преимуществом, метка снимается
   fxOf(tid).forEach(([k, e]) => { if (e.vex1) { adv.push(String(e.n).toLowerCase()); used.push(k); } });
   if (fxOf(tid).some(([, e]) => e.prot && e.from !== a.from)) dis.push('«Защита»');
+  // Безрассудная атака: свои атаки Силой в ближнем бою — с преимуществом; по безрассудному — тоже. Верный прицел — одна атака с преимуществом
+  const ea = econ(a.from);
+  if (ea.reck && !ranged && !A.spell && !a.npc) adv.push('безрассудная атака');
+  if (econ(tid).reck) adv.push('цель безрассудна');
+  if (ea.steady) { adv.push('верный прицел'); R.update(ref(gpath(`econ/${a.from}`)), { steady: null }).catch(() => {}); }
   fxOf(a.from).forEach(([k, e]) => {
     if (e.sap) { dis.push('ослаблен'); used.push(k); }
     if (e.vex === tid) { adv.push('досаждение'); used.push(k); }
@@ -1951,6 +2000,13 @@ function attackTarget(tid) {
     const rr = app.mute(() => app.rollFormula(String(e.retal), e.n));
     if (rr && rr.total) addLog({ kind: 'dmg', who: T.name, txt: `${e.n} — ответный урон`, tgt: a.from, tgtName: me_.name, dmg: rr.total, dtype: e.retalType || '', detail: rr.detail });
   });
+  // Ошеломляющий удар (монах 5+): попадание в ближнем бою — 1 очко сосредоточенности, раз в ход; Телосложение или ошеломлён до начала хода монаха
+  if (res.hit && !ranged && a.stun && !econ(a.from).stun && app.spendFocus(a.charId, 1)) {
+    a.stun = false;
+    R.update(ref(gpath(`econ/${a.from}`)), { stun: 1 }).catch(() => {});
+    saveRequest(tid, { n: `${me_.name}: Ошеломляющий удар`, who: me_.name, abil: 'con', dc: a.stunDc || 13, fail: { n: 'Ошеломление', ic: '💫', cond: 'stunned', rounds: 1 }, from: a.from });
+    addLog({ kind: 'act', who: me_.name, txt: `💫 Ошеломляющий удар → ${T.name} (спасбросок Телосложения СЛ ${a.stunDc || 13})` });
+  }
   // Невидимость, Убежище: атаковал — эффект заканчивается
   breakAct(a.from);
   // Атака заклинанием с ячейкой: эффект попадания (Направленный снаряд, Луч болезни), лечение (Прикосновение вампира)
@@ -5751,7 +5807,8 @@ function renderTurn() {
       ${btn('disB', '↩ Отход бонусным', 'Хитрое действие / Терпеливая оборона: Отход бонусным действием', mv.bonus.includes('dis') && !e.b && !e.dis)}
       ${btn('stand', `⬆ Встать (${half} фт)`, 'Тратит половину скорости и снимает «Лежит ничком»', mv.prone && !dm && mv.speed > 0 && mv.left >= half)}
     </div>` : ''}
-    ${e.dis || e.dodge ? `<div class="chips mt">${e.dis ? '<span class="chip on"><span>Отход</span></span>' : ''}${e.dodge ? '<span class="chip on"><span>Уклонение</span></span>' : ''}</div>` : ''}
+    ${!dm && canAct && turn ? classActsHtml(id, e) : ''}
+    ${e.dis || e.dodge || e.reck || e.steady ? `<div class="chips mt">${e.dis ? '<span class="chip on"><span>Отход</span></span>' : ''}${e.dodge ? '<span class="chip on"><span>Уклонение</span></span>' : ''}${e.reck ? '<span class="chip on"><span>⚡ Безрассудство</span></span>' : ''}${e.steady ? '<span class="chip on"><span>🎯 Верный прицел</span></span>' : ''}</div>` : ''}
     ${(() => {
       // Вырваться из захвата (действие); реакции на попадание по мне или по союзнику рядом
       const grab = fxOf(id).find(([, f]) => f.grab);
@@ -5760,6 +5817,22 @@ function renderTurn() {
     })()}
     ${!dm ? compTurnHtml(turn) : legendHtml(id)}
     ${turn && !dm ? '<div class="mt"><button class="primary" data-tbl="endTurn">✓ Закончить ход</button></div>' : ''}`;
+}
+// Умения воинских классов в свой ход: Ярость и Безрассудная атака (варвар), Второе дыхание и Всплеск действий (воин),
+// Шквал ударов (монах), Верный прицел (плут). Ошеломляющий удар — в окне атаки
+function classActsHtml(id, e) {
+  const m = me(), K = m && m.charId ? app.classActs(m.charId) : null;
+  if (!K) return '';
+  const b = (a, txt, title, on) => `<button data-tbl="${a}" data-id="${id}" title="${esc(title)}" ${on ? '' : 'disabled'}>${txt}</button>`;
+  const out = [];
+  if (K.rage) out.push(K.rage.on ? b('cRage', '😡 Закончить ярость', 'Ярость заканчивается', true)
+    : b('cRage', `😡 Ярость (${K.rage.left})`, `Бонусное действие: сопротивление дробящему, колющему и рубящему урону, +${K.rage.dmg} к урону атак Силой, преимущество на проверки и спасброски Силы`, !e.b && K.rage.left > 0));
+  if (K.reckless && !e.reck) out.push(b('cReck', '⚡ Безрассудная атака', 'Перед первой атакой в ходу: ваши атаки Силой в ближнем бою с преимуществом, но и атаки по вам — с преимуществом до вашего следующего хода', !e.a && !(e.atk > 0)));
+  if (K.secondWind) out.push(b('cWind', `💚 Второе дыхание (${K.secondWind.left})`, 'Бонусное действие: восстановить 1к10 + уровень воина хитов', !e.b && K.secondWind.left > 0));
+  if (K.surge && !e.surge) out.push(b('cSurge', `⚡ Всплеск действий (${K.surge.left})`, 'Ещё одно действие в этом ходу (кроме «Магии»)', K.surge.left > 0 && !!e.a));
+  if (K.flurry) out.push(b('cFlurry', `👊 Шквал ударов (${K.flurry.n})`, `Бонусное действие и 1 очко сосредоточенности (осталось ${K.flurry.focus}): ${K.flurry.n} безоружных удара`, !e.b && K.flurry.focus > 0));
+  if (K.steady && !e.steady) out.push(b('cSteady', '🎯 Верный прицел', 'Бонусное действие, если вы ещё не перемещались: преимущество на следующую атаку в этом ходу, скорость 0 до конца хода', !e.b && !(e.move > 0)));
+  return out.length ? `<div class="row gap wrap mt">${out.join('')}</div>` : '';
 }
 // Мои спутники на поле: атака — в ход хозяина действием спутника, вне хода — его реакцией
 function compTurnHtml(turn) {
@@ -6425,6 +6498,7 @@ async function onClick(e) {
     else if (a === 'areaDel') await R.remove(ref(gpath(`areas/${b.dataset.k}`)));
     else if (a === 'logClear') { if (app.confirm('Очистить журнал для всех?')) await R.remove(ref(gpath('log'))); }
     else if (['eco', 'dash', 'dashB', 'dis', 'disB', 'dodge', 'stand'].includes(a)) await econAct(a, b.dataset.id, b.dataset.k);
+    else if (['cRage', 'cReck', 'cWind', 'cSurge', 'cFlurry', 'cSteady'].includes(a)) classAction(a, b.dataset.id);
     else if (a === 'initDel') await removeFromInit(b.dataset.id);
     else if (a === 'unsel') { selId = null; renderSide(); renderTokens(); }
     else if (a === 'tokDel') { if (app.confirm('Убрать токен с поля?')) { await R.remove(ref(gpath(`tokens/${selId}`))); selId = null; } }

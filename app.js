@@ -218,7 +218,7 @@ window.dndApp = {
       // Спасброски Силы и Ловкости — цель захвата или толчка выбирает лучший
       svs: [saveBonus(c, 'str'), saveBonus(c, 'dex')], grapDC: 8 + am(c, 'str') + pb(c),
       // «Контрзаклинание» наготове (подготовлено и есть ячейка 3+ уровня) и спасбросок Телосложения — против чужого
-      cs: reactSlots(c, 'Counterspell').length > 0, svc: saveBonus(c, 'con'), lvl: lvl(c), aid: +cb.aid || 0, sense: senseOf(c) };
+      cs: reactSlots(c, 'Counterspell').length > 0, svc: saveBonus(c, 'con'), lvl: lvl(c), aid: +cb.aid || 0, sense: senseOf(c), rage: raging(c) };
   },
   // Добыча со стола: золото — в кошелёк, магический предмет — как из каталога, прочее — в инвентарь; возвращает название
   addLoot(id, L) {
@@ -340,6 +340,39 @@ window.dndApp = {
     if (state.current !== id) state.current = id;
     const c = ch(), r = rollDice('Отражение атак', `1d10+${am(c, 'dex') + clsLvl(c, 'Монах')}`);
     return r ? { total: Math.max(0, r.total), detail: r.detail } : null;
+  },
+  // Боевые умения воинских классов для стола: что доступно и сколько осталось
+  classActs(id) {
+    const c = state.chars[id];
+    if (!c) return null;
+    const left = (k) => { const r = c.resources.find((x) => x.auto === k); return r ? r.max - r.used : 0; };
+    const B = clsLvl(c, 'Варвар'), F = clsLvl(c, 'Воин'), M = clsLvl(c, 'Монах'), Rg = clsLvl(c, 'Плут');
+    const unarmed = c.attacks.find((a) => /безоруж|боевые искусства/i.test(a.n));
+    return {
+      rage: B ? { left: left('rage'), on: raging(c), dmg: rageDmg(c) } : null, reckless: B >= 2,
+      secondWind: F ? { left: left('secondWind') } : null, surge: F >= 2 ? { left: left('actionSurge') } : null,
+      flurry: M >= 2 && unarmed ? { focus: left('focus'), n: M >= 10 ? 3 : 2, atk: unarmed.id } : null,
+      stun: M >= 5 ? { focus: left('focus'), dc: 8 + am(c, 'wis') + pb(c) } : null, steady: Rg >= 3,
+    };
+  },
+  // Применить умение со стола: rage (вкл/выкл), secondWind (лечение), surge — тратят ресурс листа
+  classAct(id, k) {
+    if (!state.chars[id]) return null;
+    if (state.current !== id) { state.current = id; render(); }
+    const c = ch(), res = (key) => c.resources.find((x) => x.auto === key);
+    let out = null;
+    if (k === 'rage') { const was = raging(c); if (!was && res('rage') && res('rage').max - res('rage').used <= 0) { toast('Нет использований Ярости — нужен отдых'); return null; } tracked('ярость', () => ACT.rageToggle()); out = { on: raging(c) }; }
+    if (k === 'secondWind' || k === 'surge') {
+      const r = res(k === 'surge' ? 'actionSurge' : 'secondWind');
+      if (!r || r.max - r.used <= 0) { toast(k === 'surge' ? 'Всплеск действий исчерпан — нужен отдых' : 'Второе дыхание исчерпано — нужен отдых'); return null; }
+      tracked(k === 'surge' ? 'всплеск действий' : 'второе дыхание', () => {
+        r.used++;
+        if (k === 'secondWind') { const h = rollDice('Второе дыхание', `1d10+${clsLvl(c, 'Воин') || lvl(c)}`); if (h) { applyHeal(h.total); out = { heal: h.total, detail: h.detail }; } }
+        else { toast('⚡ Всплеск действий: ещё одно действие в этом ходу', 'crit'); out = { ok: true }; }
+      });
+    }
+    save(); render();
+    return out;
   },
   // Метамагия чародея и умения Воплотителя для стола: выбранные варианты, остаток очков, мод. Харизмы
   metaInfo(id) {
