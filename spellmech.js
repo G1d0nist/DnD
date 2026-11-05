@@ -83,6 +83,10 @@ const SPELL_MECH = {
   'Fog Cloud': { shape: 'sphere', size: 20, upSize: 20, range: 120, zone: { trig: [], obscure: 'heavy' } },
   // Тьма: сфера 15 фт магической тьмы — гасит свет, тёмное зрение не помогает
   'Darkness': { shape: 'sphere', size: 15, range: 60, zone: { trig: [], dark: true, obscure: 'heavy' } },
+  // Дневной свет: сфера 60 фт яркого света и ещё 60 фт тусклого; рассеивает Тьму 3 уровня и ниже, которую задевает
+  'Daylight': { shape: 'sphere', size: 60, range: 60, light: { b: 60, d: 60 }, dispel: 3, zone: { trig: [] } },
+  // Пляшущие огоньки: четыре огонька, каждый — тусклый свет 10 фт; летают, ходить не мешают
+  'Dancing Lights': { shape: 'summon', range: 120, summon: { n: 'Огонёк', ic: '✨', invul: true, fly: true, speed: 60, count: 4, lt: { b: 0, d: 10 }, ghost: true } },
   // Тишина: сфера 20 фт — внутри нельзя творить заклинания со словесным компонентом
   'Silence': { shape: 'sphere', size: 20, range: 120, zone: { trig: [], silence: true } },
   // Метель: цилиндр радиусом 40 фт — сильно заслонено, труднопроходимо; вход и начало хода — Ловкость или падает; концентрация под угрозой

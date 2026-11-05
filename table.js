@@ -245,7 +245,8 @@ function pushMyChar() {
       Object.assign(upd, { [`tokens/pc_${user.uid}/name`]: s.name, [`tokens/pc_${user.uid}/hp`]: s.hp, [`tokens/pc_${user.uid}/hpMax`]: s.hpMax,
         [`tokens/pc_${user.uid}/temp`]: s.temp, [`tokens/pc_${user.uid}/ac`]: s.ac, [`tokens/pc_${user.uid}/cond`]: s.cond, [`tokens/pc_${user.uid}/speed`]: s.speed,
         [`tokens/pc_${user.uid}/size`]: SIZE_N[s.size] || 1, [`tokens/pc_${user.uid}/init`]: s.init,
-        [`tokens/pc_${user.uid}/dsS`]: s.dsS || 0, [`tokens/pc_${user.uid}/dsF`]: s.dsF || 0, [`tokens/pc_${user.uid}/dv`]: s.dv || 0, [`tokens/pc_${user.uid}/img`]: img || null });
+        [`tokens/pc_${user.uid}/dsS`]: s.dsS || 0, [`tokens/pc_${user.uid}/dsF`]: s.dsF || 0, [`tokens/pc_${user.uid}/dv`]: s.dv || 0, [`tokens/pc_${user.uid}/img`]: img || null,
+        [`tokens/pc_${user.uid}/sense`]: s.sense || null });
     }
     // Спутники на поле: хиты, КД и имя — из карточки в листе; убранный из листа спутник уходит и с поля
     Object.entries(game.tokens).forEach(([id, t]) => {
@@ -262,7 +263,7 @@ function placeMyToken(x, y) {
   const m = me(), s = m && app.summary(m.charId);
   if (!s) { app.toast('Персонаж не найден на этом устройстве'); return; }
   R.set(ref(gpath(`tokens/pc_${user.uid}`)), { kind: 'pc', owner: user.uid, name: s.name, x, y, size: SIZE_N[s.size] || 1, color: colorOf(user.uid),
-    hp: s.hp, hpMax: s.hpMax, temp: s.temp, ac: s.ac, cond: s.cond, speed: s.speed, init: s.init, dv: s.dv || 0, ...(s.img ? { img: s.img } : {}) });
+    hp: s.hp, hpMax: s.hpMax, temp: s.temp, ac: s.ac, cond: s.cond, speed: s.speed, init: s.init, dv: s.dv || 0, ...(s.img ? { img: s.img } : {}), ...(s.sense ? { sense: s.sense } : {}) });
   lastSent = '';
 }
 // Спутник из листа на поле: отдельный токен игрока pc_<uid>_<id>; ходит в ход хозяина, хиты общие с карточкой
@@ -576,7 +577,8 @@ function lineClear(x0, y0, x1, y1, sight) {
     const cx = Math.floor(x0 + (dx * i) / n), cy = Math.floor(y0 + (dy * i) / n);
     if (cx === Math.floor(x1) && cy === Math.floor(y1)) return true;
     const k = `${cx}_${cy}`;
-    if ((TERRAIN[(game.map || {})[k]] || {}).opaque || doorShut(k) || WALL.opaque.has(k) || (sight ? WALL.obsc.has(k) : WALL.dark.has(k))) return false;
+    // sight === 'ds' — смотрит существо с Дьявольским или истинным зрением: магическая тьма не мешает, туман — мешает
+    if ((TERRAIN[(game.map || {})[k]] || {}).opaque || doorShut(k) || WALL.opaque.has(k) || (sight ? WALL.obsc.has(k) && !(sight === 'ds' && WALL.dark.has(k)) : WALL.dark.has(k))) return false;
   }
   return true;
 }
@@ -587,7 +589,10 @@ function lightMap() {
   const base = AMB[fogSet().amb || 'bright'] ?? 2, lv = new Map();
   if (base >= 2) return { at: (k) => (WALL.dark.has(k) ? 0 : 2) }; // магическая тьма гасит и дневной свет
   const srcs = [...Object.values(game.lights || {}).map((L) => ({ x: L.x + 0.5, y: L.y + 0.5, b: +L.b || 20, d: +L.d || 20 })),
-    ...Object.values(game.tokens || {}).filter((t) => t.lt && !(t.hidden && !isDM())).map((t) => { const s = t.size || 1; return { x: t.x + s / 2, y: t.y + s / 2, b: +t.lt.b || 0, d: +t.lt.d || 0 }; })];
+    ...Object.values(game.tokens || {}).filter((t) => t.lt && !(t.hidden && !isDM())).map((t) => { const s = t.size || 1; return { x: t.x + s / 2, y: t.y + s / 2, b: +t.lt.b || 0, d: +t.lt.d || 0 }; }),
+    // Заклинания: область света (Дневной свет) и светящиеся существа («Свет», Огонь фей — тусклый 10 фт)
+    ...Object.values(game.areas || {}).filter((A) => A.light && A.keep).map((A) => ({ x: +A.ox || 0, y: +A.oy || 0, b: +A.light.b || 0, d: +A.light.d || 0 })),
+    ...Object.values(game.effects || {}).filter((e) => e.glow && game.tokens[e.tgt]).map((e) => { const t = game.tokens[e.tgt], s = t.size || 1; return { x: t.x + s / 2, y: t.y + s / 2, b: +e.glow.b || 0, d: +e.glow.d || 0 }; })];
   srcs.forEach((L) => {
     const rb = L.b / FT(), rd = (L.b + L.d) / FT();
     for (let x = Math.max(0, Math.floor(L.x - rd - 1)); x < Math.min(W(), Math.ceil(L.x + rd + 1)); x++)
@@ -607,14 +612,16 @@ function computeVision() {
   fogDim = new Set(); fogDark = new Set();
   if (f.mode === 'vision') {
     const R2 = Math.max(1, f.sight / FT()), L = lightMap();
-    Object.values(game.tokens || {}).filter((t) => team(t) === 'pc' && !isDown(t)).forEach((t) => {
-      const s = t.size || 1, ox = t.x + s / 2, oy = t.y + s / 2, dv = (+t.dv || 0) / FT();
+    Object.entries(game.tokens || {}).filter(([, t]) => team(t) === 'pc' && !isDown(t)).forEach(([tid, t]) => {
+      // Тёмное зрение — из листа или заклинания «Тёмное зрение»; Дьявольское / истинное зрение видит и в магической тьме
+      const sn = sensesOf(tid), fdv = Math.max(0, ...fxOf(tid).map(([, e]) => +e.dv || 0));
+      const s = t.size || 1, ox = t.x + s / 2, oy = t.y + s / 2, dv = Math.max(+t.dv || 0, fdv) / FT(), dsr = Math.max(+sn.ds || 0, +sn.ts || 0) / FT();
       for (let x = Math.max(0, Math.floor(ox - R2 - 1)); x < Math.min(W(), Math.ceil(ox + R2 + 1)); x++)
         for (let y = Math.max(0, Math.floor(oy - R2 - 1)); y < Math.min(H(), Math.ceil(oy + R2 + 1)); y++) {
           const k = `${x}_${y}`, inside = x >= t.x && x < t.x + s && y >= t.y && y < t.y + s, dd = Math.hypot(x + 0.5 - ox, y + 0.5 - oy);
-          if (!inside && (dd > R2 + 0.5 || !lineClear(ox, oy, x + 0.5, y + 0.5, true))) continue;
+          if (!inside && (dd > R2 + 0.5 || !lineClear(ox, oy, x + 0.5, y + 0.5, dsr && dd <= dsr + 0.5 ? 'ds' : true))) continue;
           const lit = L.at(k);
-          if (lit >= 1 || inside || (dd <= dv + 0.5 && !WALL.dark.has(k))) {
+          if (lit >= 1 || inside || (dd <= dv + 0.5 && !WALL.dark.has(k)) || (dd <= dsr + 0.5 && WALL.dark.has(k))) {
             if (!vis.has(k) || fogDark.has(k) || fogDim.has(k)) {
               // Тусклый свет и тёмное зрение — клетка видна, но приглушена (у кого лучше видно — того и берём)
               const kind = lit >= 2 || inside ? 2 : lit === 1 ? 1 : 0;
@@ -662,7 +669,7 @@ function drawFog() {
 function occupancy(moverId) {
   const mv = game.tokens[moverId], occ = new Map();
   Object.entries(game.tokens || {}).forEach(([id, t]) => {
-    if (id === moverId || (t.hidden && !isDM())) return;
+    if (id === moverId || (t.hidden && !isDM()) || t.ghost) return;
     const s = t.size || 1, incap = (t.hpMax && (t.hp || 0) <= 0) || (t.cond || []).some((k) => INCAP.includes(k));
     const pass = !hostile(t, mv) || incap || Math.abs(s - (mv.size || 1)) >= 2;
     for (let dx = 0; dx < s; dx++) for (let dy = 0; dy < s; dy++) occ.set(`${t.x + dx}_${t.y + dy}`, pass ? 'pass' : 'block');
@@ -708,11 +715,20 @@ function concName(id, t) {
   return (A && A.spell) || (e && e.spell) || '';
 }
 // Существо целиком в густом облаке или магической тьме: игроки его не видят, если не стоят вплотную
-function cloudHides(t) {
+// Видит сквозь: слепое зрение в пределах — всё; истинное или Дьявольское — если существо только во тьме, а не в тумане
+function cloudHides(t, id) {
   if (isDM() || team(t) === 'pc' || !WALL.obsc.size) return false;
-  for (let dx = 0; dx < (t.size || 1); dx++) for (let dy = 0; dy < (t.size || 1); dy++) if (!WALL.obsc.has(`${t.x + dx}_${t.y + dy}`)) return false;
-  const mine = myTok();
-  return !(mine && distFt(mine, t) <= 5);
+  let fog = false;
+  for (let dx = 0; dx < (t.size || 1); dx++) for (let dy = 0; dy < (t.size || 1); dy++) {
+    const k = `${t.x + dx}_${t.y + dy}`;
+    if (!WALL.obsc.has(k)) return false;
+    if (!WALL.dark.has(k)) fog = true;
+  }
+  const mine = myTok(), myId = `pc_${user.uid}`;
+  if (!mine) return true;
+  const d = distFt(mine, t), s = sensesOf(myId);
+  if (d <= 5 || (s.bs && d <= s.bs)) return false;
+  return fog || !((s.ts && d <= s.ts) || (s.ds && d <= s.ds));
 }
 function renderTokens() {
   const box = $('#tblTokens'), cur = currentEntry();
@@ -720,7 +736,8 @@ function renderTokens() {
   Object.entries(game.tokens || {}).forEach(([id, t]) => {
     const invis = (t.cond || []).includes('invisible'), banned = fxOf(id).some(([, e]) => e.banish);
     // Невидимый враг игрокам не виден; изгнанного на поле нет (мастер видит призрак)
-    if ((t.hidden && !isDM()) || fogHides(t) || cloudHides(t) || (invis && !isDM() && team(t) !== 'pc') || (banned && !isDM())) return;
+    // Видение невидимого, истинное или слепое зрение вашего персонажа — невидимый враг виден (полупрозрачным)
+    if ((t.hidden && !isDM()) || fogHides(t) || cloudHides(t, id) || (invis && !isDM() && team(t) !== 'pc' && !seesInvis(`pc_${user.uid}`, id)) || (banned && !isDM())) return;
     seen.add(id);
     let el = box.querySelector(`[data-tok="${id}"]`);
     if (!el) { el = document.createElement('div'); el.className = 'tok'; el.dataset.tok = id; box.appendChild(el); }
@@ -1757,6 +1774,65 @@ function specialAttack(a, tid) {
   addLog({ kind: 'act', who: me_.name, txt: `${A.n.replace(/^\S+\s/, '')} → ${T.name} (спасбросок ${AB_N[abil]} СЛ ${dc})` });
   return true;
 }
+/* ---------- Особые чувства ---------- */
+// Слепое зрение (bs), истинное зрение (ts), Дьявольское зрение (ds — видит в магической тьме), видение невидимого (si); дальности в фт.
+// Персонаж — из листа (token.sense), существо и призванный зверь — из текста бестиария (t.tr), плюс эффекты заклинаний
+function sensesOf(id) {
+  const t = game.tokens[id];
+  if (!t) return { bs: 0, ts: 0, ds: 0, si: false };
+  const s = { bs: 0, ts: 0, ds: 0, si: false, ...(t.sense || {}) };
+  if (t.kind === 'npc' || t.sum || t.comp) {
+    const tx = t.tr || (BEST().find((m) => m.e === t.mon) || {}).x || '', num = (re) => +((String(tx).match(re) || [])[1] || 0);
+    s.bs = Math.max(+s.bs || 0, num(/слепое зрение\D{0,6}(\d+)/i)); s.ts = Math.max(+s.ts || 0, num(/истинное зрение\D{0,6}(\d+)/i));
+  }
+  fxOf(id).forEach(([, e]) => { if (e.seeInv) s.si = true; if (+e.ts) s.ts = Math.max(+s.ts || 0, +e.ts); if (+e.bs) s.bs = Math.max(+s.bs || 0, +e.bs); });
+  return s;
+}
+// Что на линии между существами (включая их клетки): 'fog' — густое облако или туман, 'dark' — магическая тьма, '' — ничего
+function lineVeil(A, T) {
+  if (!WALL.obsc.size) return '';
+  const x0 = A.x + (A.size || 1) / 2, y0 = A.y + (A.size || 1) / 2, x1 = T.x + (T.size || 1) / 2, y1 = T.y + (T.size || 1) / 2, n = Math.ceil(Math.hypot(x1 - x0, y1 - y0) * 3) + 1;
+  let dark = false;
+  for (let i = 0; i <= n; i++) {
+    const k = `${Math.floor(x0 + ((x1 - x0) * i) / n)}_${Math.floor(y0 + ((y1 - y0) * i) / n)}`;
+    if (WALL.dark.has(k)) dark = true; else if (WALL.obsc.has(k)) return 'fog';
+  }
+  return dark ? 'dark' : '';
+}
+// Почему существо aid не видит tid ('' — видит): ослеплён, цель невидима, туман, тьма.
+// Слепое зрение в пределах — видит всё; истинное — невидимых и сквозь магическую тьму; Дьявольское зрение — сквозь тьму
+function unseen(aid, tid) {
+  const A = game.tokens[aid], T = game.tokens[tid];
+  if (!A || !T) return '';
+  const s = sensesOf(aid), d = distFt(A, T);
+  if (s.bs && d <= s.bs) return '';
+  if ((A.cond || []).includes('blinded')) return 'ослеплён';
+  const ts = s.ts && d <= s.ts;
+  if ((T.cond || []).includes('invisible') && !ts && !s.si && !fxOf(tid).some(([, e]) => e.lit)) return 'невидим';
+  const v = lineVeil(A, T);
+  if (v === 'fog') return 'туман';
+  if (v === 'dark' && !ts && !(s.ds && d <= s.ds)) return 'тьма';
+  return '';
+}
+// Строка «Чувства» в карточке существа
+function sensesLine(id) {
+  const t = game.tokens[id];
+  if (!t) return '';
+  const s = sensesOf(id), dv = Math.max(+t.dv || 0, ...fxOf(id).map(([, e]) => +e.dv || 0)), out = [];
+  if (+s.bs) out.push(`слепое ${s.bs} фт`);
+  if (+s.ts) out.push(`истинное ${s.ts} фт`);
+  if (+s.ds) out.push(`Дьявольское ${s.ds} фт`);
+  if (s.si) out.push('видит невидимое');
+  if (dv) out.push(`тёмное ${dv} фт`);
+  return out.length ? `<div class="muted small mt">👁 Зрение: ${out.join(', ')}</div>` : '';
+}
+// Видит ли невидимых (для показа токенов): Видение невидимого, истинное или слепое зрение в пределах
+function seesInvis(aid, tid) {
+  const A = game.tokens[aid], T = game.tokens[tid];
+  if (!A || !T) return false;
+  const s = sensesOf(aid), d = distFt(A, T);
+  return s.si || (s.ts && d <= s.ts) || (s.bs && d <= s.bs) || fxOf(tid).some(([, e]) => e.lit);
+}
 // Густой туман или магическая тьма на линии между существами, включая их собственные клетки
 function obscuredBetween(A, T) {
   if (!WALL.obsc.size) return false;
@@ -1819,13 +1895,13 @@ function attackTarget(tid) {
   if (econ(tid).dodge && !incapT) dis.push('цель уклоняется');
   if (tc.includes('prone') || tc.includes('unconscious')) (d <= 5 ? adv : dis).push('цель лежит');
   ['blinded', 'paralyzed', 'petrified', 'restrained', 'stunned'].forEach((k) => { if (tc.includes(k)) adv.push(`цель: ${condName(k).toLowerCase()}`); });
-  if (tc.includes('invisible')) dis.push('цель невидима');
-  if ((me_.cond || []).includes('invisible')) adv.push('вас не видно');
+  // Видят ли друг друга: невидимость, слепота, туман, магическая тьма — с учётом слепого, истинного и Дьявольского зрения
+  const uT = unseen(a.from, tid), uA = unseen(tid, a.from);
+  if (uT) dis.push({ 'ослеплён': 'вы ослеплены', 'невидим': 'цель невидима', 'тьма': 'цель во тьме', 'туман': 'цель в тумане' }[uT]);
+  if (uA && uA !== 'ослеплён') adv.push('цель вас не видит');
   if (fxOf(tid).some(([, e]) => e.blur)) dis.push('размытый образ');
   // Защита от зла и добра: аберрации, небожители, элементали, феи, исчадия и нежить атакуют с помехой
   if (fxOf(tid).some(([, e]) => e.pevil) && ['aberration', 'celestial', 'elemental', 'fey', 'fiend', 'undead'].includes(String(me_.mt || '').toLowerCase())) dis.push('защита от зла и добра');
-  // Густой туман или магическая тьма между ними (или на ком-то из них): друг друга не видят — преимущество и помеха гасят друг друга
-  if (obscuredBetween(me_, T)) { dis.push('цель в тумане или тьме'); adv.push('атакующего тоже не видно'); }
   if (ranged && d > r.near) dis.push('большая дистанция');
   if (ranged && foesNear(me_, a.from).length) dis.push('враг рядом');
   // Эффекты: «Огонь фей» на цели, «Ослабление» на атакующем (помеха на одну атаку), «Досаждение» (преимущество по этой цели)
@@ -2469,7 +2545,9 @@ function summonClick() {
       if (S.illus) Object.assign(t, { name: c.illName || 'Существо', illus: true, dc: r.dc });
     }
     Object.assign(t, { kind: dm ? 'npc' : 'pc', owner: user.uid, sum: true, color: dm ? '#c94a3d' : colorOf(user.uid), cond: [], spell: I.n, from: c.caster,
-      ...(dm ? { side: team(src) === 'npc' ? 'enemy' : 'ally' } : {}), ...(conc ? { conc } : {}), ...(until && !conc ? { until } : {}), ...(S.fly ? { fly: true } : {}), ...(S.cmdBonus ? { cmdBonus: true } : {}) });
+      ...(dm ? { side: team(src) === 'npc' ? 'enemy' : 'ally' } : {}), ...(conc ? { conc } : {}), ...(until && !conc ? { until } : {}), ...(S.fly ? { fly: true } : {}), ...(S.cmdBonus ? { cmdBonus: true } : {}),
+      // Светящийся призыв (Пляшущие огоньки): свет вокруг токена; бесплотный — не мешает ходить
+      ...(S.lt ? { lt: S.lt } : {}), ...(S.ghost ? { ghost: true } : {}) });
     upd[`tokens/${id}`] = t;
     // Аура призванного (Пылающий шар, Страж веры, Стая духов): область, которая ходит вместе с ним
     if (S.aura) {
@@ -2741,6 +2819,7 @@ function confirmCast() {
   const F = I.fxDef, friendly = !!(F && (F.heal || F.fx));
   const nameHtml = (id) => `${esc(tok(id).name)}${allies.includes(id) && !friendly ? ' (союзник)' : ''}`;
   const descr = friendly ? (F.heal ? `Лечение ${esc(I.f)}${I.addMod ? ' + модификатор' : ''}` : `${esc(F.fx.n)}${I.cn ? ' · концентрация' : ''}`)
+    : I.light ? `☀ Яркий свет ${I.light.b} фт и тусклый ещё ${I.light.d} фт${I.dispel ? ` · рассеивает Тьму ${I.dispel} уровня и ниже` : ''}`
     : I.darts ? `${(A.tgts || []).length || I.nT} дротик(а) по ${esc(I.mdmg || '1d4+1')} ${esc(I.dtype || '')} — попадают без броска`
     : `${I.save ? `Спасбросок <b>${AB_N[I.save]}</b>, СЛ <b>${I.dc}</b>` : 'Без спасброска'}${I.f ? ` · ${esc(I.f)} ${esc(I.dtype || '')}${I.save ? (I.half ? ', половина при успехе' : ', при успехе — без урона') : ''}` : ''}${F && F.fail && F.fail.cond ? ` · при провале: ${condName(F.fail.cond).toLowerCase()}` : ''}`;
   // Стена с опасной стороной: какая сторона жжёт (у прямой — по направлению, у кольца — внутри или снаружи)
@@ -2770,6 +2849,7 @@ function confirmCast() {
       : pick ? `<div class="atk-ways">${ids.map((id) => `<label class="check"><input type="checkbox" data-tg="${id}" ${allies.includes(id) === friendly ? 'checked' : ''}> ${nameHtml(id)}</label>`).join('')}</div>
         <p class="muted small">Это заклинание затрагивает только выбранных вами существ${F && F.n ? ` (не больше ${F.n})` : ''}.</p>`
       : friendly ? `<p>Цели: ${ids.map((id) => `<b>${esc(tok(id).name)}</b>`).join(', ')}</p>`
+      : !I.f && !I.save && !(F && F.fail) ? `<p>В области: ${ids.map((id) => `<b>${esc(tok(id).name)}</b>`).join(', ')}</p>`
       : `<p>Задевает: ${ids.map((id) => `<b class="${allies.includes(id) ? 'warn-text' : ''}">${esc(tok(id).name)}${allies.includes(id) ? ' (союзник!)' : ''}</b>`).join(', ')}</p>
         ${allies.length ? '<p class="small warn-text">⚠ В области союзники — они тоже получат урон.</p>' : ''}`}
     <div class="modal-actions"><button id="cBack">Назад</button><button class="primary" id="cOk">✨ Сотворить</button></div>`);
@@ -2855,6 +2935,17 @@ function doCastArea(chosen, gated) {
   if (entry.shape === 'multi') { delete entry.cur; delete entry.part; }
   // Повторный удар (Призыв молнии) — от первой точки
   if (I.zone && I.zone.restrike) entry.home = { x: entry.ox, y: entry.oy };
+  // Уровень сотворения (что рассеивает Дневной свет) и свет области
+  entry.lvl = (roll && roll.castLvl) || I.l || 0;
+  if (I.light) entry.light = I.light;
+  // Дневной свет: Тьма уровня не выше dispel, задетая областью, рассеивается
+  if (I.dispel) {
+    const mine = new Set(areaCells(entry).map(([x, y]) => `${x}_${y}`));
+    Object.entries(game.areas || {}).filter(([, D]) => D.z && D.z.dark && (+D.lvl || 2) <= I.dispel && areaCells(D).some(([x, y]) => mine.has(`${x}_${y}`))).forEach(([dk, D]) => {
+      R.remove(ref(gpath(`areas/${dk}`))).catch(() => {});
+      addLog({ kind: 'sys', txt: `☀ ${I.n} рассеивает «${D.spell || D.n}»` });
+    });
+  }
   // Постоянная область (spellmech.js): правила срабатывания, кто уже внутри — они своё при сотворении прошли
   if (I.zone && entry.keep) {
     entry.z = { ...I.zone };
@@ -3316,7 +3407,14 @@ const SPELL_FX = {
   'Grease': { fail: { n: 'Скольжение', cond: 'prone', once: true } },
   'Hypnotic Pattern': { fail: { n: 'Гипнотический узор', ic: '🌀', cond: 'charmed', cond2: 'incapacitated' } },
   'Sleep': { fail: { n: 'Усыпление', ic: '💤', cond: 'incapacitated' }, rep: true },
-  'Faerie Fire': { fail: { n: 'Огонь фей', ic: '🔆', lit: true } },
+  // Огонь фей: цель светится (тусклый свет 10 фт), невидимость не помогает, атаки по ней с преимуществом
+  'Faerie Fire': { fail: { n: 'Огонь фей', ic: '🔆', lit: true, glow: { b: 0, d: 10 } } },
+  // Свет и чувства: «Свет» и «Вечное пламя» — существо или предмет светится; видеть невидимое, истинное и тёмное зрение
+  'Light': { n: 1, fx: { n: 'Свет', ic: '💡', glow: { b: 20, d: 20 } } },
+  'Continual Flame': { n: 1, fx: { n: 'Вечное пламя', ic: '🔥', glow: { b: 20, d: 20 } } },
+  'See Invisibility': { n: 1, fx: { n: 'Видение невидимого', ic: '👁', seeInv: true } },
+  'True Seeing': { n: 1, fx: { n: 'Истинное зрение', ic: '👁', ts: 120 } },
+  'Darkvision': { n: 1, fx: { n: 'Тёмное зрение', ic: '🌙', dv: 150 } },
   'Fear': { fail: { n: 'Ужас', ic: '😱', cond: 'frightened' }, rep: true },
   // Полёт: скорость полёта 60 фт (высота — кнопками ▲▼); Левитация: цель поднимается на 20 фт, ходить не может
   'Fly': { n: 1, up: 1, fx: { n: 'Полёт', ic: '🕊', fly: 60 } },
@@ -5719,6 +5817,7 @@ function renderSide() {
     ${(t.cond || []).length ? `<div class="chips mt">${t.cond.map((c) => `<span class="chip on"><span>${esc(condName(c))}</span></span>`).join('')}</div>` : ''}
     ${fxOf(selId).length ? `<div class="chips mt">${fxOf(selId).map(([k, f]) => `<span class="chip on" title="${esc(f.spell || '')}"><span>${f.ic || '✦'} ${esc(f.n || '')}</span>${dm || mine || f.by === user.uid ? `<button data-tbl="fxDel" data-k="${k}" title="Снять эффект">✕</button>` : ''}</span>`).join('')}</div>` : ''}
     ${t.illus && !dm && !mine && !illusSeen.has(selId) ? '<div class="row gap wrap mt"><button data-tbl="illusCheck" title="Действие «Изучение»: Интеллект (Анализ) против СЛ заклинателя">🔍 Изучить</button></div>' : t.illus && (dm || mine || illusSeen.has(selId)) ? '<div class="muted small mt">✨ Иллюзия</div>' : ''}
+    ${sensesLine(selId)}
     ${(dm || mine) && (canFly(selId) || levOf(selId)) ? `<div class="row gap wrap mt"><span class="small">Высота: <b>${+t.alt || 0} фт</b></span><button data-tbl="alt" data-id="${selId}" data-d="10">▲ +10</button><button data-tbl="alt" data-id="${selId}" data-d="-10" ${+t.alt ? '' : 'disabled'}>▼ −10</button></div>` : ''}
     ${dm || mine ? `<div class="row gap wrap mt"><label>Свет <select data-tbl-light>${LIGHTS.map(([v, n], i) => `<option value="${i}" ${(t.lt ? +t.lt.i || 0 : 0) === i ? 'selected' : ''}>${n}${v ? ` (${v.replace('/', '+')} фт)` : ''}</option>`).join('')}</select></label></div>` : ''}
     ${dm && t.kind === 'npc' ? `${npcStatHtml(t)}

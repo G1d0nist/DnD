@@ -218,7 +218,7 @@ window.dndApp = {
       // Спасброски Силы и Ловкости — цель захвата или толчка выбирает лучший
       svs: [saveBonus(c, 'str'), saveBonus(c, 'dex')], grapDC: 8 + am(c, 'str') + pb(c),
       // «Контрзаклинание» наготове (подготовлено и есть ячейка 3+ уровня) и спасбросок Телосложения — против чужого
-      cs: reactSlots(c, 'Counterspell').length > 0, svc: saveBonus(c, 'con'), lvl: lvl(c), aid: +cb.aid || 0 };
+      cs: reactSlots(c, 'Counterspell').length > 0, svc: saveBonus(c, 'con'), lvl: lvl(c), aid: +cb.aid || 0, sense: senseOf(c) };
   },
   // Добыча со стола: золото — в кошелёк, магический предмет — как из каталога, прочее — в инвентарь; возвращает название
   addLoot(id, L) {
@@ -2904,6 +2904,14 @@ function reactSlots(c, e) {
   const s = c.spells.find((x) => x.e === e && (x.prep || x.always));
   return s ? slotOptions(c, s).filter((x) => x.left > 0 && x.key !== 'free' && x.key !== 'ritual') : [];
 }
+// Особые чувства для стола: слепое и истинное зрение (из «Чувств» и умений), Дьявольское зрение колдуна (120 фт)
+function senseOf(c) {
+  const t = String(c.prof.senses || ''), num = (re) => +((t.match(re) || [])[1] || 0), inv = (c.cpicks || {}).inv || [];
+  const bs = Math.max(num(/слепое зрение\D{0,6}(\d+)/i), hasFeat(c, 'blindFighting') ? 10 : 0);
+  const ts = Math.max(num(/истинное зрение\D{0,6}(\d+)/i), inv.includes('Ведьмино зрение') ? 30 : 0);
+  const ds = inv.includes('Дьявольское зрение') ? 120 : 0;
+  return bs || ts || ds ? { bs, ts, ds } : null;
+}
 const sorcRes = (c) => c.resources.find((x) => x.auto === 'sorcery');
 const sorcLeft = (c, n) => { const r = sorcRes(c); return !!r && r.max - r.used >= n; };
 const sorcSpend = (c, n) => { const r = sorcRes(c); if (r) r.used = Math.min(r.max, r.used + n); };
@@ -2928,7 +2936,7 @@ function spellArea(s) {
     dtype: dmgWord(s.x), act: /бонусн/i.test(s.t || '') ? 'bonus' : /реакц/i.test(s.t || '') ? 'reaction' : 'action', ...(base || {}),
     ...Object.fromEntries(['shape', 'size', 'width', 'save', 'half', 'pick', 'act', 'dtype'].filter((k) => M[k] != null).map((k) => [k, M[k]])),
     self, range: self ? 0 : M.range != null ? M.range : base ? base.range : /касан/i.test(r) ? 5 : parseInt(r) || 0, zone: M.zone || null, wall: M.wall || null,
-    ...Object.fromEntries(['upSize', 'persist', 'leave', 'part', 'nParts', 'contiguous', 'summon', 'rays', 'upRays', 'up', 'onHit', 'passenger', 'distinct', 'darts', 'chain', 'miss', 'melee', 'drain'].filter((k) => M[k] != null).map((k) => [k, M[k]])),
+    ...Object.fromEntries(['upSize', 'persist', 'leave', 'part', 'nParts', 'contiguous', 'summon', 'rays', 'upRays', 'up', 'onHit', 'passenger', 'distinct', 'darts', 'chain', 'miss', 'melee', 'drain', 'light', 'dispel'].filter((k) => M[k] != null).map((k) => [k, M[k]])),
     ...(M.dmg ? { mdmg: M.dmg } : {}) };
 }
 function spellAreaText(s) {
