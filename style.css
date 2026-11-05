@@ -751,6 +751,7 @@ body.tbl-full-on .toasts { z-index: 95; top: 64px; bottom: auto; }
 .tok.raging .tok-face { box-shadow: 0 0 0 2px #c94a3d, 0 0 14px 5px rgba(214, 64, 40, .75); animation: rageGlow 1.4s ease-in-out infinite alternate; }
 @keyframes rageGlow { from { box-shadow: 0 0 0 2px #c94a3d, 0 0 8px 2px rgba(214, 64, 40, .55); } to { box-shadow: 0 0 0 2px #e0533c, 0 0 18px 7px rgba(240, 90, 50, .85); } }
 .tok.reckless:not(.conc)::after { content: '⚡'; position: absolute; left: -6px; top: -8px; font-size: 14px; filter: drop-shadow(0 0 2px #000); pointer-events: none; }
+.tok.wild .tok-face { outline: 2px solid #6fbf5a; outline-offset: 2px; filter: sepia(.35) hue-rotate(40deg); }
 .tok.banished { opacity: .25; filter: grayscale(1); }
 .tok.illus { opacity: .55; }
 .tok.illus .tok-face { border-style: dashed !important; }

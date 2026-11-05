@@ -218,7 +218,10 @@ window.dndApp = {
       // Спасброски Силы и Ловкости — цель захвата или толчка выбирает лучший
       svs: [saveBonus(c, 'str'), saveBonus(c, 'dex')], grapDC: 8 + am(c, 'str') + pb(c),
       // «Контрзаклинание» наготове (подготовлено и есть ячейка 3+ уровня) и спасбросок Телосложения — против чужого
-      cs: reactSlots(c, 'Counterspell').length > 0, svc: saveBonus(c, 'con'), lvl: lvl(c), aid: +cb.aid || 0, sense: senseOf(c), rage: raging(c) };
+      cs: reactSlots(c, 'Counterspell').length > 0, svc: saveBonus(c, 'con'), lvl: lvl(c), aid: +cb.aid || 0, sense: senseOf(c), rage: raging(c),
+      // Аура защиты паладина (6+): союзники в 10 фт (с 18 — 30 фт) добавляют мод. Харизмы к спасброскам; Дикий облик друида
+      aura: clsLvl(c, 'Паладин') >= 6 ? { r: clsLvl(c, 'Паладин') >= 18 ? 30 : 10, b: Math.max(1, am(c, 'cha')) } : null,
+      wild: !!(c.shape && !c.shape.poly) };
   },
   // Добыча со стола: золото — в кошелёк, магический предмет — как из каталога, прочее — в инвентарь; возвращает название
   addLoot(id, L) {
@@ -373,6 +376,27 @@ window.dndApp = {
     }
     save(); render();
     return out;
+  },
+  // Умения заклинателей для стола: Изгнание нежити (жрец 2+), Вдохновение барда, Врождённое колдовство (чародей)
+  casterActs(id) {
+    const c = state.chars[id];
+    if (!c) return null;
+    const left = (k) => { const r = c.resources.find((x) => x.auto === k); return r ? r.max - r.used : 0; };
+    const Cl = clsLvl(c, 'Жрец'), Bd = clsLvl(c, 'Бард'), So = clsLvl(c, 'Чародей');
+    return {
+      turn: Cl >= 2 ? { left: left('channelCleric'), dc: 8 + am(c, 'wis') + pb(c) } : null,
+      insp: Bd ? { left: left('bardic'), die: Bd >= 15 ? 12 : Bd >= 10 ? 10 : Bd >= 5 ? 8 : 6 } : null,
+      innate: So ? { left: left('innateSorcery') } : null,
+    };
+  },
+  // Потратить использование ресурса листа (Божественный канал, Вдохновение, Врождённое колдовство)
+  useRes(id, auto, label) {
+    const c = state.chars[id], r = c && c.resources.find((x) => x.auto === auto);
+    if (!r || r.max - r.used <= 0) { toast(`${label || 'Ресурс'}: не осталось использований`); return false; }
+    if (state.current !== id) state.current = id;
+    tracked(label || auto, () => { r.used++; });
+    save(); render();
+    return true;
   },
   // Метамагия чародея и умения Воплотителя для стола: выбранные варианты, остаток очков, мод. Харизмы
   metaInfo(id) {
