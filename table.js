@@ -173,7 +173,7 @@ function subscribe(gid, code) {
   on('econ', (v) => { game.econ = v || {}; });
   on('cs', (v) => { game.cs = v || {}; csCheck(); notifyCs(); });
   on('log', (v) => { game.log = v || {}; applyLog(); notifyLog(); fxLog(); });
-  on('areas', (v) => { game.areas = v || {}; drawAreas(); notifyAreas(); autoNpcSaves(); zoneTick(); syncEffects(); });
+  on('areas', (v) => { game.areas = v || {}; rebuildWalls(); wallEject(); drawAreas(); notifyAreas(); autoNpcSaves(); zoneTick(); syncEffects(); });
   // Присутствие: онлайн, пока открыта вкладка
   unsubs.push(R.onValue(ref('.info/connected'), (s) => {
     if (!s.val() || !game) return;
@@ -574,7 +574,7 @@ function lineClear(x0, y0, x1, y1) {
   for (let i = 1; i < n; i++) {
     const cx = Math.floor(x0 + (dx * i) / n), cy = Math.floor(y0 + (dy * i) / n);
     if (cx === Math.floor(x1) && cy === Math.floor(y1)) return true;
-    if ((TERRAIN[(game.map || {})[`${cx}_${cy}`]] || {}).opaque || doorShut(`${cx}_${cy}`)) return false;
+    if ((TERRAIN[(game.map || {})[`${cx}_${cy}`]] || {}).opaque || doorShut(`${cx}_${cy}`) || WALL.opaque.has(`${cx}_${cy}`)) return false;
   }
   return true;
 }
@@ -679,7 +679,7 @@ function reachMap(sx, sy, limit, occ, crawl, zd) {
       const nx = x + dx, ny = y + dy, k = `${nx}_${ny}`;
       if (nx < 0 || ny < 0 || nx >= W() || ny >= H()) continue;
       const T = TERRAIN[(game.map || {})[k]], o = occ && occ.get(k);
-      if ((T && T.block) || o === 'block' || doorShut(k)) continue;
+      if ((T && T.block) || o === 'block' || doorShut(k) || WALL.block.has(k)) continue;
       const nd = d + FT() * (1 + ((T && T.cost) || o === 'pass' || (zd && zd.has(k)) ? 1 : 0) + (crawl ? 1 : 0));
       if (nd > limit || (dist.has(k) && dist.get(k) <= nd)) continue;
       dist.set(k, nd);
@@ -785,6 +785,7 @@ function onDown(e) {
       return;
     }
     castFollow(p.px / CELL, p.py / CELL);
+    if (cast.area.shape === 'wall' && !cast.moveK) { if (!castInRange()) { app.toast(`Слишком далеко: дистанция ${cast.range} фт`); return; } wallClick(); return; }
     confirmCast();
     return;
   }
@@ -808,6 +809,8 @@ function onDown(e) {
   const poi = tool === 'move' && !tokEl && poiAt(p.x, p.y);
   if (poi) { poiDialog(poi[0]); return; }
   if (tool === 'move' && !tokEl && (game.map || {})[`${p.x}_${p.y}`] === 'stairs') { stairsDialog(`${p.x}_${p.y}`); return; }
+  const wl = tool === 'move' && !tokEl && !aim && wallAt(p.x, p.y);
+  if (wl) { wallDialog(wl[0], `${p.x}_${p.y}`); return; }
   if (TERRAIN[tool] || tool === 'erase' || tool === 'reveal' || tool === 'conceal') {
     drag = { kind: 'paint', pending: {}, root: tool === 'reveal' || tool === 'conceal' };
     paintAt(p);
@@ -926,7 +929,7 @@ function onUp(e) {
     const s = t.size || 1;
     const x = Math.max(0, Math.min(W() - s, Math.round((p.px - d.offX) / CELL))), y = Math.max(0, Math.min(H() - s, Math.round((p.py - d.offY) / CELL)));
     const T = TERRAIN[(game.map || {})[`${x}_${y}`]];
-    if ((T && T.block) || doorShut(`${x}_${y}`)) { app.toast(T && T.block ? 'Там стена' : 'Дверь закрыта'); renderTokens(); return; }
+    if ((T && T.block) || doorShut(`${x}_${y}`) || WALL.block.has(`${x}_${y}`)) { app.toast(T && T.block || WALL.block.has(`${x}_${y}`) ? 'Там стена' : 'Дверь закрыта'); renderTokens(); return; }
     if (x === d.sx && y === d.sy) { renderTokens(); return; }
     const upd = { [`tokens/${d.id}/x`]: x, [`tokens/${d.id}/y`]: y };
     if (d.fight) {
@@ -1693,17 +1696,19 @@ function coverOf(A, T, aid, tid) {
   const as = A.size || 1, ts = T.size || 1, x0 = A.x + as / 2, y0 = A.y + as / 2, x1 = T.x + ts / 2, y1 = T.y + ts / 2;
   const dx = x1 - x0, dy = y1 - y0, n = Math.ceil(Math.hypot(dx, dy) * 3), seen = new Set();
   const inTok = (t, x, y) => x >= t.x && x < t.x + (t.size || 1) && y >= t.y && y < t.y + (t.size || 1);
-  let c = 0;
+  let c = 0, wind = false;
   for (let i = 1; i < n; i++) {
     const cx = Math.floor(x0 + (dx * i) / n), cy = Math.floor(y0 + (dy * i) / n), k = `${cx}_${cy}`;
     if (seen.has(k) || inTok(A, cx, cy) || inTok(T, cx, cy)) continue;
     seen.add(k);
     const v = (game.map || {})[k];
-    if (v === 'wall' || doorShut(k)) return { total: true, bonus: 0 };
+    if (v === 'wall' || doorShut(k) || WALL.block.has(k)) return { total: true, bonus: 0 };
+    if (WALL.wind.has(k)) wind = true;
+    c = Math.max(c, WALL.cover.get(k) || 0);
     c = Math.max(c, (TERRAIN[v] || {}).cover || 0);
     if (c < 2 && Object.entries(game.tokens).some(([id, o]) => id !== aid && id !== tid && !isDead(o) && !(o.hidden && !isDM()) && inTok(o, cx, cy))) c = 2;
   }
-  return { total: false, bonus: c };
+  return { total: false, bonus: c, wind };
 }
 function attackTarget(tid) {
   const a = aim, me_ = game.tokens[a.from], T = game.tokens[tid], A = a.atk, r = A.rng;
@@ -1740,6 +1745,8 @@ function attackTarget(tid) {
   // Укрытие (2024): стена или закрытая дверь на линии — полное (атаковать нельзя); мебель, надгробия, существа — +2; деревья, валуны, ящики — +5
   const cov = coverOf(me_, T, a.from, tid);
   if (cov.total) { app.toast('Цель за стеной или закрытой дверью — полное укрытие'); return; }
+  // Стена ветров: дальнобойная атака оружием сквозь неё отклоняется — атака потрачена
+  if (cov.wind && ranged && !A.spell) { addLog({ kind: 'act', who: me_.name, txt: `${A.n} → ${T.name}: снаряд отклонён Стеной ветров` }); spendAttack(a, {}); return; }
   const ac = acOf(T, tid) + cov.bonus;
   // Скрытая атака: раз в ход; союзник атакующего (в сознании) рядом с целью
   const allyNear = Object.entries(game.tokens).some(([k, o]) => k !== a.from && k !== tid && team(o) === team(me_) && !incapTok(o) && distFt(o, T) <= 5);
@@ -1942,7 +1949,7 @@ function doReaction(a, id) {
 //   abil, dc, half, expr, dmg, dtype, keep, t, tg: { tokenId: { done, ok, roll, dmg } } }
 // Координаты в клетках (дробные): ox, oy — точка начала, ang — направление. Аура следует за существом from.
 const AB_N = { str: 'Силы', dex: 'Ловкости', con: 'Телосложения', int: 'Интеллекта', wis: 'Мудрости', cha: 'Харизмы' };
-const SHAPE_N = { sphere: 'сфера', cone: 'конус', line: 'линия', cube: 'куб', aura: 'вокруг себя', target: 'одна цель' };
+const SHAPE_N = { sphere: 'сфера', cone: 'конус', line: 'линия', cube: 'куб', aura: 'вокруг себя', target: 'одна цель', wall: 'стена' };
 const CONE_HALF = Math.atan(0.5); // ширина конуса равна расстоянию от точки начала
 const AUTO_FAIL_T = ['paralyzed', 'stunned', 'unconscious', 'petrified'];
 
@@ -1978,6 +1985,7 @@ function cellIn(A, x, y) {
 function areaCells(A) {
   const g = geo(A), out = [];
   if (g.shape === 'target') return out;
+  if (g.shape === 'wall') return (g.cells || []).map((k) => k.split('_').map(Number));
   const R = Math.max(g.r || 0, aLen(g)) + 1;
   for (let x = Math.max(0, Math.floor(g.ox - R)); x < Math.min(W(), Math.ceil(g.ox + R)); x++)
     for (let y = Math.max(0, Math.floor(g.oy - R)); y < Math.min(H(), Math.ceil(g.oy + R)); y++) if (cellIn(g, x, y)) out.push([x, y]);
@@ -2011,7 +2019,8 @@ function drawAreas() {
     const col = A.color || '#d4a64a';
     g.save();
     g.strokeStyle = col; g.lineWidth = 2; g.setLineDash(A.preview ? [6, 4] : []);
-    if (A.shape === 'target') {
+    if (A.shape === 'wall') drawWall(g, A);
+    else if (A.shape === 'target') {
       (A.tgts && A.tgts.length ? A.tgts : [A.tgt]).forEach((id) => {
         const t = game.tokens[id];
         if (t) { const s = (t.size || 1) * CELL; g.beginPath(); g.arc(t.x * CELL + s / 2, t.y * CELL + s / 2, s / 2 + 4, 0, Math.PI * 2); g.stroke(); }
@@ -2027,9 +2036,159 @@ function drawAreas() {
     g.restore();
   });
 }
+/* ---------- Стены (Стена огня, Каменная стена…) ---------- */
+// Стена — цепочка клеток (A.cells: 'x_y'); A.band — клетки опасной стороны (Стена огня). Свойства — из A.wall (spellmech.js).
+// WALL — сводка по всем стенам на поле: что непроходимо, что заслоняет обзор и свет, где укрытие, где ветер
+let WALL = { block: new Set(), opaque: new Set(), cover: new Map(), wind: new Set() };
+function rebuildWalls() {
+  const S = { block: new Set(), opaque: new Set(), cover: new Map(), wind: new Set() };
+  Object.values((game && game.areas) || {}).forEach((A) => {
+    if (A.shape !== 'wall' || !A.keep || !A.wall) return;
+    (A.cells || []).forEach((k) => {
+      if (A.wall.block) S.block.add(k);
+      if (A.wall.opaque) S.opaque.add(k);
+      if (A.wall.cover) S.cover.set(k, Math.max(S.cover.get(k) || 0, A.wall.cover));
+      if (A.wall.wind) S.wind.add(k);
+    });
+  });
+  WALL = S;
+}
+// Клетки отрезка (Брезенхэм) и кольца
+function lineCells(x0, y0, x1, y1) {
+  const out = [], dx = Math.abs(x1 - x0), dy = -Math.abs(y1 - y0), sx = x0 < x1 ? 1 : -1, sy = y0 < y1 ? 1 : -1;
+  let err = dx + dy, x = x0, y = y0;
+  for (;;) { out.push([x, y]); if (x === x1 && y === y1) break; const e2 = 2 * err; if (e2 >= dy) { err += dy; x += sx; } if (e2 <= dx) { err += dx; y += sy; } }
+  return out;
+}
+function ringCells(cx, cy, r) {
+  const out = [];
+  for (let y = Math.floor(cy - r - 1); y <= Math.ceil(cy + r + 1); y++) for (let x = Math.floor(cx - r - 1); x <= Math.ceil(cx + r + 1); x++) {
+    const d = Math.hypot(x + 0.5 - cx, y + 0.5 - cy);
+    if (d >= r - 0.5 && d < r + 0.5) out.push([x, y]);
+  }
+  return out;
+}
+const inBoard = ([x, y]) => x >= 0 && y >= 0 && x < W() && y < H();
+// Опасная сторона: у прямой — по одну сторону на side фт; у кольца — внутри или снаружи
+function wallBand(A) {
+  const Wd = A.wall || (cast && cast.info && cast.info.wall) || {};
+  if (!Wd.side || !(A.cells || []).length) return [];
+  const n = Math.max(1, Math.round(Wd.side / FT())), cells = A.cells.map((k) => k.split('_').map(Number)), set = new Set(A.cells), out = new Set();
+  if (A.mode === 'ring') {
+    const r = A.ringR;
+    for (let y = Math.floor(A.cy - r - n - 1); y <= A.cy + r + n + 1; y++) for (let x = Math.floor(A.cx - r - n - 1); x <= A.cx + r + n + 1; x++) {
+      const d = Math.hypot(x + 0.5 - A.cx, y + 0.5 - A.cy), k = `${x}_${y}`;
+      if (set.has(k) || !inBoard([x, y])) continue;
+      if ((A.side > 0 && d < r && d >= r - n - 0.5) || (A.side < 0 && d > r && d <= r + n + 0.5)) out.add(k);
+    }
+  } else {
+    const [x0, y0] = cells[0], [x1, y1] = cells[cells.length - 1], nx = -(y1 - y0), ny = x1 - x0;
+    cells.forEach(([cx, cy]) => {
+      for (let dy = -n; dy <= n; dy++) for (let dx = -n; dx <= n; dx++) {
+        const x = cx + dx, y = cy + dy, k = `${x}_${y}`;
+        if (set.has(k) || !inBoard([x, y])) continue;
+        const dot = (x - x0) * nx + (y - y0) * ny;
+        if ((nx || ny) && Math.sign(dot) === A.side) out.add(k);
+      }
+    });
+  }
+  return [...out];
+}
+// Разметка стены под указателем: прямая от первой точки, ломаная по точкам или кольцо с центром под указателем
+function wallFollow(mx, my) {
+  const A = cast.area, cur = [Math.floor(mx), Math.floor(my)];
+  A.cur = cur;
+  let cells = [];
+  if (A.mode === 'ring') { A.cx = cur[0] + 0.5; A.cy = cur[1] + 0.5; cells = ringCells(A.cx, A.cy, A.ringR); }
+  else if (A.mode === 'line') cells = A.p0 ? lineCells(A.p0[0], A.p0[1], cur[0], cur[1]).slice(0, A.maxC) : [cur];
+  else {
+    const pts = A.pts || [];
+    pts.forEach((p, i) => { if (i) cells.push(...lineCells(pts[i - 1][0], pts[i - 1][1], p[0], p[1]).slice(1)); else cells.push(p); });
+    if (pts.length) cells.push(...lineCells(pts[pts.length - 1][0], pts[pts.length - 1][1], cur[0], cur[1]).slice(1));
+    else cells.push(cur);
+    cells = cells.slice(0, A.maxC);
+  }
+  A.cells = [...new Set(cells.filter(inBoard).map(([x, y]) => `${x}_${y}`))];
+  A.ox = cur[0] + 0.5; A.oy = cur[1] + 0.5;
+  A.band = wallBand(A);
+}
+// Нажатие при разметке: первая точка, следующие точки ломаной; готово — повторное нажатие на ту же клетку или Enter
+function wallClick() {
+  const A = cast.area, cur = A.cur;
+  if (!cur) return;
+  if (A.mode === 'ring') { confirmCast(); return; }
+  if (A.mode === 'line') { if (!A.p0) { A.p0 = cur; wallFollow(cur[0] + 0.5, cur[1] + 0.5); drawAreas(); renderCastBar(); return; } confirmCast(); return; }
+  const pts = A.pts || (A.pts = []), last = pts[pts.length - 1];
+  if (last && last[0] === cur[0] && last[1] === cur[1]) { confirmCast(); return; }
+  if (A.cells.length >= A.maxC && pts.length) { confirmCast(); return; }
+  pts.push(cur); wallFollow(cur[0] + 0.5, cur[1] + 0.5); drawAreas(); renderCastBar();
+}
+function wallSetMode(m) {
+  const A = cast.area;
+  Object.assign(A, { mode: m, p0: null, pts: [], cells: [], band: [] });
+  if (A.cur) wallFollow(A.cur[0] + 0.5, A.cur[1] + 0.5);
+  drawAreas(); renderCastBar();
+}
+const wallAt = (x, y) => Object.entries(game.areas || {}).find(([, A]) => A.shape === 'wall' && A.keep && (A.cells || []).includes(`${x}_${y}`));
+// Мастер: участок стены — повредить или убрать (Каменная и Ледяная — с хитами участка)
+function wallDialog(k, cell) {
+  const A = game.areas[k];
+  if (!A) return;
+  if (!isDM()) { app.toast(`🧱 ${esc(A.n)}`); return; }
+  const Wd = A.wall || {}, hp = Wd.hp ? ((A.seg || {})[cell] != null ? A.seg[cell] : Wd.hp) : null;
+  app.openModal(`<div><h2>🧱 ${esc(A.n)}</h2>
+    <p class="muted small">${Wd.block ? 'Непроходима' : 'Проходима'}${Wd.opaque ? ', заслоняет обзор' : ''}${Wd.cover ? `, укрытие +${Wd.cover}` : ''} · участков: ${(A.cells || []).length}${hp != null ? ` · этот участок: КД ${Wd.ac}, ${hp} хитов` : ''}</p>
+    ${hp != null ? '<label>Урон участку<input type="number" id="wlD" min="0" value="0"></label>' : ''}
+    <div class="modal-actions"><button data-act="closeModal">Закрыть</button>${hp != null ? '<button id="wlHit">Нанести урон</button>' : ''}<button id="wlCut">Убрать участок</button><button class="danger" id="wlDel">Убрать стену</button></div></div>`);
+  const cut = () => { const cells = (A.cells || []).filter((c) => c !== cell); R.update(ref(gpath(`areas/${k}`)), { cells, band: (A.band || []).filter((c) => !cells.includes(c)) }); addLog({ kind: 'sys', txt: `🧱 ${A.n}: участок разрушен` }); };
+  if ($('#wlHit')) $('#wlHit').onclick = () => { const left = hp - Math.max(0, +$('#wlD').value || 0); app.closeModal(); if (left <= 0) cut(); else R.update(ref(gpath(`areas/${k}/seg`)), { [cell]: left }); };
+  $('#wlCut').onclick = () => { app.closeModal(); cut(); };
+  $('#wlDel').onclick = () => { app.closeModal(); R.remove(ref(gpath(`areas/${k}`))); };
+}
+// Существа в клетках новой непроходимой стены выталкиваются на ближайшую свободную клетку (решает мастер)
+function wallEject() {
+  if (!game || !isDM() || !WALL.block.size) return;
+  const occ = new Set(), upd = {};
+  Object.values(game.tokens || {}).forEach((t) => { for (let dx = 0; dx < (t.size || 1); dx++) for (let dy = 0; dy < (t.size || 1); dy++) occ.add(`${t.x + dx}_${t.y + dy}`); });
+  Object.entries(game.tokens || {}).forEach(([id, t]) => {
+    if ((t.size || 1) > 1 || !WALL.block.has(`${t.x}_${t.y}`)) return;
+    for (let r = 1; r < 6; r++) {
+      const spot = [];
+      for (let dy = -r; dy <= r; dy++) for (let dx = -r; dx <= r; dx++) if (Math.max(Math.abs(dx), Math.abs(dy)) === r) spot.push([t.x + dx, t.y + dy]);
+      const ok = spot.find(([x, y]) => { const k = `${x}_${y}`; return inBoard([x, y]) && !WALL.block.has(k) && !occ.has(k) && !(TERRAIN[(game.map || {})[k]] || {}).block; });
+      if (ok) { upd[`tokens/${id}/x`] = ok[0]; upd[`tokens/${id}/y`] = ok[1]; occ.add(`${ok[0]}_${ok[1]}`); addLog({ kind: 'act', who: t.name, txt: 'вытолкнут стеной на соседнюю клетку' }); break; }
+    }
+  });
+  if (Object.keys(upd).length) R.update(ref(gpath()), upd).catch(() => {});
+}
+// Как рисовать стены
+const WALL_STYLE = { fire: ['rgba(255,110,30,.78)', 'rgba(255,220,90,.75)'], thorns: ['rgba(40,90,30,.85)', 'rgba(140,200,90,.8)'], blades: ['rgba(150,160,175,.6)', 'rgba(240,245,255,.9)'],
+  force: ['rgba(150,110,230,.18)', 'rgba(190,160,255,.9)'], stone: ['rgba(120,113,102,.95)', 'rgba(60,55,48,.8)'], ice: ['rgba(170,215,245,.82)', 'rgba(255,255,255,.9)'],
+  wind: ['rgba(200,220,235,.15)', 'rgba(230,240,250,.8)'], prism: ['', ''] };
+function drawWall(g, A) {
+  const [fill, line] = WALL_STYLE[(A.wall || {}).style || ((cast && cast.info.wall) || {}).style] || ['rgba(212,166,74,.5)', '#d4a64a'], prism = ((A.wall || (cast && cast.info.wall) || {}).style) === 'prism';
+  (A.band || []).forEach((k) => { const [x, y] = k.split('_').map(Number); g.fillStyle = 'rgba(255,120,40,.16)'; g.fillRect(x * CELL, y * CELL, CELL, CELL); });
+  (A.cells || []).forEach((k, i) => {
+    const [x, y] = k.split('_').map(Number), px = x * CELL, py = y * CELL;
+    g.fillStyle = prism ? `hsla(${(i * 47) % 360},90%,60%,.75)` : fill;
+    g.fillRect(px + 1, py + 1, CELL - 2, CELL - 2);
+    g.strokeStyle = prism ? 'rgba(255,255,255,.8)' : line; g.lineWidth = 2; g.setLineDash(A.preview ? [5, 4] : []);
+    const st = (A.wall || (cast && cast.info.wall) || {}).style;
+    g.beginPath();
+    if (st === 'stone') { g.moveTo(px, py + CELL / 2); g.lineTo(px + CELL, py + CELL / 2); g.moveTo(px + CELL / 2, py); g.lineTo(px + CELL / 2, py + CELL / 2); g.moveTo(px + CELL / 4, py + CELL / 2); g.lineTo(px + CELL / 4, py + CELL); }
+    else if (st === 'fire') { g.moveTo(px + 6, py + CELL - 4); g.quadraticCurveTo(px + 12, py + 6, px + 20, py + 18); g.quadraticCurveTo(px + 26, py + 4, px + 34, py + CELL - 4); }
+    else if (st === 'thorns' || st === 'blades') { g.moveTo(px + 4, py + 4); g.lineTo(px + CELL - 4, py + CELL - 4); g.moveTo(px + CELL - 4, py + 4); g.lineTo(px + 4, py + CELL - 4); }
+    else if (st === 'wind') { g.arc(px + CELL / 2, py + CELL / 2, 9, 0.3, 4.5); }
+    else g.rect(px + 3, py + 3, CELL - 6, CELL - 6);
+    g.stroke();
+  });
+  const first = (A.cells || [])[0];
+  if (first) { const [x, y] = first.split('_').map(Number); g.setLineDash([]); g.font = '600 12px system-ui, sans-serif'; g.fillStyle = '#fff'; g.shadowColor = '#000'; g.shadowBlur = 3; g.fillText(A.n || '', x * CELL + 4, y * CELL - 4); }
+}
 // Размещение: «от себя» — конус, линия, куб тянутся от существа к указателю; сфера и куб на расстоянии — центр под указателем
 function castFollow(mx, my) {
   const A = cast.area, src = cast.caster && game.tokens[cast.caster];
+  if (A.shape === 'wall') { wallFollow(mx, my); return; }
   if (A.shape === 'target' || A.shape === 'aura') return;
   if ((A.shape === 'cone' || A.shape === 'line' || (A.shape === 'cube' && cast.self)) && src) {
     const s = src.size || 1, cx = src.x + s / 2, cy = src.y + s / 2;
@@ -2046,6 +2205,12 @@ function castFollow(mx, my) {
 function castInRange() {
   const A = cast.area, src = cast.caster && game.tokens[cast.caster];
   if (cast.moveK) return Math.hypot(A.ox - cast.orig.x, A.oy - cast.orig.y) * FT() <= cast.moveFt + 0.1;
+  // Стена: начальная точка (или центр кольца) — в пределах дистанции
+  if (A.shape === 'wall') {
+    if (!src || !cast.range) return true;
+    const p = A.mode === 'ring' ? [Math.floor(A.cx), Math.floor(A.cy)] : A.p0 || (A.pts || [])[0] || A.cur;
+    return !p || distFt(src, { x: p[0], y: p[1], size: 1 }) <= cast.range;
+  }
   if (!src || !cast.range || cast.self || A.shape === 'aura') return true;
   if (A.shape === 'target') { const ids = areaTokens(A); return ids.length > 0 && ids.every((id) => distFt(src, game.tokens[id]) <= cast.range); }
   const cx = A.shape === 'cube' ? A.ox + aLen(A) / 2 : A.ox;
@@ -2063,6 +2228,14 @@ function startCast(c) {
     area: { n: I.n, shape: I.shape, size: I.size, width: I.width || 5, color: colorFor(I.dtype), from: I.shape === 'aura' ? c.caster : null } };
   if (I.shape === 'aura') { cast.area.ox = 0; confirmCast(); return; }
   if (I.shape === 'target' && (I.nT || 1) > 1) cast.area.tgts = [];
+  // Стена: режим разметки, наибольшая длина в клетках, радиус кольца; опасная сторона — по умолчанию «первая»
+  if (I.shape === 'wall' && I.wall) {
+    Object.assign(cast.area, { mode: (I.wall.modes || ['line'])[0], maxC: Math.max(1, Math.round((I.wall.len || 30) / FT())), ringR: Math.max(1, (I.wall.ring || 20) / 2 / FT()),
+      p0: null, pts: [], cells: [], band: [], side: 1, wall: I.wall });
+    aim = null; renderAll();
+    app.toast(`🧱 ${esc(I.n)}: ${cast.area.mode === 'ring' ? 'наведите центр кольца и нажмите' : 'нажмите на начало стены, затем на конец'} · режим — кнопками сверху · Esc — отмена`);
+    return;
+  }
   aim = null;
   renderAll();
   app.toast(I.shape === 'target' ? `✨ ${esc(I.n)}: ${(I.nT || 1) > 1 ? `выберите до ${I.nT} целей и нажмите «Готово»` : 'нажмите на цель'}` : `✨ ${esc(I.n)}: наведите область и нажмите на поле · Esc — отмена`);
@@ -2154,8 +2327,16 @@ function confirmCast() {
   const nameHtml = (id) => `${esc(tok(id).name)}${allies.includes(id) && !friendly ? ' (союзник)' : ''}`;
   const descr = friendly ? (F.heal ? `Лечение ${esc(I.f)}${I.addMod ? ' + модификатор' : ''}` : `${esc(F.fx.n)}${I.cn ? ' · концентрация' : ''}`)
     : `${I.save ? `Спасбросок <b>${AB_N[I.save]}</b>, СЛ <b>${I.dc}</b>` : 'Без спасброска'}${I.f ? ` · ${esc(I.f)} ${esc(I.dtype || '')}${I.save ? (I.half ? ', половина при успехе' : ', при успехе — без урона') : ''}` : ''}${F && F.fail && F.fail.cond ? ` · при провале: ${condName(F.fail.cond).toLowerCase()}` : ''}`;
+  // Стена с опасной стороной: какая сторона жжёт (у прямой — по направлению, у кольца — внутри или снаружи)
+  let sideHtml = '';
+  if (A.shape === 'wall' && I.wall && I.wall.side) {
+    const c = (A.cells || []).map((k) => k.split('_').map(Number)), [x0, y0] = c[0] || [0, 0], [x1, y1] = c[c.length - 1] || [0, 0], nx = -(y1 - y0), ny = x1 - x0;
+    const dirN = (s) => (Math.abs(ny) >= Math.abs(nx) ? (ny * s < 0 ? '↑ сверху' : '↓ снизу') : (nx * s < 0 ? '← слева' : '→ справа'));
+    const opts = A.mode === 'ring' ? [[1, '◎ внутри кольца'], [-1, '◯ снаружи']] : [[1, dirN(1)], [-1, dirN(-1)]];
+    sideHtml = `<div class="row gap wrap mt"><span class="small">Опасная сторона (${fmtFt(I.wall.side)}):</span>${opts.map(([v, n]) => `<label class="check"><input type="radio" name="wSide" value="${v}" ${A.side === v ? 'checked' : ''}> ${n}</label>`).join('')}</div>`;
+  }
   app.openModal(`<h2>✨ ${esc(I.n)}</h2>
-    <p class="small">${descr}</p>
+    <p class="small">${descr}</p>${sideHtml}
     ${!ids.length ? '<p class="muted">В области никого нет.</p>'
       : pick ? `<div class="atk-ways">${ids.map((id) => `<label class="check"><input type="checkbox" data-tg="${id}" ${allies.includes(id) === friendly ? 'checked' : ''}> ${nameHtml(id)}</label>`).join('')}</div>
         <p class="muted small">Это заклинание затрагивает только выбранных вами существ${F && F.n ? ` (не больше ${F.n})` : ''}.</p>`
@@ -2164,6 +2345,7 @@ function confirmCast() {
         ${allies.length ? '<p class="small warn-text">⚠ В области союзники — они тоже получат урон.</p>' : ''}`}
     <div class="modal-actions"><button id="cBack">Назад</button><button class="primary" id="cOk">✨ Сотворить</button></div>`);
   $('#cBack').onclick = () => { app.closeModal(); if (A.shape === 'aura') cancelCast(); };
+  $$('input[name="wSide"]').forEach((r) => r.addEventListener('change', () => { A.side = +r.value; A.band = wallBand(A); drawAreas(); }));
   $('#cOk').onclick = () => {
     let chosen = pick ? $$('[data-tg]').filter((x) => x.checked).map((x) => x.dataset.tg) : ids;
     if (F && F.n && A.shape !== 'target' && chosen.length > F.n) { app.toast(`Не больше ${F.n} существ`); chosen = chosen.slice(0, F.n); }
@@ -2211,8 +2393,14 @@ function doCastArea(chosen, gated) {
     expr: (roll && roll.expr) || I.f || '', dmg: roll ? roll.dmg || roll.total || 0 : 0, dmgDetail: roll ? roll.dmgDetail || roll.detail || '' : '', dtype: I.dtype || '', keep, t: Date.now(),
     pick: !!I.pick, ck: src ? team(src) : '', from: c.caster || null, spell: I.n, conc, until,
     fail: F && F.fail ? F.fail : null, rep: F && F.rep && I.save ? { abil: I.save, dc: I.dc } : null };
+  // Стена: только её клетки, опасная сторона и свойства; служебное разметки не храним
+  if (entry.shape === 'wall') {
+    ['p0', 'pts', 'cur', 'maxC', 'preview'].forEach((f) => delete entry[f]);
+    entry.wall = I.wall; entry.keep = true;
+    if (I.wall && I.wall.hp) entry.seg = Object.fromEntries((entry.cells || []).map((c) => [c, I.wall.hp]));
+  }
   // Постоянная область (spellmech.js): правила срабатывания, кто уже внутри — они своё при сотворении прошли
-  if (I.zone && keep) {
+  if (I.zone && entry.keep) {
     entry.z = { ...I.zone };
     if (I.zone.fail && !entry.fail) entry.fail = I.zone.fail;
     entry.zin = areaTokens(entry);
@@ -2229,7 +2417,7 @@ function doCastArea(chosen, gated) {
   // Способность существа с перезарядкой (дыхание) — до броска к6 в начале его хода
   if (c.npcAct != null && src && ((src.acts || [])[c.npcAct] || {}).rech) R.update(ref(gpath(`tokens/${c.caster}/rech`)), { [c.npcAct]: 1 }).catch(() => {});
   addLog({ kind: 'area', who: entry.who, txt: `✨ ${entry.n}${entry.dmg ? ` — ${entry.dmg} ${entry.dtype || ''}` : ''}${I.save ? ` · спасбросок ${AB_N[I.save]} СЛ ${entry.dc}` : ''}${chosen.length ? ` · цели: ${chosen.map((id) => game.tokens[id].name).join(', ')}` : ''}`,
-    detail: entry.dmgDetail, fx: fxShape(entry) });
+    detail: entry.dmgDetail, fx: entry.shape === 'wall' ? null : fxShape(entry) });
   if (!keep && !entry.tg) setTimeout(() => R.remove(ref(gpath(`areas/${k}`))).catch(() => {}), 8000);
   cast = null; hint('');
   renderAll();
@@ -2339,7 +2527,21 @@ const turnKey = () => (inFight() ? `${game.init.round || 1}:${game.init.turn || 
 const zoneSeen = new Map(), zoneFired = new Map(), zonePos = new Map();
 let zoneTurnLast = '', zoneCurLast = null;
 // Кого область задевает: живые, видимые; у «выборочных» (Духовные стражи) — не союзники заклинателя
-const zoneMembers = (A) => areaTokens(A).filter((id) => !A.pick || !A.ck || team(game.tokens[id]) !== A.ck);
+// Стена огня: в конце хода жжёт и тех, кто в 10 фт с опасной стороны (A.band)
+function zoneMembers(A, why) {
+  let ids = areaTokens(A);
+  if (A.shape === 'wall' && why === 'end' && (A.band || []).length) {
+    const band = new Set(A.band);
+    Object.entries(game.tokens).forEach(([id, t]) => {
+      if (ids.includes(id) || isDead(t) || (t.hidden && !isDM())) return;
+      for (let dx = 0; dx < (t.size || 1); dx++) for (let dy = 0; dy < (t.size || 1); dy++) if (band.has(`${t.x + dx}_${t.y + dy}`)) { ids.push(id); return; }
+    });
+  }
+  return ids.filter((id) => !A.pick || !A.ck || team(game.tokens[id]) !== A.ck);
+}
+// Радужная стена: семь слоёв — каждый свой спасбросок
+const PRISM = [['dex', '12d6', 'огнём', 'красный'], ['dex', '12d6', 'кислотой', 'оранжевый'], ['dex', '12d6', 'электричеством', 'жёлтый'], ['dex', '12d6', 'ядом', 'зелёный'],
+  ['dex', '12d6', 'холодом', 'синий'], ['con', '', '', 'индиго', { n: 'Окаменение', ic: '🗿', cond: 'restrained' }], ['wis', '', '', 'фиолетовый', { n: 'Радужная слепота', ic: '🙈', cond: 'blinded' }]];
 const rollZone = (expr, n) => (expr ? app.mute(() => app.rollFormula(expr, n)) : null);
 function zoneFire(k, A, id, why) {
   const t = game.tokens[id], Z = A.z || {};
@@ -2352,6 +2554,13 @@ function zoneFire(k, A, id, why) {
   if (why === 'start' && Z.startDmg) {
     const r = rollZone(Z.startDmg, A.n);
     if (r && r.total) addLog({ kind: 'dmg', who: A.who, txt: `${A.n} (${WHY.start})`, tgt: id, tgtName: t.name, dmg: r.total, dtype: Z.startType || '', detail: r.detail });
+    return;
+  }
+  if (Z.prism) {
+    PRISM.forEach(([abil, dice, dt, layer, fail]) => {
+      const pr = dice ? rollZone(dice, `${A.n}: ${layer}`) : null;
+      saveRequest(id, { n: `${A.n} — ${layer} слой`, who: A.who, abil, dc: A.dc || 15, half: !!dice, dmg: pr ? pr.total : 0, dmgDetail: pr ? pr.detail : '', dtype: dt, fail: fail || null, from: A.from || null });
+    });
     return;
   }
   const expr = Z.dmg || A.expr || '', r = rollZone(expr, A.n), dtype = Z.dtype || A.dtype || '';
@@ -2399,7 +2608,7 @@ function zoneTurn() {
     // Конец хода: эффекты «до конца текущего хода» (Зловонное облако) снимаются
     const eot = Object.entries(game.effects || {}).filter(([, e]) => e.tgt === prevId && e.eot);
     if (eot.length) R.update(ref(gpath('effects')), Object.fromEntries(eot.map(([k]) => [k, null]))).catch(() => {});
-    zones.forEach(([k, A]) => { if ((A.z.trig || []).includes('end') && zoneMembers(A).includes(prevId)) zoneFire(k, A, prevId, 'end'); });
+    zones.forEach(([k, A]) => { if ((A.z.trig || []).includes('end') && zoneMembers(A, 'end').includes(prevId)) zoneFire(k, A, prevId, 'end'); });
   }
   if (curId && game.tokens[curId]) {
     zones.forEach(([k, A]) => {
@@ -2507,6 +2716,8 @@ function renderSaves() {
     const pend = Object.entries(A.tg || {}).filter(([id, v]) => !v.done && game.tokens[id]);
     const mine = pend.filter(([id]) => game.tokens[id].kind === 'pc' && game.tokens[id].owner === user.uid);
     const own = dm || A.by === user.uid;
+    // Во весь экран панель висит над полем — только то, где нужно действие (спасброски, сдвиг своей области)
+    if (fullOn && !pend.length && !(own && A.z && A.z.move === 'bonus')) return;
     let html = `<div class="sv-area"><div class="row between"><b style="color:${A.color}">${esc(A.n)}</b><span>
       ${own && A.keep && A.z && A.z.move === 'bonus' ? `<button class="ghost" data-tbl="zoneMove" data-k="${k}" title="Сдвинуть бонусным действием (до ${fmtFt(A.z.moveFt || 30)})">⤧</button>` : ''}
       ${own && A.keep && A.abil && !A.z ? `<button class="ghost" data-tbl="areaAgain" data-k="${k}" title="Сработать снова: новый урон и спасброски">⟳</button>` : ''}
@@ -2525,7 +2736,16 @@ function renderCastBar() {
   if (!bar) return;
   bar.hidden = !cast;
   if (!cast) return;
-  const multi = cast.area.tgts;
+  const multi = cast.area.tgts, A = cast.area;
+  // Стена: режимы и что делать дальше
+  if (A.shape === 'wall') {
+    const MN = { line: '― прямая', path: '〰 по участкам', ring: '◯ кольцо' }, len = (A.cells || []).length * FT();
+    const step = A.mode === 'ring' ? 'наведите центр и нажмите' : A.mode === 'line' ? (A.p0 ? 'нажмите на конец' : 'нажмите на начало') : (A.pts || []).length ? 'следующая точка; готово — Enter или та же клетка' : 'нажмите на начало';
+    bar.innerHTML = `🧱 <b>${esc(cast.info.n)}</b>: ${step} · ${fmtFt(len)} из ${fmtFt(A.maxC * FT())}
+      <span>${((A.wall || {}).modes || []).length > 1 ? A.wall.modes.map((m) => `<button class="${A.mode === m ? 'on' : ''}" data-tbl="wallMode" data-m="${m}">${MN[m]}</button>`).join('') : ''}
+      ${A.mode === 'path' && (A.pts || []).length ? '<button class="primary" data-tbl="wallDone">Готово</button>' : ''}<button data-tbl="castOff">Отмена</button></span>`;
+    return;
+  }
   bar.innerHTML = `✨ <b>${esc(cast.info.n)}</b>: ${multi ? `цели ${multi.length}/${cast.info.nT}` : cast.area.shape === 'target' ? 'нажмите на цель' : 'наведите область и нажмите на поле'}
     <span>${multi && multi.length ? '<button class="primary" data-tbl="castDone">Готово</button>' : ''}<button data-tbl="castOff">Отмена</button></span>`;
 }
@@ -2656,7 +2876,11 @@ function syncEffects() {
   if (adrop.length) {
     adrop.forEach(([k]) => areaDropped.add(k));
     R.update(ref(gpath('areas')), Object.fromEntries(adrop.map(([k]) => [k, null]))).catch(() => {});
-    adrop.forEach(([, A]) => addLog({ kind: 'sys', txt: `✨ ${A.n}: ${A.until && round > A.until ? 'время действия вышло' : 'концентрация прервана'} — область исчезает` }));
+    adrop.forEach(([, A]) => addLog({ kind: 'sys', txt: `✨ ${A.n}: ${A.until && round > A.until ? (A.wall && A.wall.permanent ? 'концентрация продержалась до конца — стена остаётся навсегда' : 'время действия вышло') : 'концентрация прервана'} — ${A.wall && A.wall.permanent && A.until && round > A.until ? 'теперь это обычная стена' : 'область исчезает'}` }));
+    // Каменная стена, продержавшаяся всё время, становится частью карты
+    const perm = {};
+    if (isDM()) adrop.forEach(([, A]) => { if (A.shape === 'wall' && A.wall && A.wall.permanent && A.until && round > A.until) (A.cells || []).forEach((c) => { perm[`map/${c}`] = 'wall'; }); });
+    if (Object.keys(perm).length) R.update(ref(gpath()), perm).catch(() => {});
   }
 }
 // Толчок: на n клеток прочь от источника, пока не упрётся в стену, закрытую дверь, край поля или другое существо
@@ -2673,7 +2897,7 @@ function pushToken(id, fromId, n) {
     let blocked = false;
     for (let dx = 0; dx < s; dx++) for (let dy = 0; dy < s; dy++) {
       const k = `${nx + dx}_${ny + dy}`;
-      if ((TERRAIN[(game.map || {})[k]] || {}).block || doorShut(k)) blocked = true;
+      if ((TERRAIN[(game.map || {})[k]] || {}).block || doorShut(k) || WALL.block.has(k)) blocked = true;
       if (Object.entries(game.tokens).some(([oid, o]) => oid !== id && nx + dx >= o.x && nx + dx < o.x + (o.size || 1) && ny + dy >= o.y && ny + dy < o.y + (o.size || 1))) blocked = true;
     }
     if (blocked) break;
@@ -5078,6 +5302,7 @@ function stepMove(dx, dy) {
     const k = `${x + i}_${y + j}`, T = TERRAIN[(game.map || {})[k]];
     if (T && T.block) { keyHint(`Там ${T.n.toLowerCase()}`, id); return false; }
     if (doorShut(k)) { keyHint('Дверь закрыта', id); return false; }
+    if (WALL.block.has(k)) { keyHint('Там стена', id); return false; }
     if (occ.has(k) && !forced) { keyHint('Клетка занята', id); return false; }
   }
   const cost = reachMap(t.x, t.y, FT() * 4, forced ? null : occ, mv && mv.prone, forced ? null : zoneDiff(id)).get(`${x}_${y}`);
@@ -5158,6 +5383,7 @@ function keyOk() {
     }
     cast.area.tgt = kbdPick; kbdPick = null; confirmCast(); return;
   }
+  if (cast.area.shape === 'wall') { if (cast.area.cur) wallClick(); else keyHint('Наведите стену: мышью или клавишами шага', cast.caster); return; }
   if (cast.area.ox != null || cast.area.shape === 'aura') confirmCast();
   else keyHint('Наведите область: мышью или клавишами шага', cast.caster);
 }
@@ -5433,6 +5659,8 @@ async function onClick(e) {
     else if (a === 'saveMine') saveMine(b.dataset.k, b.dataset.id);
     else if (a === 'areaAgain') areaAgain(b.dataset.k);
     else if (a === 'zoneMove') zoneMoveStart(b.dataset.k);
+    else if (a === 'wallMode' && cast) wallSetMode(b.dataset.m);
+    else if (a === 'wallDone' && cast) { if ((cast.area.cells || []).length) confirmCast(); }
     else if (a === 'concSave') concSaveMine();
     else if (a === 'areaDel') await R.remove(ref(gpath(`areas/${b.dataset.k}`)));
     else if (a === 'logClear') { if (app.confirm('Очистить журнал для всех?')) await R.remove(ref(gpath('log'))); }

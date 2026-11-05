@@ -15,7 +15,34 @@
 //   move — 'bonus' (бонусным действием до moveFt) или 'auto' (сама уходит на autoFt от заклинателя в начале его хода);
 //   difficult — труднопроходима (для тех, кого задевает); perCell — урон за каждые 5 фт перемещения внутри (без спасброска);
 //   obscure — 'heavy' | 'light' (сильно/слабо заслонено), dark — магическая тьма, silence — тишина (блок 3).
+// wall — стена из клеток (shape: 'wall'): len — наибольшая длина в футах; modes — как ставить: 'line' (прямая), 'path' (ломаная
+//   из соседних участков), 'ring' (кольцо диаметром ring фт); block — непроходима (и полное укрытие), opaque — заслоняет обзор и свет,
+//   cover — укрытие для атак сквозь неё (+2/+5), difficult — сквозь неё — как по труднопроходимой, side — одна сторона опасна на
+//   side фт (выбирает заклинатель), wind — дальнобойные атаки оружием сквозь неё отклоняются, hp/ac — прочность участка (5 фт),
+//   permanent — если концентрация продержалась всё время, стена остаётся навсегда, style — как рисовать, prism — радужные слои
 const SPELL_MECH = {
+  // Стена огня: прямая до 60 фт или кольцо диаметром 20 фт; непрозрачна; при появлении — спасбросок Ловкости 5к8;
+  // одна сторона жжёт тех, кто заканчивает ход в 10 фт от неё или в стене, и тех, кто входит в стену — 5к8 без спасброска
+  'Wall of Fire': { shape: 'wall', range: 120, save: 'dex', half: true, dtype: 'огнём',
+    wall: { len: 60, ring: 20, modes: ['line', 'ring'], opaque: true, side: 10, style: 'fire' }, zone: { trig: ['enter', 'end'], noSave: true } },
+  // Терновая стена: 60 фт или кольцо 20 фт; заслоняет обзор; сквозь неё — вчетверо медленнее (здесь — как труднопроходимая);
+  // вошёл или закончил ход в ней — спасбросок Ловкости, 7к8 колющего
+  'Wall of Thorns': { shape: 'wall', range: 120, save: 'dex', half: true, dtype: 'колющим',
+    wall: { len: 60, ring: 20, modes: ['line', 'ring'], opaque: true, difficult: true, style: 'thorns' }, zone: { trig: ['enter', 'end'], difficult: true } },
+  // Стена клинков: 100 фт или кольцо 60 фт; укрытие на три четверти, труднопроходима; вход или конец хода в ней — Ловкость, 6к10
+  'Blade Barrier': { shape: 'wall', range: 90, save: 'dex', half: true, dtype: 'рубящим',
+    wall: { len: 100, ring: 60, modes: ['line', 'ring'], cover: 5, difficult: true, style: 'blades' }, zone: { trig: ['enter', 'end'], difficult: true } },
+  // Стена силы: до 10 панелей 10×10 фт подряд или купол; непроницаема, неразрушима обычным оружием
+  'Wall of Force': { shape: 'wall', range: 120, wall: { len: 100, ring: 20, modes: ['path', 'ring'], block: true, style: 'force' } },
+  // Каменная стена: 10 панелей 10×10 фт подряд, непрозрачна; участок — КД 15, 180 хитов; продержал концентрацию — навсегда
+  'Wall of Stone': { shape: 'wall', range: 120, wall: { len: 100, modes: ['path'], block: true, opaque: true, style: 'stone', hp: 180, ac: 15, permanent: true } },
+  // Ледяная стена: панели 10×10 фт или купол; при появлении — Ловкость, 10к6 холодом; участок — КД 12, 30 хитов
+  'Wall of Ice': { shape: 'wall', range: 120, save: 'dex', half: true, dtype: 'холодом',
+    wall: { len: 100, ring: 20, modes: ['path', 'ring'], block: true, style: 'ice', hp: 30, ac: 12 } },
+  // Стена ветров: 50 фт по земле; при появлении — Сила, 4к8 дробящего; дальнобойные атаки оружием сквозь неё отклоняются
+  'Wind Wall': { shape: 'wall', range: 120, save: 'str', half: true, dtype: 'дробящим', wall: { len: 50, modes: ['path'], wind: true, style: 'wind' } },
+  // Радужная стена: 90 фт или сфера 30 фт; непрозрачна; кто входит — спасброски против каждого из семи слоёв
+  'Prismatic Wall': { shape: 'wall', range: 60, wall: { len: 90, ring: 30, modes: ['line', 'ring'], opaque: true, style: 'prism', prism: true }, zone: { trig: ['enter'], prism: true } },
   // Духовные стражи: аура 15 фт, союзников заклинатель исключает; скорость остальных вдвое меньше
   'Spirit Guardians': { shape: 'aura', size: 15, save: 'wis', half: true, pick: true, dtype: 'излучением',
     zone: { trig: ['enter', 'end'], difficult: true } },

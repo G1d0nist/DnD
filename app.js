@@ -2805,7 +2805,7 @@ function spellArea(s) {
   return { shape: 'target', size: 0, width: 5, save: '', half: false, heal: false, pick: false,
     dtype: dmgWord(s.x), act: /бонусн/i.test(s.t || '') ? 'bonus' : /реакц/i.test(s.t || '') ? 'reaction' : 'action', ...(base || {}),
     ...Object.fromEntries(['shape', 'size', 'width', 'save', 'half', 'pick', 'act', 'dtype'].filter((k) => M[k] != null).map((k) => [k, M[k]])),
-    self, range: self ? 0 : M.range != null ? M.range : base ? base.range : /касан/i.test(r) ? 5 : parseInt(r) || 0, zone: M.zone || null };
+    self, range: self ? 0 : M.range != null ? M.range : base ? base.range : /касан/i.test(r) ? 5 : parseInt(r) || 0, zone: M.zone || null, wall: M.wall || null };
 }
 function spellAreaText(s) {
   const r = String(s.r || ''), t = `${r} ${s.x || ''}`, num = (re) => { const m = t.match(re); return m ? +m[1] : 0; };
