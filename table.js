@@ -1277,6 +1277,24 @@ function placeEncounter(x, y) {
   app.toast(`Поставлено существ: ${names.length}${enc.init ? ' · инициатива брошена' : ''}`);
 }
 
+// Заклинания существа из текста бестиария («Заклинания: «Духовные стражи», «Лечение ран»…») — те, что стол умеет применять:
+// с областью или спасброском (spellmech.js / описание) и эффекты из SPELL_FX. Атаки заклинаниями, телепорт и призывы — вручную
+function npcSpells(t) {
+  const tx = String(t.tr || (BEST().find((m) => m.e === t.mon) || {}).x || ''), mt = tx.match(/Заклинания:([^.]*)/i);
+  if (!mt || typeof SPELLS === 'undefined') return [];
+  const names = mt[1].split(/[,;]/).map((x) => x.replace(/[«»]/g, '').replace(/\(.*?\)/g, '').replace(/\s+\d+\s*раз.*$/i, '').trim().toLowerCase()).filter(Boolean);
+  return [...new Set(names)].map((n) => SPELLS.find((s) => s.n.toLowerCase() === n)).filter(Boolean)
+    .map((s) => ({ s, a: spellArea(s) })).filter(({ s, a }) => (a && !['atk', 'tp', 'summon'].includes(a.shape)) || (!a && SPELL_FX[s.e]));
+}
+// Мастер творит заклинание существа: СЛ — из бестиария (sdc), иначе 13; можно прервать «Контрзаклинанием»
+function castNpcSpell(id, s, a) {
+  const t = game.tokens[id], F = SPELL_FX[s.e] || null, shape = a ? a.shape : 'target';
+  const info = { ...(a || { shape: 'target', size: 0, width: 5, save: '', half: false, range: /касан/i.test(s.r || '') ? 5 : parseInt(s.r) || 30, act: 'action' }),
+    e: s.e, n: s.n, l: +s.l, f: s.f || '', u: s.u || '', cn: !!s.cn, dur: s.d || '', comp: s.c || '', sch: s.s || '', dc: +t.sdc || 13, spell: Math.max(1, +s.l || 1),
+    fxDef: F, nT: F && shape === 'target' ? F.n || 1 : 1, pick: (a && a.pick) || !!(F && F.heal), keepAlways: !!s.cn || (!/мгновен/i.test(s.d || '') && shape !== 'target') };
+  if (inFight()) R.update(ref(gpath(`econ/${id}`)), { [info.act === 'bonus' ? 'b' : 'a']: 1 }).catch(() => {});
+  startCast({ dm: true, caster: id, info, lvl: +s.l || 0 });
+}
 // Действия существа (мастер): атаки и способности-области; вне своего хода — реакцией
 // legend — легендарное действие: после хода другого существа, стоит 1–3 из запаса на раунд (одна атака, способность, перемещение)
 function openNpcAttack(id, legend) {
@@ -1296,6 +1314,7 @@ function openNpcAttack(id, legend) {
   }
   const rng = (r) => (r.near ? `${r.reach ? `${r.reach} фт / бросок ` : ''}${r.near}/${r.far} фт` : `досягаемость ${r.reach} фт`);
   const actOk = legend || (turn && (!fight || (!e.a && !(e.atk > 0))));
+  const nsp = legend ? [] : npcSpells(t);
   app.openModal(`<h2>${legend ? '👑' : '⚔'} ${esc(t.name)}${legend ? ': легендарное действие' : ''}</h2>
     ${legend ? `<div class="atk-ways">${[1, 2, 3].filter((n) => n <= legLeft).map((n) => `<label class="check"><input type="radio" name="legCost" value="${n}" ${n === 1 ? 'checked' : ''}> стоит ${n}</label>`).join('')}</div>
       <p class="muted small">Осталось ${legLeft} из ${+t.leg}. Атака — одна; сильные способности обычно стоят 2.</p>`
@@ -1304,6 +1323,7 @@ function openNpcAttack(id, legend) {
       ${acts.map((a, i) => `<button class="atk-pick" data-act-i="${i}" ${actOk && !rech[i] ? '' : 'disabled'}><b>${esc(a.n)}</b><span class="muted small">${SHAPE_N[a.shape]} ${a.size} фт · спасбросок ${AB_N[a.save]} СЛ ${a.dc} · ${esc(a.f)} ${esc(a.dtype)}${a.rech ? ` · перезарядка ${a.rech}–6${rech[i] ? ' — не перезарядилось' : ''}` : ''}${a.sp ? ` · заклинание ${a.sp} ур.` : ''} · ${legend ? 'легендарное' : 'действие'}</span></button>`).join('')}
       ${legend ? '<button class="atk-pick" data-leg-other><b>Другое</b><span class="muted small">Перемещение, особое умение — двигайте фишку сами (🔓 свободное перемещение)</span></button>'
         : SPECIAL_ATK.map((s) => `<button class="atk-pick" data-atk="${s.id}"><b>${s.n}</b><span class="muted small">${s.d}</span></button>`).join('')}
+      ${!legend && nsp.length ? `<div class="muted small mt">✨ Заклинания существа (СЛ ${+t.sdc || 13})</div>${nsp.map(({ s, a: ar }, i) => `<button class="atk-pick" data-nsp="${i}" ${actOk ? '' : 'disabled'}><b>${esc(s.n)}</b><span class="muted small">${s.l ? `${s.l} ур.` : 'заговор'} · ${ar ? `${SHAPE_N[ar.shape] || ar.shape}${ar.size ? ` ${ar.size} фт` : ''}${ar.save ? ` · спасбросок ${AB_N[ar.save]}` : ''}` : 'на цель'}${s.f ? ` · ${esc(s.f)}` : ''}${s.cn ? ' · концентрация' : ''}</span></button>`).join('')}` : ''}
       ${!atks.length && !acts.length ? '<p class="muted">У существа нет атак — добавьте их, поставив существо из бестиария или указав атаку при создании.</p>' : ''}</div>
     <div class="modal-actions"><button data-act="closeModal">Отмена</button></div>`);
   // Легендарное действие оплачивается сразу при выборе
@@ -1319,6 +1339,7 @@ function openNpcAttack(id, legend) {
     aim = { from: id, npc: true, atk: A, way, left: way === 'action' ? (e.atk > 0 ? e.atk : per) : 1 };
     renderAll();
   }));
+  $$('[data-nsp]').forEach((b) => b.addEventListener('click', () => { const x = nsp[+b.dataset.nsp]; app.closeModal(); castNpcSpell(id, x.s, x.a); }));
   $$('[data-act-i]').forEach((b) => b.addEventListener('click', () => {
     const i = +b.dataset.actI, a = acts[i], self = a.shape === 'cone' || a.shape === 'line' || a.shape === 'aura' || a.shape === 'cube';
     if (legend) payLeg(a.n);
@@ -2006,11 +2027,16 @@ function attackTarget(tid) {
   const ac = acOf(T, tid) + cov.bonus;
   // Скрытая атака: раз в ход; союзник атакующего (в сознании) рядом с целью
   const allyNear = Object.entries(game.tokens).some(([k, o]) => k !== a.from && k !== tid && team(o) === team(me_) && !incapTok(o) && distFt(o, T) <= 5);
-  const ro = { target: T.name, ac, adv, dis, dice: fxDice(a.from), autoCrit: d <= 5 && (tc.includes('paralyzed') || tc.includes('unconscious')),
+  // Ауры и эффекты: Святая аура и Предвидение — помеха атакующим, Предвидение — преимущество своим атакам, Защита от оружия — −1к4
+  const bA = buffsOf(a.from), bT = buffsOf(tid);
+  if (bT.atkDis) dis.push('цель под защитой');
+  if (bA.atkAdv) adv.push('предвидение');
+  const ro = { target: T.name, ac, adv, dis, dice: [...fxDice(a.from), ...(bT.ward ? [{ e: '-1d4', n: 'Защита от оружия' }] : [])], autoCrit: d <= 5 && (tc.includes('paralyzed') || tc.includes('unconscious')),
     sneakOk: !econ(a.from).sa, allyNear, maneuver: a.man || '', smite: a.smite || '',
-    // Метка охотника и Сглаз заклинателя на этой цели, Увеличение атакующего (+1к4 оружием)
+    // Метка охотника и Сглаз заклинателя на этой цели, Увеличение, Божественная благосклонность, Мантия крестоносца (+кость оружием)
     dmgDice: [...fxOf(tid).filter(([, e]) => e.mark && e.from === a.from).map(([, e]) => ({ e: e.mark, n: e.n })),
-      ...(!A.spell ? fxOf(a.from).filter(([, e]) => e.dmgDie).map(([, e]) => ({ e: e.dmgDie, n: e.n })) : [])] };
+      ...(!A.spell ? fxOf(a.from).filter(([, e]) => e.dmgDie).map(([, e]) => ({ e: e.dmgDie, n: e.n })) : []),
+      ...(!A.spell && bA.dmgDie ? [{ e: bA.dmgDie, n: 'Мантия крестоносца' }] : [])] };
   let res = a.npc ? npcAttackRoll(me_, A, ro)
     : A.lvlSpell ? app.mute(() => app.spellRoll(a.charId, { ...ro, n: A.n, bonus: A.bonus, dmg: A.dmg, type: A.type, miss: A.miss, emp: A.emp || 0 }))
     : app.mute(() => app.attack(a.charId, A.id, ro));
@@ -3099,7 +3125,7 @@ function saveMine(k, tid) {
   const dexAdv = A.abil === 'dex' && (econ(tid).dodge || fxOf(tid).some(([, e]) => e.dexAdv));
   // Спутник бросает свой спасбросок (из статблока зверя), урон — в его карточку
   const r = t.comp ? (() => { const d = die(20), b = +((t.sv || {})[A.abil]) || 0; return { total: d + b, ok: d + b >= A.dc, detail: `к20 [${d}] ${fmtMod(b)}` }; })()
-    : app.mute(() => app.rollSave(m.charId, A.abil, A.dc, { label: A.n, adv: dexAdv ? ['Уклонение / Ускорение'] : [], dis: A.tg[tid].dis ? ['Повышенное заклинание'] : [], dice: saveDice(tid) }));
+    : app.mute(() => app.rollSave(m.charId, A.abil, A.dc, { label: A.n, adv: [...(dexAdv ? ['Уклонение / Ускорение'] : []), ...(buffsOf(tid).saveAdv ? ['аура / предвидение'] : [])], dis: A.tg[tid].dis ? ['Повышенное заклинание'] : [], dice: saveDice(tid) }));
   if (!r) return;
   useInsp(tid);
   const dmg0 = saveDmg(A, r.ok, !t.comp && (app.summary(m.charId) || {}).evasion), dmg = resists(tid, A.dtype) ? Math.floor(dmg0 / 2) : dmg0;
@@ -3141,7 +3167,7 @@ function saveNpcs(k) {
     let ok, total, note = '';
     if ((A.abil === 'str' || A.abil === 'dex') && ((t.hpMax && (+t.hp || 0) <= 0) || cond.some((x) => AUTO_FAIL_T.includes(x)))) { ok = false; total = '—'; note = ' (автопровал)'; }
     else {
-      const dexAdv = A.abil === 'dex' && (econ(id).dodge || fxOf(id).some(([, e]) => e.dexAdv));
+      const dexAdv = (A.abil === 'dex' && (econ(id).dodge || fxOf(id).some(([, e]) => e.dexAdv))) || buffsOf(id).saveAdv;
       const hdis = (cond.includes('restrained') && A.abil === 'dex') || !!(A.tg[id] || {}).dis;
       const mode = !!dexAdv === hdis ? 0 : dexAdv ? 1 : -1;
       const d1 = die(20), d2 = die(20), nat = mode > 0 ? Math.max(d1, d2) : mode < 0 ? Math.min(d1, d2) : d1;
@@ -3513,6 +3539,15 @@ const SPELL_FX = {
   'See Invisibility': { n: 1, fx: { n: 'Видение невидимого', ic: '👁', seeInv: true } },
   'True Seeing': { n: 1, fx: { n: 'Истинное зрение', ic: '👁', ts: 120 } },
   'Darkvision': { n: 1, fx: { n: 'Тёмное зрение', ic: '🌙', dv: 150 } },
+  // Состояния и усиления, добавленные проверкой всех заклинаний
+  'Weird': { fail: { n: 'Зловещий ужас', ic: '😱', cond: 'frightened' }, rep: true },
+  'Synaptic Static': { fail: { n: 'Синаптический разряд', ic: '🧠', die: '-1d6' }, rep: true },
+  'Contagion': { n: 1, fail: { n: 'Заражение', ic: '🤢', cond: 'poisoned' } },
+  'Divine Favor': { n: 1, fx: { n: 'Божественная благосклонность', ic: '✨', dmgDie: '1d4' } },
+  'Elemental Weapon': { n: 1, fx: { n: 'Стихийное оружие', ic: '🗡', dmgDie: '1d4' } },
+  'Blade Ward': { n: 1, fx: { n: 'Защита от оружия', ic: '🛡', ward: true } },
+  'Protection from Poison': { n: 1, fx: { n: 'Защита от яда', ic: '🧪', resist: ['poison'] } },
+  'Foresight': { n: 1, fx: { n: 'Предвидение', ic: '🔮', atkAdv: true, atkDis: true, saveAdv: true } },
   'Fear': { fail: { n: 'Ужас', ic: '😱', cond: 'frightened' }, rep: true },
   // Полёт: скорость полёта 60 фт (высота — кнопками ▲▼); Левитация: цель поднимается на 20 фт, ходить не может
   'Fly': { n: 1, up: 1, fx: { n: 'Полёт', ic: '🕊', fly: 60 } },
@@ -3559,12 +3594,31 @@ const SPELL_FX = {
   "Hunter's Mark": { n: 1, fx: { n: 'Метка охотника', ic: '🎯', mark: '1d6', markType: 'силовым полем' } },
   'Hex': { n: 1, fx: { n: 'Сглаз', ic: '🧿', mark: '1d6', markType: 'некротической энергией' } },
 };
+// Лист показывает в карточке заклинания, что стол сделает с ним сам
+window.dndTableFx = SPELL_FX;
 // Виды урона для сопротивлений: слово в записи урона → ключ
 const DMG_KEY = [[/огн/, 'fire'], [/холод/, 'cold'], [/электр|молни/, 'lightning'], [/звук|гром/, 'thunder'], [/кисл/, 'acid'], [/яд/, 'poison'], [/дробящ|колющ|рубящ/, 'bps'],
   [/излуч/, 'radiant'], [/некрот/, 'necrotic'], [/психи/, 'psychic'], [/силов/, 'force']];
 const dmgKeys = (t) => DMG_KEY.filter(([re]) => re.test(String(t || '').toLowerCase())).map(([, k]) => k);
 // Сопротивление цели этому урону (от заклинаний): половина
-const resists = (id, dtype) => { const ks = dmgKeys(dtype); return ks.length > 0 && fxOf(id).some(([, e]) => (e.resist || []).some((r) => ks.includes(r))); };
+const resists = (id, dtype) => { const ks = dmgKeys(dtype); return ks.length > 0 && (fxOf(id).some(([, e]) => (e.resist || []).some((r) => ks.includes(r))) || (auraBuff(id).resist || []).some((r) => ks.includes(r))); };
+// Ауры-благословения (Святая аура, Круг силы, Мантия крестоносца, Аура жизни): союзники заклинателя внутри области
+function auraBuff(id) {
+  const t = game.tokens[id], out = {};
+  if (!t) return out;
+  Object.values(game.areas || {}).forEach((A) => {
+    const b = A.z && A.z.buff;
+    if (!b || !A.keep || (A.ck && A.ck !== team(t)) || (A.from !== id && !areaTokens(A).includes(id))) return;
+    Object.entries(b).forEach(([k, v]) => { out[k] = Array.isArray(v) ? [...(out[k] || []), ...v] : v; });
+  });
+  return out;
+}
+// Флаги существа от аур и эффектов: saveAdv, atkDis (атаки по нему с помехой), atkAdv (его атаки с преимуществом), ward (−1к4 атакующим)
+function buffsOf(id) {
+  const b = { ...auraBuff(id) };
+  fxOf(id).forEach(([, e]) => ['saveAdv', 'atkDis', 'atkAdv', 'ward'].forEach((k) => { if (e[k]) b[k] = true; }));
+  return b;
+}
 // Снять «невидимость до первого действия» (Невидимость, Убежище) — атаковал или сотворил заклинание
 function breakAct(id) {
   const ks = fxOf(id).filter(([, e]) => e.breakAct).map(([k]) => k);

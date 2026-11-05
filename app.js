@@ -1590,10 +1590,35 @@ function renderSpells() {
         <span class="li-sub">${esc(s.t || '')}${s.r ? ' · ' + esc(s.r) : ''}</span>
         <span class="btns"><button data-act="castSpell" data-id="${s.id}">✨ Сотворить</button>
         <button class="ghost" data-act="editSpell" data-id="${s.id}" title="Изменить">✎</button><button class="ghost" data-act="delSpell" data-id="${s.id}" title="Удалить">✕</button></span>
-      </div>${openSet.has(s.id) ? `<div class="li-desc">${spellMetaHtml(s)}<p>${esc(s.x || '')}</p></div>` : ''}</div>`).join('');
+      </div>${openSet.has(s.id) ? `<div class="li-desc">${spellMetaHtml(s)}<p>${esc(s.x || '')}</p>${tableHintHtml(s)}</div>` : ''}</div>`).join('');
     html += '</div></div>';
   }
   $('#spellList').innerHTML = html || '<p class="muted">Заклинаний нет. Добавьте их из справочника или создайте своё.</p>';
+}
+// «Как работает на столе»: что игровой стол делает с заклинанием сам — область, спасбросок, зона, эффект, призыв
+function tableHintHtml(s) {
+  const a = spellArea(s), F = (window.dndTableFx || {})[s.e], parts = [];
+  const SH = { sphere: 'сфера', cone: 'конус', line: 'линия', cube: 'куб', aura: 'область вокруг вас', target: 'цель', wall: 'стена на поле', multi: 'несколько областей',
+    atk: 'атака заклинанием (бросок по КД)', tp: 'телепорт: выберите клетку', summon: 'существо на поле: ставите и водите сами' };
+  const svN = (k) => (Object.entries(SAVE_AB).find(([, v]) => v === k) || [''])[0];
+  if (a) {
+    parts.push(`${SH[a.shape] || a.shape}${a.size && !['target', 'summon', 'tp', 'atk'].includes(a.shape) ? ` ${a.size} фт` : ''}`);
+    if (a.save) parts.push(`спасбросок ${svN(a.save)}${s.f ? (a.half ? ', успех — половина урона' : ', успех — без урона') : ''}`);
+    if (a.rays) parts.push(`лучей: ${a.rays}${a.upRays ? ` (+${a.upRays} за уровень)` : ''}`);
+    if (a.darts) parts.push(`дротиков: ${a.darts}, попадают сами`);
+    const z = a.zone || {};
+    if (z.trig && z.trig.length) parts.push('остаётся на поле: срабатывает при входе и в ходах существ');
+    if (z.difficult) parts.push('труднопроходимая местность');
+    if (z.obscure === 'heavy') parts.push(z.dark ? 'магическая тьма: не видно, гасит свет' : 'сильно заслонено: сквозь не видно');
+    if (z.silence) parts.push('внутри нельзя заклинания со словесным компонентом');
+    if (z.buff) parts.push('аура: усиливает союзников внутри');
+    if (a.light) parts.push(`свет ${a.light.b}/${a.light.d} фт`);
+    if (a.wall) parts.push(`${a.wall.block ? 'непроходима' : 'проходима'}${a.wall.opaque ? ', непрозрачна' : ''}${a.wall.side ? ', урон с одной стороны' : ''}`);
+  }
+  if (F) parts.push(F.heal ? 'лечение выбранных целей' : F.fx ? `эффект «${F.fx.n}» на целях${F.up ? ` (+${F.up} цель за уровень)` : ''}` : F.fail ? `провал — «${F.fail.n}»${F.rep ? ', повторный спасбросок в конце хода' : ''}` : '');
+  if (!a && !F) parts.push(/атак[аи] заклинанием/i.test(s.x || '') ? 'атака — кнопкой «⚔ Атака»' : 'не автоматизировано — применяйте и отмечайте вручную');
+  if (s.cn) parts.push('концентрация: прервётся — эффект и область пропадут');
+  return `<div class="small muted mt">🎲 На столе: ${parts.filter(Boolean).join(' · ')}</div>`;
 }
 function spellMetaHtml(s) {
   return `<div class="spell-meta"><span>Школа: <b>${esc(s.s || '—')}</b></span><span>Время: <b>${esc(s.t || '—')}</b></span><span>Дистанция: <b>${esc(s.r || '—')}</b></span>

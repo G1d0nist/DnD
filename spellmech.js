@@ -83,6 +83,24 @@ const SPELL_MECH = {
   'Fog Cloud': { shape: 'sphere', size: 20, upSize: 20, range: 120, zone: { trig: [], obscure: 'heavy' } },
   // Тьма: сфера 15 фт магической тьмы — гасит свет, тёмное зрение не помогает
   'Darkness': { shape: 'sphere', size: 15, range: 60, zone: { trig: [], dark: true, obscure: 'heavy' } },
+  // Области, которые описание не даёт разобрать: сфера, спасбросок, вид урона
+  'Vitriolic Sphere': { shape: 'sphere', size: 20, range: 150, save: 'dex', half: true, dtype: 'кислотой' },
+  'Synaptic Static': { shape: 'sphere', size: 20, range: 120, save: 'int', half: true, dtype: 'психической энергией' },
+  'Weird': { shape: 'sphere', size: 30, range: 120, save: 'wis', half: true, dtype: 'психической энергией' },
+  'Delayed Blast Fireball': { shape: 'sphere', size: 20, range: 150, save: 'dex', half: true, dtype: 'огнём' },
+  'Contagion': { shape: 'target', range: 5, save: 'con', dtype: 'некротической энергией' },
+  'Heat Metal': { shape: 'target', range: 60, dtype: 'огнём' },
+  "Yolande's Regal Presence": { shape: 'aura', size: 10, save: 'wis', half: true, pick: true, dtype: 'психической энергией',
+    zone: { trig: ['enter', 'end'], fail: { n: 'Царственное присутствие', cond: 'prone', once: true } } },
+  "Jallarzi's Storm of Radiance": { shape: 'sphere', size: 10, range: 120, save: 'con', half: true, dtype: 'излучением',
+    zone: { trig: ['enter', 'end'], fail: { n: 'Буря сияния', ic: '☀', cond: 'blinded', rounds: 1 } } },
+  // Ауры-благословения: ходят с заклинателем, действуют на его союзников внутри (zone.buff):
+  // saveAdv — преимущество на спасброски, atkDis — атаки по ним с помехой, dmgDie — +кость к урону оружием, resist — сопротивление
+  'Holy Aura': { shape: 'aura', size: 30, zone: { trig: [], buff: { saveAdv: true, atkDis: true } } },
+  'Circle of Power': { shape: 'aura', size: 30, zone: { trig: [], buff: { saveAdv: true } } },
+  "Crusader's Mantle": { shape: 'aura', size: 30, zone: { trig: [], buff: { dmgDie: '1d4' } } },
+  'Aura of Life': { shape: 'aura', size: 30, zone: { trig: [], buff: { resist: ['necrotic'] } } },
+  'Aura of Vitality': { shape: 'aura', size: 30, zone: { trig: [] } },
   // Дневной свет: сфера 60 фт яркого света и ещё 60 фт тусклого; рассеивает Тьму 3 уровня и ниже, которую задевает
   'Daylight': { shape: 'sphere', size: 60, range: 60, light: { b: 60, d: 60 }, dispel: 3, zone: { trig: [] } },
   // Пляшущие огоньки: четыре огонька, каждый — тусклый свет 10 фт; летают, ходить не мешают
