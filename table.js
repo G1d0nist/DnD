@@ -1851,10 +1851,16 @@ function attackTarget(tid) {
     // Метка охотника и Сглаз заклинателя на этой цели, Увеличение атакующего (+1к4 оружием)
     dmgDice: [...fxOf(tid).filter(([, e]) => e.mark && e.from === a.from).map(([, e]) => ({ e: e.mark, n: e.n })),
       ...(!A.spell ? fxOf(a.from).filter(([, e]) => e.dmgDie).map(([, e]) => ({ e: e.dmgDie, n: e.n })) : [])] };
-  const res = a.npc ? npcAttackRoll(me_, A, ro)
-    : A.lvlSpell ? app.mute(() => app.spellRoll(a.charId, { ...ro, n: A.n, bonus: A.bonus, dmg: A.dmg, type: A.type, miss: A.miss }))
+  let res = a.npc ? npcAttackRoll(me_, A, ro)
+    : A.lvlSpell ? app.mute(() => app.spellRoll(a.charId, { ...ro, n: A.n, bonus: A.bonus, dmg: A.dmg, type: A.type, miss: A.miss, emp: A.emp || 0 }))
     : app.mute(() => app.attack(a.charId, A.id, ro));
   if (!res) { aim = null; renderAll(); return; }
+  // Ищущее заклинание: промах — 1 очко чародейства и переброс к20 (один раз за сотворение)
+  if (A.lvlSpell && !res.hit && a.seek && app.spendSorc(a.charId, 1)) {
+    a.seek = false;
+    const r2 = app.mute(() => app.spellRoll(a.charId, { ...ro, n: `${A.n} (Ищущее)`, bonus: A.bonus, dmg: A.dmg, type: A.type, miss: A.miss, emp: A.emp || 0 }));
+    if (r2) { r2.extra = [...(r2.extra || []), `Ищущее заклинание: промах (${res.total}) переброшен`]; res = r2; }
+  }
   // Отражения: попадание — к6 за каждое оставшееся отражение, хоть одна 3+ — разбито отражение, а не цель
   const mir = res.hit && fxOf(tid).find(([, e]) => +e.mirror > 0);
   if (mir) {
@@ -2366,13 +2372,14 @@ function multiClick() {
 /* ---------- Атаки заклинаниями с ячейкой, телепорт, призыв ---------- */
 // Палящий луч, Направленный снаряд…: ячейка тратится сразу, потом — выбор целей, как у атаки (лучи — отдельные атаки)
 function startSpellAttack(c) {
-  const I = c.info, r = app.spendSpell(c.charId, I.id, c.slotKey);
+  const mm = c.meta || {}, I = c.info, r = app.spendSpell(c.charId, I.id, c.slotKey, { pts: mm.pts || 0 });
   if (!r) return;
   const L = r.castLvl || I.l, k = Math.max(0, L - I.l), rays = (I.rays || 1) + (I.upRays || 0) * k;
   const dmg = upDice(I.mdmg || I.f, I.up, k), rng = I.melee ? { reach: 5 } : { reach: 0, near: I.range || 120, far: I.range || 120 };
   castSpend(c); breakAct(c.caster);
-  aim = { from: c.caster, charId: c.charId, way: 'magic', left: rays, hitIds: [],
-    atk: { id: `sl:${I.id}`, n: `${I.n}${k ? ` (${L} ур.)` : ''}`, bonus: r.atk, dmg, type: I.dtype || '', rng, spell: true, lvlSpell: true, onHit: I.onHit || null, drain: I.drain || '', miss: I.miss || '', distinct: !!I.distinct } };
+  // Метамагия: Неуловимое — без «Контрзаклинания», Ищущее — переброс промаха, Усиленное — переброс костей урона
+  aim = { from: c.caster, charId: c.charId, way: 'magic', left: rays, hitIds: [], csOk: !!mm.subtle, seek: !!mm.seeking,
+    atk: { id: `sl:${I.id}`, n: `${I.n}${k ? ` (${L} ур.)` : ''}`, bonus: r.atk, dmg, type: I.dtype || '', rng, spell: true, lvlSpell: true, onHit: I.onHit || null, drain: I.drain || '', miss: I.miss || '', distinct: !!I.distinct, emp: mm.emp || 0 } };
   cast = null;
   renderAll();
   app.toast(`✨ ${esc(I.n)}: ${rays > 1 ? `${I.melee ? 'атак' : 'лучей'}: ${rays} — ` : ''}выберите цель (нажмите или Tab, Enter)`);
@@ -2393,7 +2400,7 @@ function tpClick() {
   if (distFt(src, { x: cur[0], y: cur[1], size: src.size || 1 }) > c.range) { app.toast(`Слишком далеко: до ${fmtFt(c.range)}`); return; }
   if (!freeCell(cur[0], cur[1], src.size || 1, c.caster)) { app.toast('Клетка занята или непроходима'); return; }
   const go = (pass) => {
-    if (c.charId) { if (!app.spendSpell(c.charId, c.info.id, c.slotKey)) return; }
+    if (c.charId) { if (!app.spendSpell(c.charId, c.info.id, c.slotKey, { pts: (c.meta || {}).pts || 0 })) return; }
     castSpend(c); breakAct(c.caster);
     floatText(c.caster, '✨', 'fx-heal');
     R.update(ref(gpath(`tokens/${c.caster}`)), { x: cur[0], y: cur[1] }).catch(() => {});
@@ -2442,11 +2449,11 @@ function summonClick() {
   A.placed.push(cur);
   if (A.placed.length < A.count) { drawAreas(); app.toast(`Поставлено ${A.placed.length} из ${A.count}`); return; }
   // Все места выбраны: ячейка, действие, токены
-  const r = c.charId ? app.spendSpell(c.charId, I.id, c.slotKey) : { castLvl: I.l, atk: 5, mod: 3, dc: 13, hpMax: 30 };
+  const r = c.charId ? app.spendSpell(c.charId, I.id, c.slotKey, { pts: (c.meta || {}).pts || 0 }) : { castLvl: I.l, atk: 5, mod: 3, dc: 13, hpMax: 30 };
   if (!r) return;
   castSpend(c); breakAct(c.caster);
   const L = r.castLvl || I.l, V = { L, M: r.mod, HP: r.hpMax }, k = Math.max(0, L - I.l), dm = isDM();
-  const until = inFight() && !/мгновен/i.test(I.dur || '') ? (game.init.round || 1) + durRounds(I.dur) : null, conc = I.cn ? c.caster : null, upd = {};
+  const until = inFight() && !/мгновен/i.test(I.dur || '') ? (game.init.round || 1) + durR(c) : null, conc = I.cn ? c.caster : null, upd = {};
   A.placed.forEach(([x, y], i) => {
     const key = R.push(ref(gpath('tokens'))).key, id = dm ? key : `pc_${user.uid}_s${key}`;
     let t;
@@ -2586,8 +2593,12 @@ function openCast(id) {
     if (F && F.fx) return ` · ${esc(F.fx.n)}${(F.n || 1) > 1 ? `, до ${F.n} целей` : ''}`;
     return `${s.save ? ` · спасбросок ${AB_N[s.save]} СЛ ${s.dc}` : ''}${s.f ? ` · ${esc(s.f)}${s.dtype ? ' ' + esc(s.dtype) : ''}` : ''}${F && F.fail && F.fail.cond ? ` · ${condName(F.fail.cond).toLowerCase()}` : ''}`;
   };
+  // Метамагия может выручить: Ускоренное — действие потрачено, но бонусное свободно; Неуловимое — в Тишине
+  const mi = app.metaInfo(m.charId) || { opts: [], pts: 0 };
+  const hasMeta = (s, k) => metaFor(s, SPELL_FX[s.e], mi).some((x) => x[0] === k) && mi.pts >= (META.find((x) => x[0] === k) || [])[2];
+  const castOk = (s) => (can(s.act) || (s.act === 'action' && can('bonus') && hasMeta(s, 'quickened'))) && (!(silenced(id) && needsV(s.comp)) || hasMeta(s, 'subtle'));
   app.openModal(`<h2>✨ Заклинание</h2>
-    <div class="list">${list.map((s) => `<button class="atk-pick" data-sp="${esc(s.id)}" ${can(s.act) && !(silenced(id) && needsV(s.comp)) ? '' : 'disabled'}>
+    <div class="list">${list.map((s) => `<button class="atk-pick" data-sp="${esc(s.id)}" ${castOk(s) ? '' : 'disabled'}>
       <b>${esc(s.n)} <span class="muted small">${s.l ? `${s.l} ур.` : 'заговор'}</span></b>
       <span class="muted small">${SHAPE_N[s.shape]}${s.size ? ` ${s.size} фт` : ''}${s.range ? ` · дистанция ${s.range} фт` : s.self ? ' · от себя' : ''}${what(s)} · ${ACT_N[s.act]}${silenced(id) && needsV(s.comp) ? ' · 🔇 в Тишине нельзя' : ''}</span></button>`).join('')
       || '<p class="muted">Нет подготовленных заклинаний, которые можно применить на столе.</p>'}</div>
@@ -2607,23 +2618,63 @@ const spellComp = (name) => ((typeof SPELLS !== 'undefined' && SPELLS.find((s) =
 function spellPick(id, I) {
   const m = me(), F = SPELL_FX[I.e];
   if (!m || !m.charId) return;
-  if (silenced(id) && needsV(I.comp)) { app.toast('🔇 В Тишине нельзя заклинания со словесным компонентом'); return; }
-  // Число целей растёт с уровнем ячейки («Благословение»: 3 + 1 за уровень выше 1)
-  const go = (slotKey, lvl) => {
+  const mi = app.metaInfo(m.charId) || { opts: [], pts: 0, cha: 1 };
+  const metas = metaFor(I, F, mi), hasSubtle = metas.some((x) => x[0] === 'subtle');
+  if (silenced(id) && needsV(I.comp) && !hasSubtle) { app.toast('🔇 В Тишине нельзя заклинания со словесным компонентом'); return; }
+  // Число целей растёт с уровнем ячейки («Благословение»: 3 + 1 за уровень выше 1); метамагия меняет дальность, действие, вид урона
+  const go = (slotKey, lvl, meta = {}) => {
     app.closeModal();
-    const k = Math.max(0, (lvl || I.l) - I.l);
+    const k = Math.max(0, (lvl || I.l) - I.l) + (meta.twinned ? 1 : 0);
     // Волшебная стрела: дротики (цели можно повторять); Цепная молния: первая цель и ещё до chain.n рядом с ней
     const nT = I.darts ? I.darts + k : I.chain ? 1 + I.chain.n + k : F && I.shape === 'target' ? (F.n || 1) + k * (F.up || 0) : 1;
-    startCast({ info: { ...I, fxDef: F || null, nT, dup: !!I.darts, pick: I.pick || !!(F && F.heal) }, caster: id, charId: m.charId, slotKey, lvl: lvl || I.l });
+    const info = { ...I, fxDef: F || null, nT, dup: !!I.darts, pick: I.pick || !!(F && F.heal) };
+    if (meta.quickened) info.act = 'bonus';
+    if (meta.distant) info.range = (I.range || 0) <= 5 ? 30 : I.range * 2;
+    if (meta.transmuted && meta.dtype) info.dtype = meta.dtype;
+    startCast({ info, caster: id, charId: m.charId, slotKey, lvl: lvl || I.l, meta, mi });
   };
-  const slots = I.slots.filter((s) => s.left > 0);
-  if (!I.l) { go('free', 0); return; }
-  if (!slots.length) { app.toast('Нет свободных ячеек'); return; }
-  app.openModal(`<h2>${esc(I.n)}</h2><p class="muted small">Выберите ячейку${I.u ? ` — выше уровня: +${esc(I.u)} за уровень` : ''}${F && F.up ? ` — выше уровня: +${F.up} цель за уровень` : ''}.</p>
-    <div class="slot-choice">${slots.map((s) => `<button data-slot="${s.key}" data-lvl="${s.lvl}">${esc(s.label)}</button>`).join('')}</div>
+  // В бою — ритуал нельзя (10 минут), только ячейка
+  const slots = I.slots.filter((s) => s.left > 0 && !(s.key === 'ritual' && inFight()));
+  if (I.l && !slots.length) { app.toast('Нет свободных ячеек'); return; }
+  const needQ = inFight() && I.act === 'action' && !spellCan(id, 'action');
+  if (!I.l && !metas.length) { go('free', 0); return; }
+  const metaHtml = metas.length ? `<div class="mt"><b class="small">Метамагия</b> <span class="muted small">· очков чародейства: ${mi.pts} · одна на заклинание (Усиленное и Ищущее — сверх неё)</span>
+    <div class="atk-ways">${metas.map(([k, n, cost, d]) => `<label class="check" title="${esc(d)}"><input type="checkbox" data-meta="${k}" data-cost="${cost}" ${cost > mi.pts && k !== 'seeking' ? 'disabled' : ''} ${k === 'quickened' && needQ ? 'checked' : ''}> ${esc(n.replace(' заклинание', ''))} <span class="muted small">${k === 'seeking' ? '1 оч. при промахе' : `${cost} оч.`} · ${esc(d)}</span></label>`).join('')}</div>
+    ${metas.some((x) => x[0] === 'transmuted') ? `<label class="small">Новый вид урона<select id="mTrans">${TRANS.filter(([re]) => !re.test(I.dtype || '')).map(([, n]) => `<option value="${n}">${n}</option>`).join('')}</select></label>` : ''}</div>` : '';
+  app.openModal(`<h2>${esc(I.n)}</h2><p class="muted small">${I.l ? `Выберите ячейку${I.u ? ` — выше уровня: +${esc(I.u)} за уровень` : ''}${F && F.up ? ` — выше уровня: +${F.up} цель за уровень` : ''}.` : 'Заговор — без ячейки.'}</p>
+    ${metaHtml}
+    <div class="slot-choice mt">${I.l ? slots.map((s) => `<button data-slot="${s.key}" data-lvl="${s.lvl}">${esc(s.label)}</button>`).join('') : '<button data-slot="free" data-lvl="0">✨ Сотворить</button>'}</div>
     <div class="modal-actions"><button data-act="closeModal">Отмена</button></div>`);
-  $$('[data-slot]').forEach((x) => x.addEventListener('click', () => go(x.dataset.slot, +x.dataset.lvl)));
+  $$('[data-slot]').forEach((x) => x.addEventListener('click', () => {
+    const on = $$('[data-meta]').filter((b) => b.checked).map((b) => b.dataset.meta);
+    const main = on.filter((k) => k !== 'empowered' && k !== 'seeking');
+    if (main.length > 1) { app.toast('Метамагия: только один вариант на заклинание (кроме Усиленного и Ищущего)'); return; }
+    const pts = on.filter((k) => k !== 'seeking').reduce((s, k) => s + (META.find((z) => z[0] === k) || [])[2], 0);
+    if (pts > mi.pts) { app.toast(`Не хватает очков чародейства: нужно ${pts}, есть ${mi.pts}`); return; }
+    if (needQ && !on.includes('quickened')) { app.toast('Действие уже потрачено — только Ускоренным заклинанием (бонусное действие)'); return; }
+    if (silenced(id) && needsV(I.comp) && !on.includes('subtle')) { app.toast('🔇 В Тишине — только Неуловимым заклинанием'); return; }
+    const meta = Object.fromEntries(on.map((k) => [k, true]));
+    if (on.length) Object.assign(meta, { pts, keys: on, emp: on.includes('empowered') ? mi.cha : 0, dtype: on.includes('transmuted') && $('#mTrans') ? $('#mTrans').value : '' });
+    go(x.dataset.slot, +x.dataset.lvl, meta);
+  }));
 }
+// Метамагия чародея (2024): ключ, название в листе, цена в очках, когда применима, что делает
+const TRANS = [[/кисл/, 'кислотой'], [/холод/, 'холодом'], [/огн/, 'огнём'], [/электр|молни/, 'электричеством'], [/яд/, 'ядом'], [/звук|гром/, 'звуком']];
+const META = [
+  ['careful', 'Осторожное заклинание', 1, (I) => !!I.save && I.shape !== 'target', 'выбранные существа сами преуспевают и не получают урона'],
+  ['distant', 'Дальнее заклинание', 1, (I) => !I.self && (I.range || 0) > 0, 'дальность ×2, касание — 30 фт'],
+  ['empowered', 'Усиленное заклинание', 1, (I) => !!(I.f || I.mdmg), 'перебросить низкие кости урона (до мод. Харизмы)'],
+  ['extended', 'Продлённое заклинание', 1, (I) => !/мгновен/i.test(I.dur || '') && durRounds(I.dur) >= 10, 'длительность ×2'],
+  ['heightened', 'Повышенное заклинание', 2, (I) => !!I.save, 'одна цель — помеха на спасбросок'],
+  ['quickened', 'Ускоренное заклинание', 2, (I) => I.act === 'action', 'бонусным действием вместо действия'],
+  ['seeking', 'Ищущее заклинание', 1, (I) => I.shape === 'atk', 'промах — перебросить к20'],
+  ['subtle', 'Неуловимое заклинание', 1, () => true, 'без компонентов: Тишина не мешает, Контрзаклинание не заметит'],
+  ['transmuted', 'Изменённое заклинание', 1, (I) => TRANS.some(([re]) => re.test(I.dtype || '')), 'сменить вид урона'],
+  ['twinned', 'Сдвоенное заклинание', 1, (I, F) => !!(F && F.up && I.shape === 'target'), '+1 цель (как ячейка на уровень выше)'],
+];
+const metaFor = (I, F, mi) => META.filter(([k, n, , ok]) => (mi.opts || []).includes(n) && ok(I, F));
+// Продлённое заклинание — длительность в раундах ×2
+const durR = (c) => durRounds(c.info.dur) * (c.meta && c.meta.extended ? 2 : 1);
 // Можно ли сейчас это заклинание (вне боя — всегда; в бою — по своему действию, бонусному или реакции)
 function spellCan(id, act) {
   const e = econ(id), turn = isTurnOf(id);
@@ -2704,8 +2755,17 @@ function confirmCast() {
   const forms = F && F.forms ? F.forms.map((e) => BEST().find((m) => m.e === e)).filter(Boolean) : [];
   const chooseHtml = F && F.choose ? `<label class="mt">Вид урона<select id="cChoose">${F.choose.map(([v, n]) => `<option value="${v}">${n}</option>`).join('')}</select></label>`
     : forms.length ? `<label class="mt">Облик<select id="cChoose">${forms.map((m) => `<option value="${esc(m.e)}">${esc(m.n)} (ПО ${m.cr}, ${avgExpr(m.hp)} хитов)</option>`).join('')}</select></label>` : '';
+  // Осторожное заклинание (чародей: до мод. Харизмы) и Ваяние заклинаний (Воплотитель, школа Воплощения: 1 + уровень) — кого уберечь
+  const mm = cast.meta || {}, mi = cast.mi || {};
+  const sculptN = mi.sculpt && I.sch === 'Воплощение' ? 1 + (cast.lvl || I.l || 0) : 0;
+  const safeN = !friendly && I.save && A.shape !== 'target' && ids.length ? (mm.careful ? mi.cha || 1 : 0) + sculptN : 0;
+  const safeHtml = safeN ? `<div class="mt"><b class="small">🛡 ${[mm.careful ? 'Осторожное заклинание' : '', sculptN ? 'Ваяние заклинаний' : ''].filter(Boolean).join(' + ')}</b>
+    <span class="muted small">— уберечь (не больше ${safeN}): сами преуспевают в спасброске и не получают урона</span>
+    <div class="atk-ways">${ids.map((id) => `<label class="check"><input type="checkbox" data-safe="${id}" ${allies.includes(id) && allies.indexOf(id) < safeN ? 'checked' : ''}> ${esc(tok(id).name)}</label>`).join('')}</div></div>` : '';
+  const hOrder = [...ids.filter((id) => !allies.includes(id)), ...ids.filter((id) => allies.includes(id))];
+  const hgtHtml = mm.heightened && I.save && ids.length ? `<label class="mt">Повышенное заклинание — помеха на спасбросок<select id="cHgt">${hOrder.map((id) => `<option value="${id}">${esc(tok(id).name)}</option>`).join('')}</select></label>` : '';
   app.openModal(`<h2>✨ ${esc(I.n)}</h2>
-    <p class="small">${descr}</p>${sideHtml}${chooseHtml}
+    <p class="small">${descr}</p>${sideHtml}${chooseHtml}${safeHtml}${hgtHtml}
     ${!ids.length ? '<p class="muted">В области никого нет.</p>'
       : pick ? `<div class="atk-ways">${ids.map((id) => `<label class="check"><input type="checkbox" data-tg="${id}" ${allies.includes(id) === friendly ? 'checked' : ''}> ${nameHtml(id)}</label>`).join('')}</div>
         <p class="muted small">Это заклинание затрагивает только выбранных вами существ${F && F.n ? ` (не больше ${F.n})` : ''}.</p>`
@@ -2719,6 +2779,9 @@ function confirmCast() {
     let chosen = pick ? $$('[data-tg]').filter((x) => x.checked).map((x) => x.dataset.tg) : ids;
     if (F && F.n && A.shape !== 'target' && chosen.length > F.n) { app.toast(`Не больше ${F.n} существ`); chosen = chosen.slice(0, F.n); }
     if ($('#cChoose')) cast.choice = $('#cChoose').value;
+    const sf = $$('[data-safe]').filter((x) => x.checked).map((x) => x.dataset.safe);
+    if (sf.length > safeN) { app.toast(`Уберечь можно не больше ${safeN}`); return; }
+    cast.safe = sf; cast.hgt = $('#cHgt') ? $('#cHgt').value : '';
     app.closeModal();
     doCastArea(chosen);
   };
@@ -2727,7 +2790,9 @@ function doCastArea(chosen, gated) {
   const A = cast.area, I = cast.info, c = cast;
   // Заклинание (из листа или помеченное у существа) можно прервать «Контрзаклинанием»: сначала ждём реакции врагов рядом.
   // Ячейка тратится, только если заклинание сработало; при провале прерывания действие всё равно потрачено
-  if (!gated && c.caster && (c.charId || I.spell)) {
+  const mm = c.meta || {}, mo = { pts: mm.pts || 0, emp: mm.emp || 0, ext: !!mm.extended };
+  // Неуловимое заклинание: без компонентов — враги не замечают, «Контрзаклинание» невозможно
+  if (!gated && c.caster && (c.charId || I.spell) && !mm.subtle) {
     cast = null; hint(''); renderAll();
     csGate(c.caster, I.n, c.lvl || I.l || I.spell || 0, () => {
       cast = c;
@@ -2738,16 +2803,17 @@ function doCastArea(chosen, gated) {
   let roll = null;
   // Волшебная стрела: ячейка — отдельно, урон одного дротика (1к4+1) — один бросок на все
   if (c.charId && I.darts) {
-    const sp = app.spendSpell(c.charId, I.id, c.slotKey);
+    const sp = app.spendSpell(c.charId, I.id, c.slotKey, mo);
     if (!sp) { cancelCast(); return; }
-    const dr = app.mute(() => app.rollFormula(I.mdmg || '1d4+1', I.n));
+    const dr = app.mute(() => app.rollFormula(I.mdmg || '1d4+1', I.n, mo.emp));
     roll = { castLvl: sp.castLvl, dmg: dr ? dr.total : 0, dmgDetail: dr ? `${dr.detail} за дротик` : '', expr: I.mdmg };
-  } else if (c.charId) { roll = app.mute(() => app.castArea(c.charId, I.id, c.slotKey)); if (!roll) { cancelCast(); return; } }
+  } else if (c.charId) { roll = app.mute(() => app.castArea(c.charId, I.id, c.slotKey, mo)); if (!roll) { cancelCast(); return; } }
   else if (I.f) roll = app.mute(() => app.rollFormula(I.f, I.n));
   const src = c.caster && game.tokens[c.caster], F = I.fxDef || null, names = chosen.map((id) => game.tokens[id].name).join(', ');
   const lvlTxt = roll && roll.castLvl > I.l ? ` (${roll.castLvl} ур.)` : '', who = src ? src.name : 'Мастер';
   const spend = () => castSpend(c);
-  const until = inFight() && !I.persist ? (game.init.round || 1) + durRounds(I.dur) : null, conc = I.cn ? c.caster : null;
+  const until = inFight() && !I.persist ? (game.init.round || 1) + durR(c) : null, conc = I.cn ? c.caster : null;
+  const metaTxt = (mm.keys || []).length ? ` · ${mm.keys.map((k) => (META.find((x) => x[0] === k) || [])[1].replace(' заклинание', '')).join(', ')}` : '';
   // Лечение: всем выбранным столько, сколько выпало; применяют владельцы целей
   if (F && F.heal) {
     const amt = roll ? roll.dmg || 0 : 0;
@@ -2763,16 +2829,19 @@ function doCastArea(chosen, gated) {
     const fx = { ...F.fx, dc: I.dc || 13,
       ...(F.fx.thp === 'roll' ? { thp: roll ? roll.dmg || roll.total || 0 : 0 } : F.fx.thpUp ? { thp: F.fx.thpUp * L } : {}),
       ...(F.fx.retalUp ? { retal: String(F.fx.retalUp * L) } : {}), ...(F.fx.thpTurn === 'M' ? { thpTurn: Math.max(1, mod) } : {}),
+      ...(F.fx.aidUp ? { aid: F.fx.aidUp * Math.max(1, L - 1), n: `${F.fx.n} +${F.fx.aidUp * Math.max(1, L - 1)}` } : {}),
       ...(F.choose && cast.choice ? { resist: [cast.choice], n: `${F.fx.n}: ${(F.choose.find(([v]) => v === cast.choice) || [])[1] || ''}` } : {}) };
     chosen.forEach((id) => addEffect(id, { ...fx, by: user.uid, from: c.caster, spell: I.n, conc, until }));
     if (c.caster) breakAct(c.caster);
-    addLog({ kind: 'area', who, txt: `✨ ${I.n}${lvlTxt}: ${names || 'нет целей'}` });
+    addLog({ kind: 'area', who, txt: `✨ ${I.n}${lvlTxt}${metaTxt}: ${names || 'нет целей'}` });
     spend(); cast = null; hint(''); renderAll();
     return;
   }
   // Область на поле остаётся, если заклинание длится; одиночные цели с эффектом держатся эффектом, а не областью
   const keep = c.dm ? !!I.keepAlways : (!!I.cn || !!I.persist || !/мгновен/i.test(I.dur || '')) && A.shape !== 'target' && A.shape !== 'multi';
-  const entry = { ...A, by: user.uid, who, n: I.n + lvlTxt, abil: I.save || '', dc: I.dc || 0, half: !!I.half,
+  const entry = { ...A, by: user.uid, who, n: I.n + lvlTxt, abil: I.save || '', dc: I.dc || 0,
+    // Мощный заговор (Воплотитель 6): успех спасброска от заговора — половина урона
+    half: !!I.half || (!I.l && !!I.save && !!(c.mi && c.mi.potent)),
     expr: (roll && roll.expr) || I.f || '', dmg: roll ? roll.dmg || roll.total || 0 : 0, dmgDetail: roll ? roll.dmgDetail || roll.detail || '' : '', dtype: I.dtype || '', keep, t: Date.now(),
     pick: !!I.pick, ck: src ? team(src) : '', from: c.caster || null, spell: I.n, conc, until,
     fail: F && F.fail ? { ...F.fail, ...(F.fail.poly && cast.choice ? { poly: cast.choice } : {}) } : null, rep: F && F.rep && I.save ? { abil: I.save, dc: I.dc } : null };
@@ -2793,6 +2862,11 @@ function doCastArea(chosen, gated) {
     entry.zin = areaTokens(entry);
   }
   if (I.save && chosen.length) entry.tg = Object.fromEntries(chosen.map((id) => [id, { done: false }]));
+  // Осторожное заклинание (чародей), Ваяние заклинаний (Воплотитель): выбранные сами преуспевают и не получают урона
+  const safe = (c.safe || []).filter((id) => entry.tg && entry.tg[id]);
+  safe.forEach((id) => { entry.tg[id] = { done: true, ok: true, dmg: 0, safe: true }; });
+  // Повышенное заклинание: у одной цели помеха на спасбросок
+  if (c.hgt && entry.tg && entry.tg[c.hgt] && !entry.tg[c.hgt].done) entry.tg[c.hgt].dis = true;
   // Урон без спасброска (Облако кинжалов, Волшебная стрела…) — сразу каждой цели; применяют владельцы целей
   if (!I.save && entry.dmg && chosen.length && !(F && (F.heal || F.fx))) {
     chosen.forEach((id) => addLog({ kind: 'dmg', who, txt: entry.n, tgt: id, tgtName: game.tokens[id].name, dmg: entry.dmg, dtype: entry.dtype, detail: entry.dmgDetail }));
@@ -2803,9 +2877,9 @@ function doCastArea(chosen, gated) {
   spend();
   // Способность существа с перезарядкой (дыхание) — до броска к6 в начале его хода
   if (c.npcAct != null && src && ((src.acts || [])[c.npcAct] || {}).rech) R.update(ref(gpath(`tokens/${c.caster}/rech`)), { [c.npcAct]: 1 }).catch(() => {});
-  addLog({ kind: 'area', who: entry.who, txt: `✨ ${entry.n}${entry.dmg ? ` — ${entry.dmg} ${entry.dtype || ''}` : ''}${I.save ? ` · спасбросок ${AB_N[I.save]} СЛ ${entry.dc}` : ''}${chosen.length ? ` · цели: ${chosen.map((id) => game.tokens[id].name).join(', ')}` : ''}`,
+  addLog({ kind: 'area', who: entry.who, txt: `✨ ${entry.n}${metaTxt}${entry.dmg ? ` — ${entry.dmg} ${entry.dtype || ''}` : ''}${I.save ? ` · спасбросок ${AB_N[I.save]} СЛ ${entry.dc}` : ''}${chosen.length ? ` · цели: ${chosen.map((id) => game.tokens[id].name).join(', ')}` : ''}${safe.length ? ` · защищены: ${safe.map((id) => game.tokens[id].name).join(', ')}` : ''}${c.hgt && entry.tg && entry.tg[c.hgt] ? ` · помеха: ${game.tokens[c.hgt].name}` : ''}`,
     detail: entry.dmgDetail, fx: entry.shape === 'wall' || entry.shape === 'multi' ? null : fxShape(entry) });
-  if (!keep && !entry.tg) setTimeout(() => R.remove(ref(gpath(`areas/${k}`))).catch(() => {}), 8000);
+  if (!keep && (!entry.tg || Object.values(entry.tg).every((v) => v.done))) setTimeout(() => R.remove(ref(gpath(`areas/${k}`))).catch(() => {}), 8000);
   // След мгновенного заклинания (лёд после Града): труднопроходимо до конца следующего хода заклинателя
   if (I.leave && !keep) {
     const L = { n: I.leave.n, shape: A.shape, size: A.size, width: A.width, ox: A.ox, oy: A.oy, ang: A.ang || 0, color: '#9fd3ef', by: user.uid, who: entry.who, keep: true, t: Date.now(),
@@ -2839,7 +2913,7 @@ function saveMine(k, tid) {
   const dexAdv = A.abil === 'dex' && (econ(tid).dodge || fxOf(tid).some(([, e]) => e.dexAdv));
   // Спутник бросает свой спасбросок (из статблока зверя), урон — в его карточку
   const r = t.comp ? (() => { const d = die(20), b = +((t.sv || {})[A.abil]) || 0; return { total: d + b, ok: d + b >= A.dc, detail: `к20 [${d}] ${fmtMod(b)}` }; })()
-    : app.mute(() => app.rollSave(m.charId, A.abil, A.dc, { label: A.n, adv: dexAdv ? ['Уклонение / Ускорение'] : [], dice: fxDice(tid) }));
+    : app.mute(() => app.rollSave(m.charId, A.abil, A.dc, { label: A.n, adv: dexAdv ? ['Уклонение / Ускорение'] : [], dis: A.tg[tid].dis ? ['Повышенное заклинание'] : [], dice: fxDice(tid) }));
   if (!r) return;
   const dmg0 = saveDmg(A, r.ok, !t.comp && (app.summary(m.charId) || {}).evasion), dmg = resists(tid, A.dtype) ? Math.floor(dmg0 / 2) : dmg0;
   R.update(ref(gpath(`areas/${k}/tg/${tid}`)), { done: true, ok: r.ok, roll: r.total, dmg }).catch(() => {});
@@ -2881,7 +2955,8 @@ function saveNpcs(k) {
     if ((A.abil === 'str' || A.abil === 'dex') && ((t.hpMax && (+t.hp || 0) <= 0) || cond.some((x) => AUTO_FAIL_T.includes(x)))) { ok = false; total = '—'; note = ' (автопровал)'; }
     else {
       const dexAdv = A.abil === 'dex' && (econ(id).dodge || fxOf(id).some(([, e]) => e.dexAdv));
-      const mode = (dexAdv ? 1 : 0) - (cond.includes('restrained') && A.abil === 'dex' ? 1 : 0);
+      const hdis = (cond.includes('restrained') && A.abil === 'dex') || !!(A.tg[id] || {}).dis;
+      const mode = !!dexAdv === hdis ? 0 : dexAdv ? 1 : -1;
       const d1 = die(20), d2 = die(20), nat = mode > 0 ? Math.max(d1, d2) : mode < 0 ? Math.min(d1, d2) : d1;
       const ex = fxDice(id).map((x) => { const neg = String(x.e).startsWith('-'), r = rollExpr(String(x.e).replace(/^[+-]/, '')); return neg ? -r.total : r.total; });
       total = nat + bonus + ex.reduce((s, v) => s + v, 0); ok = total >= A.dc;
@@ -3220,7 +3295,9 @@ function checkMyTurn() {
 // Таблица заклинаний: heal — лечение; n/up — сколько целей (и +за уровень ячейки); fx — бафф без спасброска;
 // fail — что получает провалившая спасбросок цель; rep — повторный спасбросок в конце её хода
 const SPELL_FX = {
-  'Cure Wounds': { heal: 1 }, 'Healing Word': { heal: 1 }, 'Mass Healing Word': { heal: 1, n: 6 }, 'Mass Cure Wounds': { heal: 1, n: 6 }, 'Prayer of Healing': { heal: 1, n: 5 },
+  'Cure Wounds': { heal: 1 }, 'Healing Word': { heal: 1 }, 'Heal': { heal: 1 },
+  // Подмога: +5 к максимуму и текущим хитам, +5 за уровень ячейки выше 2
+  'Aid': { n: 3, fx: { n: 'Подмога', ic: '💪', aidUp: 5 } }, 'Mass Healing Word': { heal: 1, n: 6 }, 'Mass Cure Wounds': { heal: 1, n: 6 }, 'Prayer of Healing': { heal: 1, n: 5 },
   'Bless': { n: 3, up: 1, fx: { n: 'Благословение', ic: '✨', die: '1d4' } },
   'Bane': { n: 3, up: 1, fail: { n: 'Порча', ic: '⬇', die: '-1d4' } },
   'Shield of Faith': { n: 1, fx: { n: 'Щит веры', ic: '🛡', ac: 2 } },
@@ -3362,6 +3439,12 @@ function syncEffects() {
     const pc = t.kind === 'pc' && !t.comp && !t.sum, m = me();
     if (e.thp) { onceDone.add(k); if (pc) { if (m && m.charId) app.setTemp(m.charId, +e.thp); } else if ((+t.temp || 0) < +e.thp) R.update(ref(gpath(`tokens/${e.tgt}`)), { temp: +e.thp }).catch(() => {}); }
     if (e.grow && !t.baseSize) { onceDone.add(k); R.update(ref(gpath(`tokens/${e.tgt}`)), { baseSize: t.size || 1, size: Math.max(1, (t.size || 1) + e.grow) }).catch(() => {}); }
+    // Подмога: максимум и текущие хиты +N, пока действует (несколько — берётся большее)
+    if (+e.aid) {
+      onceDone.add(k);
+      if (pc) { if (m && m.charId && ((app.summary(m.charId) || {}).aid || 0) < +e.aid) app.setAid(m.charId, +e.aid); }
+      else if ((+t.aidHp || 0) < +e.aid) { const d = +e.aid - (+t.aidHp || 0); R.update(ref(gpath(`tokens/${e.tgt}`)), { aidHp: +e.aid, hpMax: (+t.hpMax || 0) + d, hp: (+t.hp || 0) + d }).catch(() => {}); }
+    }
     if (e.poly) {
       onceDone.add(k);
       const beast = BEST().find((x) => x.e === e.poly);
@@ -3380,6 +3463,7 @@ function syncEffects() {
     if (!ownsTarget(t)) return;
     const fx = fxOf(id);
     if (t.baseSize && !fx.some(([, e]) => e.grow)) R.update(ref(gpath(`tokens/${id}`)), { size: t.baseSize, baseSize: null }).catch(() => {});
+    if (+t.aidHp && !fx.some(([, e]) => +e.aid)) { const mx = Math.max(1, (+t.hpMax || 0) - t.aidHp); R.update(ref(gpath(`tokens/${id}`)), { aidHp: null, hpMax: mx, hp: Math.min(+t.hp || 0, mx) }).catch(() => {}); }
     const poly = fx.find(([, e]) => e.poly);
     if (t.orig && (!poly || !(+t.temp > 0))) {
       R.update(ref(gpath(`tokens/${id}`)), { ...t.orig, orig: null }).catch(() => {});
@@ -3389,6 +3473,7 @@ function syncEffects() {
     if (t.kind === 'pc' && !t.comp && !t.sum) {
       const m = me(), s = m && m.charId ? app.summary(m.charId) : null;
       if (s && s.poly && !poly) app.unpolymorph(m.charId);
+      if (s && s.aid && !fx.some(([, e]) => +e.aid)) app.setAid(m.charId, 0);
       if (s && s.poly && poly && !(+s.temp > 0)) { R.remove(ref(gpath(`effects/${poly[0]}`))).catch(() => {}); app.unpolymorph(m.charId); }
     }
   });

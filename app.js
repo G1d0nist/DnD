@@ -218,7 +218,7 @@ window.dndApp = {
       // Спасброски Силы и Ловкости — цель захвата или толчка выбирает лучший
       svs: [saveBonus(c, 'str'), saveBonus(c, 'dex')], grapDC: 8 + am(c, 'str') + pb(c),
       // «Контрзаклинание» наготове (подготовлено и есть ячейка 3+ уровня) и спасбросок Телосложения — против чужого
-      cs: reactSlots(c, 'Counterspell').length > 0, svc: saveBonus(c, 'con'), lvl: lvl(c) };
+      cs: reactSlots(c, 'Counterspell').length > 0, svc: saveBonus(c, 'con'), lvl: lvl(c), aid: +cb.aid || 0 };
   },
   // Добыча со стола: золото — в кошелёк, магический предмет — как из каталога, прочее — в инвентарь; возвращает название
   addLoot(id, L) {
@@ -289,7 +289,7 @@ window.dndApp = {
     const plain = (s) => ({ shape: 'target', size: 0, width: 5, save: '', half: false, self: false, range: /касан/i.test(s.r || '') ? 5 : parseInt(s.r) || 0,
       dtype: dmgWord(s.x), act: /бонусн/i.test(s.t || '') ? 'bonus' : /реакц/i.test(s.t || '') ? 'reaction' : 'action', pick: false });
     return c.spells.filter((s) => +s.l === 0 || s.prep || s.always).map((s) => ({ s, a: spellArea(s) || (extra.includes(s.e) ? plain(s) : null) })).filter((x) => x.a)
-      .map(({ s, a }) => ({ id: s.id, e: s.e || '', n: s.n, l: +s.l, f: s.f || '', u: s.u || '', addMod: !!s.addMod, cn: !!s.cn, dur: s.d || '', comp: s.c || '', dc: spellDCFor(c, s), slots: slotOptions(c, s), ...a }));
+      .map(({ s, a }) => ({ id: s.id, e: s.e || '', n: s.n, l: +s.l, f: s.f || '', u: s.u || '', addMod: !!s.addMod, cn: !!s.cn, dur: s.d || '', comp: s.c || '', sch: s.s || '', rt: !!s.rt, dc: spellDCFor(c, s), slots: slotOptions(c, s), ...a }));
   },
   // Портрет персонажа (маленький JPEG) — хранится в листе, стол показывает его на токене
   setPortrait(id, data) { const c = state.chars[id]; if (!c) return; c.info.portrait = data || ''; c.updatedAt = Date.now(); if (c === ch()) { save(); render(); } else lsSet(STORE, JSON.stringify(state)); },
@@ -340,6 +340,22 @@ window.dndApp = {
     if (state.current !== id) state.current = id;
     const c = ch(), r = rollDice('Отражение атак', `1d10+${am(c, 'dex') + clsLvl(c, 'Монах')}`);
     return r ? { total: Math.max(0, r.total), detail: r.detail } : null;
+  },
+  // Метамагия чародея и умения Воплотителя для стола: выбранные варианты, остаток очков, мод. Харизмы
+  metaInfo(id) {
+    const c = state.chars[id];
+    if (!c) return null;
+    const r = c.resources.find((x) => x.auto === 'sorcery'), ev = classList(c).find((x) => x.cls === 'Волшебник' && x.sub === 'Воплотитель');
+    return { opts: clsLvl(c, 'Чародей') >= 2 ? ((c.cpicks || {}).meta || []) : [], pts: r ? r.max - r.used : 0, cha: Math.max(1, am(c, 'cha')),
+      sculpt: ev && ev.lvl >= 3 ? 1 : 0, potent: !!(ev && ev.lvl >= 6) };
+  },
+  spendSorc(id, n = 1) {
+    const c = state.chars[id];
+    if (!c || !sorcLeft(c, n)) return false;
+    if (state.current !== id) state.current = id;
+    tracked('очки чародейства', () => sorcSpend(c, n));
+    save(); render();
+    return true;
   },
   spendFocus(id, n = 1) {
     const c = state.chars[id], f = c && c.resources.find((x) => x.auto === 'focus');
@@ -407,30 +423,35 @@ window.dndApp = {
     save(); render();
   },
   // Сотворить со стола: ячейка, концентрация и эффекты — как в листе; возвращает бросок урона (или null)
-  castArea(id, spellId, slotKey) {
+  // o: { pts — очки чародейства за метамагию, emp, ext — см. doCast }
+  castArea(id, spellId, slotKey, o = {}) {
     if (!state.chars[id]) return null;
     if (state.current !== id) { state.current = id; render(); }
     const c = ch(), s = findById(c.spells, spellId);
     if (!s) return null;
+    if (o.pts && !sorcLeft(c, o.pts)) { toast('Не хватает очков чародейства'); return null; }
     let out = null;
     tracked(`сотворение: ${s.n}`, () => {
       const { castLvl, how } = spendSlot(c, s, slotKey);
-      const r = doCast(s, castLvl, how);
+      if (o.pts) sorcSpend(c, o.pts);
+      const r = doCast(s, castLvl, how + (o.pts ? `${how ? ', ' : ''}метамагия −${o.pts} оч.` : ''), o);
       out = { castLvl, how, dmg: r ? Math.max(0, r.total) : 0, dmgDetail: r ? r.detail : '', expr: r ? r.expr : '' };
     });
     save(); render();
     return out;
   },
   // Заклинание со стола без броска урона (атаки заклинанием, телепорт, призыв): ячейка, концентрация и числа заклинателя
-  spendSpell(id, spellId, slotKey) {
+  spendSpell(id, spellId, slotKey, o = {}) {
     const c = state.chars[id];
     if (!c) return null;
     if (state.current !== id) state.current = id;
     const s = findById(c.spells, spellId);
     if (!s) return null;
+    if (o.pts && !sorcLeft(c, o.pts)) { toast('Не хватает очков чародейства'); return null; }
     let out = null;
     tracked(`сотворение: ${s.n}`, () => {
       const { castLvl, how } = spendSlot(c, s, slotKey);
+      if (o.pts) sorcSpend(c, o.pts);
       if (s.cn) { endConc(c); c.combat.conc = s.n; pendingConc = 0; }
       out = { castLvl: castLvl || +s.l, how, atk: spellAtkFor(c, s), mod: spellModFor(c, s), dc: spellDCFor(c, s), hpMax: +c.combat.hpMax || 0 };
     });
@@ -448,7 +469,7 @@ window.dndApp = {
       const r = rollD20(`${o.n} → ${o.target || 'цель'}`, o.bonus, { attack: true, kind: 'attack', weapon: false, adv: o.adv, dis: o.dis, ac: o.ac, dice: o.dice || [] });
       const hit = r.nat !== 1 && (r.crit || r.total >= o.ac), crit = hit && (r.crit || !!o.autoCrit);
       let d = null;
-      if (o.dmg && (hit || o.miss === 'half')) d = rollDice(`${crit ? 'КРИТ ' : ''}Урон: ${o.n}${o.type ? ` (${o.type})` : ''}`, crit ? scaleDice(o.dmg, 2) : o.dmg);
+      if (o.dmg && (hit || o.miss === 'half')) d = rollDice(`${crit ? 'КРИТ ' : ''}Урон: ${o.n}${o.type ? ` (${o.type})` : ''}`, crit ? scaleDice(o.dmg, 2) : o.dmg, o.emp || 0);
       const dmg = d ? Math.max(0, hit ? d.total : Math.floor(d.total / 2)) : 0;
       res = { total: r.total, nat: r.nat, detail: r.detail, hit, crit, dmg, dmgDetail: d ? d.detail + (hit ? '' : ' → половина при промахе') : '', type: o.type, extra: [] };
     });
@@ -484,6 +505,20 @@ window.dndApp = {
     tracked('временные хиты', () => { c.combat.temp = n; });
     save(); render();
   },
+  // Подмога со стола: максимум хитов +n (0 — снять); текущие растут вместе с максимумом, при снятии не выше нового максимума
+  setAid(id, n) {
+    const c = state.chars[id];
+    if (!c) return;
+    if (state.current !== id) state.current = id;
+    const cb = c.combat, d = n - (+cb.aid || 0);
+    if (!d) return;
+    tracked('Подмога', () => {
+      cb.aid = n;
+      if (!c.shape && cb.hpRolled != null) syncHpMax(c);
+      else { cb.hpMax = Math.max(1, (+cb.hpMax || 0) + d); cb.hp = d > 0 ? (+cb.hp || 0) + d : Math.min(+cb.hp || 0, cb.hpMax); }
+    });
+    save(); render();
+  },
   // Концентрация прервана со стола (Метель, Землетрясение)
   dropConc(id) {
     const c = state.chars[id];
@@ -514,7 +549,7 @@ window.dndApp = {
     save(); render();
     return { total: r.total, nat: r.nat, ok: r.total >= dc, detail: r.detail || 'автоматический провал' };
   },
-  rollFormula(expr, label) { const r = rollDice(label || 'Бросок', expr); return r ? { total: Math.max(0, r.total), detail: r.detail } : null; },
+  rollFormula(expr, label, emp = 0) { const r = rollDice(label || 'Бросок', expr, emp); return r ? { total: Math.max(0, r.total), detail: r.detail } : null; },
   attacks(id) { const c = state.chars[id]; return c ? tableAttacks(c) : []; },
   // Атака по цели со стола: бросок с преимуществом/помехой от обстановки, при попадании — урон (крит удваивает кости)
   attack(id, atkId, o = {}) {
@@ -854,7 +889,8 @@ const usesStr = (c, a) => a.ability === 'str' || (a.ability === 'fin' && finUses
 // Кость превосходства Мастера боевых искусств: к8, с 10 уровня — к10, с 18 — к12
 const supDie = (c) => { const L = classList(c).filter((e) => e.cls === 'Воин' && e.sub === 'Мастер боевых искусств').reduce((s, e) => s + e.lvl, 0); return L >= 18 ? 12 : L >= 10 ? 10 : 8; };
 const hpPerLvl = (c) => am(c, 'con') + hpPerLevelBonus(c);
-const hpExtra = (c) => (hasFeat(c, 'boonFortitude') ? 40 : 0);
+// + «Подмога» со стола (combat.aid), пока действует
+const hpExtra = (c) => (hasFeat(c, 'boonFortitude') ? 40 : 0) + (+c.combat.aid || 0);
 const hpPart = (c) => lvl(c) * hpPerLvl(c) + hpExtra(c);
 function syncHpMax(c) {
   const cb = c.combat;
@@ -1016,11 +1052,12 @@ function resFromLevel(c, r) {
 let advMode = 0;
 const rollLog = [];
 function die(n) { const a = new Uint32Array(1); crypto.getRandomValues(a); return 1 + (a[0] % n); }
-function evalDice(expr) {
+// emp — Усиленное заклинание: перебросить до emp костей урона ниже среднего (самые низкие), новый результат остаётся
+function evalDice(expr, emp = 0) {
   const s = String(expr).replace(/\s+/g, '').toLowerCase().replace(/к/g, 'd');
   const re = /([+-])?(?:(\d*)d(\d+)|(\d+))/g;
-  let m, idx = 0, total = 0;
-  const parts = [];
+  let m, idx = 0;
+  const groups = [];
   while ((m = re.exec(s)) && m[0]) {
     if (m.index !== idx) return null;
     idx = re.lastIndex;
@@ -1028,15 +1065,21 @@ function evalDice(expr) {
     if (m[3]) {
       const n = Math.min(200, parseInt(m[2] || '1')), sides = parseInt(m[3]);
       if (!sides) return null;
-      const rs = Array.from({ length: n }, () => die(sides));
-      total += sign * rs.reduce((a, b) => a + b, 0);
-      parts.push(`${sign < 0 ? '− ' : parts.length ? '+ ' : ''}${n}d${sides} [${rs.join(', ')}]`);
-    } else {
-      total += sign * parseInt(m[4]);
-      parts.push(`${sign < 0 ? '−' : '+'} ${m[4]}`);
-    }
+      groups.push({ sign, n, sides, rs: Array.from({ length: n }, () => die(sides)), re: new Set() });
+    } else groups.push({ sign, num: parseInt(m[4]) });
   }
-  if (idx !== s.length || !parts.length) return null;
+  if (idx !== s.length || !groups.length) return null;
+  if (emp > 0) {
+    const low = [];
+    groups.forEach((g, gi) => { if (g.rs && g.sign > 0) g.rs.forEach((v, ri) => { if (v < (g.sides + 1) / 2) low.push([v, gi, ri]); }); });
+    low.sort((a, b) => a[0] - b[0]).slice(0, emp).forEach(([, gi, ri]) => { const g = groups[gi]; g.rs[ri] = die(g.sides); g.re.add(ri); });
+  }
+  let total = 0;
+  const parts = groups.map((g, i) => {
+    if (g.num != null) { total += g.sign * g.num; return `${g.sign < 0 ? '−' : '+'} ${g.num}`; }
+    total += g.sign * g.rs.reduce((a, b) => a + b, 0);
+    return `${g.sign < 0 ? '− ' : i ? '+ ' : ''}${g.n}d${g.sides} [${g.rs.map((v, ri) => (g.re.has(ri) ? `↻${v}` : v)).join(', ')}]`;
+  });
   return { total, detail: parts.join(' ') };
 }
 function setAdv(v) { advMode = v; $$('.advmode button').forEach((b) => b.classList.toggle('on', +b.dataset.adv === v)); }
@@ -1114,8 +1157,8 @@ function rollD20(label, bonus, opts = {}) {
   setAdv(0);
   return { total, nat, crit: !!opts.attack && nat >= critAt, detail, mode };
 }
-function rollDice(label, expr) {
-  const r = evalDice(expr);
+function rollDice(label, expr, emp = 0) {
+  const r = evalDice(expr, emp);
   if (!r) { toast(`Не понял выражение «${esc(expr)}»`); return null; }
   logRoll(label, r.total, `${expr}: ${r.detail}`);
   return r;
@@ -2782,7 +2825,8 @@ function addSpell(src) {
   c.spells.push({ ...src, id: uid(), prep: src.l === 0 });
   toast(`Добавлено: ${esc(src.n)}`);
 }
-function doCast(s, castLvl, how) {
+// o: { emp — Усиленное (сколько костей перебросить), ext — Продлённое (длительность ×2) }
+function doCast(s, castLvl, how, o = {}) {
   const c = ch(), cb = c.combat;
   let msg = `✨ ${esc(s.n)}${how ? ' — ' + how : ''}`;
   if (s.cn) {
@@ -2790,15 +2834,15 @@ function doCast(s, castLvl, how) {
     endConc(c);
     cb.conc = s.n; pendingConc = 0;
   }
-  const dur = parseDuration(s.d);
-  if (dur) { addEffect(c, { n: s.n, left: dur, conc: !!s.cn, x: s.d }); msg += `<div class="rd">⏳ ${esc(s.d)} — добавлено в эффекты</div>`; }
+  const dur = parseDuration(s.d) * (o.ext ? 2 : 1);
+  if (dur) { addEffect(c, { n: s.n, left: dur, conc: !!s.cn, x: s.d + (o.ext ? ' ×2' : '') }); msg += `<div class="rd">⏳ ${esc(s.d)}${o.ext ? ' ×2' : ''} — добавлено в эффекты</div>`; }
   toast(msg);
   if (s.f) {
     let expr = s.f;
     if (+s.l === 0) { const L = lvl(c); expr = scaleDice(expr, 1 + (L >= 5) + (L >= 11) + (L >= 17)); }
     else if (s.u && castLvl > s.l) for (let i = 0; i < castLvl - s.l; i++) expr += '+' + s.u;
     if (s.addMod) expr = withMod(expr, spellModFor(c, s));
-    const r = rollDice(`${s.n}${castLvl > s.l ? ` (${castLvl} ур.)` : ''}`, expr);
+    const r = rollDice(`${s.n}${castLvl > s.l ? ` (${castLvl} ур.)` : ''}${o.emp ? ' · усиленное' : ''}`, expr, o.emp || 0);
     return r && { ...r, expr };
   }
   return null;
@@ -2860,6 +2904,9 @@ function reactSlots(c, e) {
   const s = c.spells.find((x) => x.e === e && (x.prep || x.always));
   return s ? slotOptions(c, s).filter((x) => x.left > 0 && x.key !== 'free' && x.key !== 'ritual') : [];
 }
+const sorcRes = (c) => c.resources.find((x) => x.auto === 'sorcery');
+const sorcLeft = (c, n) => { const r = sorcRes(c); return !!r && r.max - r.used >= n; };
+const sorcSpend = (c, n) => { const r = sorcRes(c); if (r) r.used = Math.min(r.max, r.used + n); };
 function spendSlot(c, s, key) {
   if (+s.l === 0) return { castLvl: 0, how: '' };
   if (key === 'pact') { c.pact.used++; return { castLvl: c.pact.level, how: `ячейка договора ${c.pact.level} ур.` }; }
