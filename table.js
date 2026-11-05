@@ -167,13 +167,13 @@ function subscribe(gid, code) {
   on('travel', (v) => { game.travel = v || {}; syncTravel(); });
   on(`lootAward/${user.uid}`, (v) => { game.lootAw = v; applyLoot(); });
   on('members', (v) => { game.members = v || {}; syncEffects(); applyXp(); applyLoot(); handleRest(); syncChests(); });
-  on('tokens', (v) => { game.tokens = v || {}; cleanupInit(); syncEffects(); awardKills(); });
+  on('tokens', (v) => { game.tokens = v || {}; cleanupInit(); syncEffects(); awardKills(); zoneTick(); concWatch(); });
   on('map', (v) => { game.map = v || {}; drawTerrain(); });
-  on('init', (v) => { game.init = v; checkMyTurn(); checkNpcTurn(); cleanupInit(); syncEffects(); });
+  on('init', (v) => { game.init = v; checkMyTurn(); checkNpcTurn(); cleanupInit(); syncEffects(); zoneTurn(); });
   on('econ', (v) => { game.econ = v || {}; });
   on('cs', (v) => { game.cs = v || {}; csCheck(); notifyCs(); });
   on('log', (v) => { game.log = v || {}; applyLog(); notifyLog(); fxLog(); });
-  on('areas', (v) => { game.areas = v || {}; drawAreas(); notifyAreas(); autoNpcSaves(); });
+  on('areas', (v) => { game.areas = v || {}; drawAreas(); notifyAreas(); autoNpcSaves(); zoneTick(); syncEffects(); });
   // Присутствие: онлайн, пока открыта вкладка
   unsubs.push(R.onValue(ref('.info/connected'), (s) => {
     if (!s.val() || !game) return;
@@ -668,7 +668,7 @@ function occupancy(moverId) {
   return occ;
 }
 // Стоимость пути до клеток (футы): клетка по масштабу (5 фт) (по диагонали тоже, правила 2024), +5 в труднопроходимой, +5 ползком; стены непроходимы
-function reachMap(sx, sy, limit, occ, crawl) {
+function reachMap(sx, sy, limit, occ, crawl, zd) {
   const dist = new Map(), q = [[sx, sy, 0]];
   dist.set(`${sx}_${sy}`, 0);
   while (q.length) {
@@ -680,7 +680,7 @@ function reachMap(sx, sy, limit, occ, crawl) {
       if (nx < 0 || ny < 0 || nx >= W() || ny >= H()) continue;
       const T = TERRAIN[(game.map || {})[k]], o = occ && occ.get(k);
       if ((T && T.block) || o === 'block' || doorShut(k)) continue;
-      const nd = d + FT() * (1 + ((T && T.cost) || o === 'pass' ? 1 : 0) + (crawl ? 1 : 0));
+      const nd = d + FT() * (1 + ((T && T.cost) || o === 'pass' || (zd && zd.has(k)) ? 1 : 0) + (crawl ? 1 : 0));
       if (nd > limit || (dist.has(k) && dist.get(k) <= nd)) continue;
       dist.set(k, nd);
       q.push([nx, ny, nd]);
@@ -698,6 +698,12 @@ function drawRange(dist, speed, occ) {
     g.fillStyle = d <= speed ? 'rgba(90,158,90,.28)' : 'rgba(212,166,74,.16)';
     g.fillRect(x * CELL + 1, y * CELL + 1, CELL - 2, CELL - 2);
   });
+}
+// На чём держит концентрацию: персонаж — из его листа (сводка участника), существо — по своим областям и эффектам
+function concName(id, t) {
+  if (t.kind === 'pc' && !t.comp) return ((game.members[t.owner] || {}).char || {}).conc || '';
+  const A = Object.values(game.areas || {}).find((a) => a.conc === id), e = Object.values(game.effects || {}).find((x) => x.conc === id);
+  return (A && A.spell) || (e && e.spell) || '';
 }
 function renderTokens() {
   const box = $('#tblTokens'), cur = currentEntry();
@@ -719,9 +725,9 @@ function renderTokens() {
     el.style.width = el.style.height = s * CELL + 'px';
     el.style.setProperty('--tc', t.kind === 'npc' ? SIDE_COLOR[t.side || 'enemy'] : t.color || '#d4a64a');
     const down = isDown(t), dead = down && isDead(t), label = down ? downLabel(t) : t.name;
-    el.className = `tok ${t.kind} side-${team(t)} ${canMove(t) ? 'mine' : ''} ${selId === id ? 'sel' : ''} ${cur && cur.tokenId === id ? 'turn' : ''} ${t.hidden ? 'hid' : ''} ${down ? 'down' : ''} ${dead ? 'dead' : ''} ${kbdPick === id && (aim || cast) ? 'kpick' : ''}`;
+    el.className = `tok ${t.kind} side-${team(t)} ${canMove(t) ? 'mine' : ''} ${selId === id ? 'sel' : ''} ${cur && cur.tokenId === id ? 'turn' : ''} ${t.hidden ? 'hid' : ''} ${down ? 'down' : ''} ${dead ? 'dead' : ''} ${kbdPick === id && (aim || cast) ? 'kpick' : ''} ${concName(id, t) ? 'conc' : ''}`;
     const ec = inFight() ? econ(id) : {};
-    el.title = `${label}${showNums ? ` · ${t.hp}/${t.hpMax} хитов${t.ac ? ` · КД ${t.ac}` : ''}` : ''}${(t.cond || []).length ? ` · ${t.cond.map(condName).join(', ')}` : ''}${ec.dodge ? ' · уклоняется' : ''}${ec.dis ? ' · отходит' : ''}`;
+    el.title = `${label}${showNums ? ` · ${t.hp}/${t.hpMax} хитов${t.ac ? ` · КД ${t.ac}` : ''}` : ''}${(t.cond || []).length ? ` · ${t.cond.map(condName).join(', ')}` : ''}${ec.dodge ? ' · уклоняется' : ''}${ec.dis ? ' · отходит' : ''}${concName(id, t) ? ` · 🌀 концентрация: ${concName(id, t)}` : ''}`;
     const html = `${t.img && !dead ? `<div class="tok-face img" style="background-image:url('${t.img}')"></div>` : `<div class="tok-face">${dead ? '☠' : esc((t.name || '?').trim().slice(0, 2))}</div>`}
       ${t.hpMax ? `<div class="tok-hp"><div style="width:${pct * 100}%;background:${pct > .5 ? '#5a9e5a' : pct > .25 ? '#d4a64a' : '#c94a3d'}"></div></div>` : ''}
       <div class="tok-name">${esc(label || '')}${fxOf(id).map(([, f]) => f.ic || '').join('').slice(0, 6)}${(t.cond || []).length ? ` <span class="tok-cond">●${t.cond.length}</span>` : ''}</div>`;
@@ -825,11 +831,11 @@ function onDown(e) {
       const mv = moveInfo(id), occ = occupancy(id), counted = turn && !forced;
       if (!forced && !mv.left) { app.toast(mv.speed ? `Скорость на этот ход потрачена${mv.canDash ? ' — можно сделать Рывок' : ''}` : 'Скорость 0 — не может перемещаться'); return; }
       Object.assign(dg, { fight: true, counted, occ, left: counted ? mv.left : Infinity,
-        dist: reachMap(t.x, t.y, forced ? Infinity : mv.left + (mv.canDash ? mv.speed : 0), occ, mv.prone) });
+        dist: reachMap(t.x, t.y, forced ? Infinity : mv.left + (mv.canDash ? mv.speed : 0), occ, mv.prone, forced ? null : zoneDiff(id)) });
       drawRange(dg.dist, counted ? mv.left : speed * 2, occ);
     } else {
       // Вне боя — до двойной скорости; на крупном масштабе (округа, путешествие) — свободнее: до 20 клеток
-      dg.dist = reachMap(t.x, t.y, FT() > 10 ? FT() * 20 : speed * 2);
+      dg.dist = reachMap(t.x, t.y, FT() > 10 ? FT() * 20 : speed * 2, null, false, zoneDiff(id));
       // Вне боя игрок не видит, докуда может дойти, — только расстояние под указателем; мастеру — подсказка
       if (isDM()) drawRange(dg.dist, speed);
     }
@@ -1457,7 +1463,11 @@ function applyLog() {
       if (isDead({ ...t, hp: upd[`tokens/${e.tgt}/hp`], dsF: upd[`tokens/${e.tgt}/dsF`] ?? t.dsF }) && !isDead(t)) upd[`log/${e.k}/down`] = true;
     } else {
       const m = me();
-      if (m && m.charId) app.takeDamage(m.charId, e.dmg, e.crit);
+      if (m && m.charId) {
+        app.takeDamage(m.charId, e.dmg, e.crit);
+        // Урон при концентрации: лист ждёт спасбросок — кнопка в панели запросов
+        if (app.concPending(m.charId)) { app.toast(`🎯 Концентрация: спасбросок Телосложения, СЛ ${app.concPending(m.charId)}`, 'crit'); mtab('turn', true); setTimeout(renderSaves, 50); }
+      }
     }
     R.update(ref(gpath()), upd).catch(() => applying.delete(e.k));
   });
@@ -1545,6 +1555,7 @@ function renderLog() {
         <div><span class="lg-roll">${e.total}</span>${dm && e.ac ? ` против КД ${e.ac}` : ''} — ${res}${e.down ? ' · ☠ повержен' : ''}</div>
         <div class="muted small">${esc(e.detail || '')}${e.dmgDetail ? ` · урон: ${esc(e.dmgDetail)}` : ''}${e.way ? ` · ${esc(e.way)}` : ''} · ${time}</div></div>`;
     }
+    if (e.kind === 'dmg') return `<div class="lg dmg"><div>${e.who ? `<b>${esc(e.who)}</b> → ` : ''}<b>${esc(e.tgtName || '')}</b>: ${esc(e.txt)} — <b class="lg-dmg">−${e.dmg}</b>${e.dtype ? ` ${esc(e.dtype)}` : ''}</div><div class="muted small">${e.detail ? `${esc(e.detail)} · ` : ''}${time}</div></div>`;
     if (e.kind === 'heal') return `<div class="lg heal"><div><b>${esc(e.who)}</b> → <b>${esc(e.tgtName)}</b>: ${esc(e.txt)} — <b class="lg-heal">+${e.heal}</b> хитов</div><div class="muted small">${e.detail ? `${esc(e.detail)} · ` : ''}${time}</div></div>`;
     return `<div class="lg ${e.kind}"><div>${e.who ? `<b>${esc(e.who)}</b>: ` : ''}${esc(e.txt)}</div><div class="muted small">${e.detail ? `${esc(e.detail)} · ` : ''}${time}</div></div>`;
   }).join('') || '<p class="muted small">Здесь появятся атаки и действия участников.</p>';
@@ -2034,6 +2045,7 @@ function castFollow(mx, my) {
 // Центр размещённой области в пределах дистанции заклинания
 function castInRange() {
   const A = cast.area, src = cast.caster && game.tokens[cast.caster];
+  if (cast.moveK) return Math.hypot(A.ox - cast.orig.x, A.oy - cast.orig.y) * FT() <= cast.moveFt + 0.1;
   if (!src || !cast.range || cast.self || A.shape === 'aura') return true;
   if (A.shape === 'target') { const ids = areaTokens(A); return ids.length > 0 && ids.every((id) => distFt(src, game.tokens[id]) <= cast.range); }
   const cx = A.shape === 'cube' ? A.ox + aLen(A) / 2 : A.ox;
@@ -2127,6 +2139,7 @@ function dmAreaDialog() {
   };
 }
 function confirmCast() {
+  if (cast.moveK) { finishZoneMove(); return; }
   const A = cast.area, I = cast.info;
   if (!castInRange()) { app.toast(`Слишком далеко: дистанция ${cast.range} фт`); return; }
   const ids = areaTokens(A);
@@ -2198,7 +2211,17 @@ function doCastArea(chosen, gated) {
     expr: (roll && roll.expr) || I.f || '', dmg: roll ? roll.dmg || roll.total || 0 : 0, dmgDetail: roll ? roll.dmgDetail || roll.detail || '' : '', dtype: I.dtype || '', keep, t: Date.now(),
     pick: !!I.pick, ck: src ? team(src) : '', from: c.caster || null, spell: I.n, conc, until,
     fail: F && F.fail ? F.fail : null, rep: F && F.rep && I.save ? { abil: I.save, dc: I.dc } : null };
+  // Постоянная область (spellmech.js): правила срабатывания, кто уже внутри — они своё при сотворении прошли
+  if (I.zone && keep) {
+    entry.z = { ...I.zone };
+    if (I.zone.fail && !entry.fail) entry.fail = I.zone.fail;
+    entry.zin = areaTokens(entry);
+  }
   if (I.save && chosen.length) entry.tg = Object.fromEntries(chosen.map((id) => [id, { done: false }]));
+  // Урон без спасброска (Облако кинжалов, Волшебная стрела…) — сразу каждой цели; применяют владельцы целей
+  if (!I.save && entry.dmg && chosen.length && !(F && (F.heal || F.fx))) {
+    chosen.forEach((id) => addLog({ kind: 'dmg', who, txt: entry.n, tgt: id, tgtName: game.tokens[id].name, dmg: entry.dmg, dtype: entry.dtype, detail: entry.dmgDetail }));
+  }
   const k = R.push(ref(gpath('areas'))).key;
   R.set(ref(gpath(`areas/${k}`)), Object.fromEntries(Object.entries(entry).filter(([, v]) => v !== undefined)))
     .catch((err) => app.toast(`Не удалось создать область: ${esc(err.code || err.message)}`));
@@ -2309,6 +2332,152 @@ function areaAgain(k) {
   R.update(ref(gpath(`areas/${k}`)), { dmg: r ? r.total : 0, dmgDetail: r ? r.detail : '', tg: Object.fromEntries(ids.map((id) => [id, { done: false }])) });
   addLog({ kind: 'area', who: A.who, txt: `⟳ ${A.n}${r ? ` — ${r.total} ${A.dtype || ''}` : ''} · цели: ${ids.map((id) => game.tokens[id].name).join(', ')}`, detail: r ? r.detail : '', fx: fxShape(A) });
 }
+/* ---------- Постоянные области: срабатывания, перемещение, труднопроходимость ---------- */
+// Решает браузер мастера: он видит все ходы и перемещения. Срабатывание — запрос спасброска цели (как у обычной области)
+// или урон без спасброска записью в журнал (урон применяет владелец цели). Каждое существо — не чаще раза за ход.
+const turnKey = () => (inFight() ? `${game.init.round || 1}:${game.init.turn || 0}` : 'out');
+const zoneSeen = new Map(), zoneFired = new Map(), zonePos = new Map();
+let zoneTurnLast = '', zoneCurLast = null;
+// Кого область задевает: живые, видимые; у «выборочных» (Духовные стражи) — не союзники заклинателя
+const zoneMembers = (A) => areaTokens(A).filter((id) => !A.pick || !A.ck || team(game.tokens[id]) !== A.ck);
+const rollZone = (expr, n) => (expr ? app.mute(() => app.rollFormula(expr, n)) : null);
+function zoneFire(k, A, id, why) {
+  const t = game.tokens[id], Z = A.z || {};
+  if (!t || isDead(t)) return;
+  const tk = turnKey(), key = `${k}:${id}:${why === 'start' && Z.startDmg ? 's' : 'x'}`;
+  if (zoneFired.get(key) === tk) return;
+  zoneFired.set(key, tk);
+  const WHY = { enter: 'входит в область', start: 'начинает ход в области', end: 'заканчивает ход в области' };
+  // Голод Хадара: в начале хода — свой урон без спасброска
+  if (why === 'start' && Z.startDmg) {
+    const r = rollZone(Z.startDmg, A.n);
+    if (r && r.total) addLog({ kind: 'dmg', who: A.who, txt: `${A.n} (${WHY.start})`, tgt: id, tgtName: t.name, dmg: r.total, dtype: Z.startType || '', detail: r.detail });
+    return;
+  }
+  const expr = Z.dmg || A.expr || '', r = rollZone(expr, A.n), dtype = Z.dtype || A.dtype || '';
+  if (Z.noSave || !A.abil) {
+    if (r && r.total) addLog({ kind: 'dmg', who: A.who, txt: `${A.n} (${WHY[why]})`, tgt: id, tgtName: t.name, dmg: r.total, dtype, detail: r.detail });
+    return;
+  }
+  saveRequest(id, { n: `${A.n} (${WHY[why]})`, who: A.who, abil: A.abil, dc: A.dc, half: !!A.half, dmg: r ? r.total : 0, dmgDetail: r ? r.detail : '', dtype,
+    fail: Z.fail || A.fail || null, from: A.from || null, ...(A.rep ? { rep: A.rep } : {}) });
+}
+// Изменения на поле: кто вошёл в области, кто прошёл по «Росту шипов»
+function zoneTick() {
+  if (!game || !isDM()) return;
+  const fight = inFight(), before = new Map(zoneSeen);
+  Object.entries(game.areas || {}).forEach(([k, A]) => {
+    if (!A.z || !A.keep) return;
+    const ids = new Set(zoneMembers(A)), prev = zoneSeen.get(k) || new Set(A.zin || []);
+    if (fight && (A.z.trig || []).includes('enter')) ids.forEach((id) => { if (!prev.has(id)) zoneFire(k, A, id, 'enter'); });
+    zoneSeen.set(k, ids);
+  });
+  // Урон за каждые 5 фт перемещения внутри области
+  Object.entries(game.tokens || {}).forEach(([id, t]) => {
+    const p = zonePos.get(id);
+    zonePos.set(id, { x: t.x, y: t.y });
+    if (!p || (p.x === t.x && p.y === t.y) || !fight || isDead(t)) return;
+    const cells = Math.max(Math.abs(t.x - p.x), Math.abs(t.y - p.y));
+    Object.entries(game.areas || {}).forEach(([k, A]) => {
+      if (!A.z || !A.z.perCell || !A.keep) return;
+      const inNow = zoneMembers(A).includes(id), inPrev = (before.get(k) || new Set()).has(id);
+      if (!inNow && !inPrev) return;
+      const r = rollZone(Array.from({ length: Math.max(1, cells) }, () => A.z.perCell).join('+'), A.n);
+      if (r && r.total) addLog({ kind: 'dmg', who: A.who, txt: `${A.n} (${fmtFt(cells * FT())} по шипам)`, tgt: id, tgtName: t.name, dmg: r.total, dtype: A.z.dtype || '', detail: r.detail });
+    });
+  });
+}
+// Смена хода: кто закончил ход в области, кто начал; «уходящие» облака сдвигаются от заклинателя
+function zoneTurn() {
+  if (!game || !isDM() || !inFight()) { zoneTurnLast = ''; zoneCurLast = null; return; }
+  const tk = turnKey();
+  if (tk === zoneTurnLast) return;
+  const cur = currentEntry(), curId = cur && cur.tokenId, prevId = zoneCurLast;
+  zoneTurnLast = tk; zoneCurLast = curId || null;
+  const zones = Object.entries(game.areas || {}).filter(([, A]) => A.z && A.keep);
+  if (prevId && game.tokens[prevId]) {
+    // Конец хода: эффекты «до конца текущего хода» (Зловонное облако) снимаются
+    const eot = Object.entries(game.effects || {}).filter(([, e]) => e.tgt === prevId && e.eot);
+    if (eot.length) R.update(ref(gpath('effects')), Object.fromEntries(eot.map(([k]) => [k, null]))).catch(() => {});
+    zones.forEach(([k, A]) => { if ((A.z.trig || []).includes('end') && zoneMembers(A).includes(prevId)) zoneFire(k, A, prevId, 'end'); });
+  }
+  if (curId && game.tokens[curId]) {
+    zones.forEach(([k, A]) => {
+      if (((A.z.trig || []).includes('start') || A.z.startDmg) && zoneMembers(A).includes(curId)) zoneFire(k, A, curId, 'start');
+    });
+    // Облако смерти, Испепеляющее облако: в начале хода заклинателя уходят на autoFt от него
+    zones.forEach(([k, A]) => {
+      const src = A.z.move === 'auto' && A.from === curId && game.tokens[curId];
+      if (!src) return;
+      const s = src.size || 1, vx = A.ox - (src.x + s / 2), vy = A.oy - (src.y + s / 2), d = Math.hypot(vx, vy) || 1, n = (A.z.autoFt || 10) / FT();
+      const ox = Math.round(A.ox + (vx / d) * n), oy = Math.round(A.oy + (vy / d) * n);
+      if (ox !== A.ox || oy !== A.oy) { R.update(ref(gpath(`areas/${k}`)), { ox, oy }).catch(() => {}); addLog({ kind: 'sys', txt: `☁ ${A.n} сдвигается на ${fmtFt(A.z.autoFt || 10)}` }); }
+    });
+  }
+}
+// Клетки, труднопроходимые для этого существа из-за областей (Паутина, Духовные стражи для врагов…)
+function zoneDiff(moverId) {
+  const out = new Set(), mv = game.tokens[moverId];
+  Object.values(game.areas || {}).forEach((A) => {
+    if (!A.z || !A.z.difficult || !A.keep) return;
+    if (A.pick && A.ck && mv && team(mv) === A.ck) return;
+    if (A.shape === 'aura' && A.from === moverId) return;
+    areaCells(A).forEach(([x, y]) => out.add(`${x}_${y}`));
+  });
+  return out;
+}
+// Сдвинуть свою область бонусным действием (Лунный луч): та же разметка, что при сотворении, но в пределах moveFt от прежнего места
+function zoneMoveStart(k) {
+  const A = (game.areas || {})[k];
+  if (!A || !A.z || A.z.move !== 'bonus') return;
+  if (inFight() && A.from && !isDM()) {
+    if (!isTurnOf(A.from)) { app.toast('Сдвинуть можно в свой ход'); return; }
+    if (econ(A.from).b) { app.toast('Бонусное действие уже потрачено'); return; }
+  }
+  aim = null;
+  cast = { moveK: k, orig: { x: A.ox, y: A.oy }, moveFt: A.z.moveFt || 30, caster: null, self: false, range: 0, info: { n: `${A.n} — сдвиг`, shape: A.shape, nT: 1 },
+    area: { n: A.n, shape: A.shape, size: A.size, width: A.width, color: A.color, ox: A.ox, oy: A.oy, ang: A.ang || 0 } };
+  renderAll();
+  app.toast(`⤧ ${esc(A.n)}: наведите и нажмите — до ${fmtFt(A.z.moveFt || 30)} · Esc — отмена`);
+}
+function finishZoneMove() {
+  const c = cast, A = (game.areas || {})[c.moveK];
+  if (!A) { cancelCast(); return; }
+  const d = Math.hypot(c.area.ox - c.orig.x, c.area.oy - c.orig.y) * FT();
+  if (d > c.moveFt + 0.1) { app.toast(`Слишком далеко: не больше ${fmtFt(c.moveFt)}`); return; }
+  R.update(ref(gpath(`areas/${c.moveK}`)), { ox: c.area.ox, oy: c.area.oy, ang: c.area.ang || 0 }).catch(() => {});
+  if (inFight() && A.from && !isDM()) R.update(ref(gpath(`econ/${A.from}`)), { b: 1 }).catch(() => {});
+  addLog({ kind: 'act', who: A.who, txt: `⤧ ${A.n} — сдвинута${inFight() ? ' (бонусное действие)' : ''}` });
+  cast = null; hint(''); renderAll();
+}
+// Концентрация существ: мастер бросает спасбросок Телосложения, когда существо, держащее заклинание, получает урон
+const concHp = new Map();
+const concOf = (id) => [...Object.entries(game.areas || {}).filter(([, A]) => A.conc === id).map(([k]) => ['areas', k]),
+  ...Object.entries(game.effects || {}).filter(([, e]) => e.conc === id).map(([k]) => ['effects', k])];
+function concWatch() {
+  if (!game || !isDM()) return;
+  Object.entries(game.tokens || {}).forEach(([id, t]) => {
+    const was = concHp.get(id), hp = +t.hp || 0;
+    concHp.set(id, hp);
+    if (t.kind !== 'npc' || was == null || hp >= was) return;
+    const held = concOf(id);
+    if (!held.length || isDown(t)) return;
+    const dmg = was - hp, dc = Math.min(30, Math.max(10, Math.floor(dmg / 2)));
+    const bonus = (t.sv || {}).con != null ? +t.sv.con : abMod((t.ab || [])[2]), d = die(20), total = d + bonus, ok = total >= dc;
+    const spell = (game.areas || {})[held.find(([p]) => p === 'areas')?.[1]]?.spell || (game.effects || {})[held[0][1]]?.spell || 'заклинание';
+    addLog({ kind: 'save', who: t.name, txt: `концентрация на «${spell}»: Тел ${total} против СЛ ${dc} — ${ok ? 'удержана' : 'потеряна'}`, detail: `к20 [${d}] ${fmtMod(bonus)}` });
+    if (!ok) R.update(ref(gpath()), Object.fromEntries(held.map(([p, k]) => [`${p}/${k}`, null]))).catch(() => {});
+  });
+}
+// Концентрация персонажа: спасбросок, который лист ждёт после урона, — кнопкой на столе
+function concSaveMine() {
+  const m = me();
+  if (!m || !m.charId) return;
+  const r = app.concRoll(m.charId), t = myTok();
+  if (!r) return;
+  addLog({ kind: 'save', who: t ? t.name : myName(), txt: `концентрация${r.spell ? ` на «${r.spell}»` : ''}: Тел ${r.total} против СЛ ${r.dc} — ${r.ok ? 'удержана' : 'потеряна'}`, detail: r.detail });
+  renderAll();
+}
 const notifiedSaves = new Set();
 function notifyAreas() {
   if (!game || !user) return;
@@ -2325,6 +2494,10 @@ function renderSaves() {
   const box = $('#tblSaves');
   if (!box) return;
   const dm = isDM(), rows = tradeRows(), nTrade = rows.length;
+  // Концентрация: лист ждёт спасбросок Телосложения после урона
+  const mm = me(), cp = !dm && mm && mm.charId ? app.concPending(mm.charId) : 0;
+  if (cp) rows.push(`<div class="sv-area cs-ask"><div>🎯 Концентрация на «${esc((app.summary(mm.charId) || {}).conc || '')}»: спасбросок Телосложения, СЛ <b>${cp}</b></div>
+    <div class="row gap mt"><button class="primary" data-tbl="concSave">🎲 Бросить</button></div></div>`);
   // «Контрзаклинание»: запрос моим существам и ожидание моего заклинания
   csMine().forEach(({ k, r, id }) => rows.push(`<div class="sv-area cs-ask"><div>🚫 <b>${esc((game.tokens[r.caster] || {}).name || '')}</b> творит «${esc(r.n)}»${r.lvl && !/ур\./.test(r.n) ? ` (${r.lvl} ур.)` : ''}</div>
     <div class="row between mt"><span>${esc(game.tokens[id].name)}: «Контрзаклинание»?${game.tokens[id].kind === 'npc' ? ` <span class="muted small">осталось ${+game.tokens[id].cs || 0}, СЛ ${+game.tokens[id].sdc || 13}</span>` : ''}</span>
@@ -2335,7 +2508,8 @@ function renderSaves() {
     const mine = pend.filter(([id]) => game.tokens[id].kind === 'pc' && game.tokens[id].owner === user.uid);
     const own = dm || A.by === user.uid;
     let html = `<div class="sv-area"><div class="row between"><b style="color:${A.color}">${esc(A.n)}</b><span>
-      ${own && A.keep && A.abil ? `<button class="ghost" data-tbl="areaAgain" data-k="${k}" title="Сработать снова: новый урон и спасброски">⟳</button>` : ''}
+      ${own && A.keep && A.z && A.z.move === 'bonus' ? `<button class="ghost" data-tbl="zoneMove" data-k="${k}" title="Сдвинуть бонусным действием (до ${fmtFt(A.z.moveFt || 30)})">⤧</button>` : ''}
+      ${own && A.keep && A.abil && !A.z ? `<button class="ghost" data-tbl="areaAgain" data-k="${k}" title="Сработать снова: новый урон и спасброски">⟳</button>` : ''}
       ${own ? `<button class="ghost" data-tbl="areaDel" data-k="${k}" title="Убрать с поля">✕</button>` : ''}</span></div>`;
     if (A.abil) html += `<div class="muted small">Спасбросок ${AB_N[A.abil]} СЛ ${A.dc}${A.dmg ? ` · ${A.dmg} ${esc(A.dtype || 'урона')}${A.half ? ', половина при успехе' : ''}` : ''}</div>`;
     mine.forEach(([id]) => { html += `<div class="row between mt"><span>${esc(game.tokens[id].name)}</span><button class="primary" data-tbl="saveMine" data-k="${k}" data-id="${id}">🎲 Спасбросок</button></div>`; });
@@ -2432,7 +2606,7 @@ function setTokCond(id, cond, on) {
   R.update(ref(gpath(`tokens/${id}`)), { cond: [...list] }).catch(() => {});
 }
 // Синхронизация эффектов: наложить/снять состояния у своих целей, снять эффекты по концентрации и времени
-const fxApplied = new Map();
+const fxApplied = new Map(), areaDropped = new Set();
 function syncEffects() {
   if (!game || !user) return;
   const eff = game.effects || {}, live = new Map();
@@ -2473,6 +2647,17 @@ function syncEffects() {
   const round = game.init && game.init.active ? game.init.round || 1 : 0;
   if (isDM() && round) Object.entries(eff).forEach(([k, e]) => { if (e.until && round > e.until && !drop.some(([x]) => x === k)) drop.push([k, e]); });
   if (drop.length) R.update(ref(gpath('effects')), Object.fromEntries(drop.map(([k]) => [k, null]))).catch(() => {});
+  // Области на поле — по тем же правилам: концентрация заклинателя и время действия
+  const adrop = Object.entries(game.areas || {}).filter(([k, A]) => A.keep && !areaDropped.has(k) && (
+    (A.conc && A.by === user.uid && !isDM() && mySum && (mySum.conc !== A.spell || (myTok && isDown(myTok))))
+    || (isDM() && A.conc && game.tokens[A.conc] && game.tokens[A.conc].kind === 'npc' && isDown(game.tokens[A.conc]))
+    || (isDM() && A.conc && !game.tokens[A.conc])
+    || (isDM() && round && A.until && round > A.until)));
+  if (adrop.length) {
+    adrop.forEach(([k]) => areaDropped.add(k));
+    R.update(ref(gpath('areas')), Object.fromEntries(adrop.map(([k]) => [k, null]))).catch(() => {});
+    adrop.forEach(([, A]) => addLog({ kind: 'sys', txt: `✨ ${A.n}: ${A.until && round > A.until ? 'время действия вышло' : 'концентрация прервана'} — область исчезает` }));
+  }
 }
 // Толчок: на n клеток прочь от источника, пока не упрётся в стену, закрытую дверь, край поля или другое существо
 function pushToken(id, fromId, n) {
@@ -4252,6 +4437,7 @@ function fxLog() {
       if (e.kind === 'atk' && e.graze) fxHit(e.tgt, e.dmg, {});
       else if (e.kind === 'atk') fxAttack(e);
       else if (e.kind === 'heal') floatText(e.tgt, `+${e.heal}`, 'fx-heal');
+      else if (e.kind === 'dmg') fxHit(e.tgt, e.dmg, {});
       else if (e.kind === 'area' && e.fx) fxArea(e.fx);
       else if (e.kind === 'save' && e.res) e.res.forEach((r, i) => setTimeout(() => fxHit(r.id, r.dmg, { saved: r.ok, down: r.down }), 200 + i * 140));
       if (e.down) skulls.add(e.k);
@@ -4894,7 +5080,7 @@ function stepMove(dx, dy) {
     if (doorShut(k)) { keyHint('Дверь закрыта', id); return false; }
     if (occ.has(k) && !forced) { keyHint('Клетка занята', id); return false; }
   }
-  const cost = reachMap(t.x, t.y, FT() * 4, forced ? null : occ, mv && mv.prone).get(`${x}_${y}`);
+  const cost = reachMap(t.x, t.y, FT() * 4, forced ? null : occ, mv && mv.prone, forced ? null : zoneDiff(id)).get(`${x}_${y}`);
   if (cost == null) return false;
   const upd = { [`tokens/${id}/x`]: x, [`tokens/${id}/y`]: y };
   if (mv) {
@@ -5005,7 +5191,7 @@ function manualSave(abil) {
   if (r) addLog({ kind: 'act', who: (myTok() || {}).name || myName(), txt: `🎲 спасбросок ${AB_N[abil]}: ${r.total}` });
 }
 function savesKey() {
-  if (pressBtn(['saveMine', 'trAccept'], () => false)) return;
+  if (pressBtn(['concSave', 'saveMine', 'trAccept'], () => false)) return;
   const m = me();
   if (!m || !m.charId) return;
   app.openModal(`<div><h2>🎲 Спасбросок</h2><p class="muted small">Нет запросов на спасбросок. Бросить вручную (Alt + 1…6):</p>
@@ -5246,6 +5432,8 @@ async function onClick(e) {
     else if (a === 'fxDel') await R.remove(ref(gpath(`effects/${b.dataset.k}`)));
     else if (a === 'saveMine') saveMine(b.dataset.k, b.dataset.id);
     else if (a === 'areaAgain') areaAgain(b.dataset.k);
+    else if (a === 'zoneMove') zoneMoveStart(b.dataset.k);
+    else if (a === 'concSave') concSaveMine();
     else if (a === 'areaDel') await R.remove(ref(gpath(`areas/${b.dataset.k}`)));
     else if (a === 'logClear') { if (app.confirm('Очистить журнал для всех?')) await R.remove(ref(gpath('log'))); }
     else if (['eco', 'dash', 'dashB', 'dis', 'disB', 'dodge', 'stand'].includes(a)) await econAct(a, b.dataset.id, b.dataset.k);

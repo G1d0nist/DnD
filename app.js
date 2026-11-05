@@ -421,6 +421,20 @@ window.dndApp = {
     save(); render();
     return out;
   },
+  // Концентрация: ждёт ли спасбросок после урона (СЛ) и бросок со стола
+  concPending(id) { const c = state.chars[id]; return c && state.current === id && c.combat.conc ? pendingConc : 0; },
+  concRoll(id) {
+    const c = state.chars[id];
+    if (!c) return null;
+    if (state.current !== id) state.current = id;
+    const dc = pendingConc || 10, spell = c.combat.conc;
+    const r = rollD20(`Концентрация (СЛ ${dc})`, saveBonus(c, 'con'), { dc, kind: 'save', abil: 'con', conc: true });
+    const ok = r.total >= dc;
+    if (!ok && spell) { toast(`Концентрация на «${esc(spell)}» потеряна`, 'fumble'); endConc(c); }
+    pendingConc = 0;
+    save(); render();
+    return { total: r.total, dc, ok, spell, detail: r.detail || '' };
+  },
   rollSave(id, abil, dc, o = {}) {
     if (!state.chars[id]) return null;
     if (state.current !== id) { state.current = id; render(); }
@@ -2783,7 +2797,17 @@ function spendSlot(c, s, key) {
 /* ---------- Заклинания с областью и спасброском — для игрового стола ---------- */
 const SAVE_AB = { 'силы': 'str', 'ловкости': 'dex', 'телосложения': 'con', 'интеллекта': 'int', 'мудрости': 'wis', 'харизмы': 'cha' };
 // Форма и размер из дистанции и описания: «На себя (конус 15 фт)», «сферой радиусом 20 фт», «Линия 100×5 фт», «На себя (15 фт)»
+// Форма заклинания для стола: таблица механики (spellmech.js) главнее разбора описания
 function spellArea(s) {
+  const M = typeof SPELL_MECH !== 'undefined' && SPELL_MECH[s.e], base = spellAreaText(s);
+  if (!M) return base;
+  const r = String(s.r || ''), self = M.shape === 'aura' || M.range === 0;
+  return { shape: 'target', size: 0, width: 5, save: '', half: false, heal: false, pick: false,
+    dtype: dmgWord(s.x), act: /бонусн/i.test(s.t || '') ? 'bonus' : /реакц/i.test(s.t || '') ? 'reaction' : 'action', ...(base || {}),
+    ...Object.fromEntries(['shape', 'size', 'width', 'save', 'half', 'pick', 'act', 'dtype'].filter((k) => M[k] != null).map((k) => [k, M[k]])),
+    self, range: self ? 0 : M.range != null ? M.range : base ? base.range : /касан/i.test(r) ? 5 : parseInt(r) || 0, zone: M.zone || null };
+}
+function spellAreaText(s) {
   const r = String(s.r || ''), t = `${r} ${s.x || ''}`, num = (re) => { const m = t.match(re); return m ? +m[1] : 0; };
   let shape = null, size = 0, width = 5;
   if ((size = num(/конус\S*\s+(\d+)/i))) shape = 'cone';
