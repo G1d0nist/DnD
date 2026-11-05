@@ -4363,7 +4363,7 @@ function renderAll() {
   if (!inGame) { if (fullOn) { fullOn = false; document.body.classList.remove('tbl-full-on'); $('#tblGame').classList.remove('tbl-full'); } renderLobby(); return; }
   $('#tblName').textContent = game.meta.name;
   $('#tblCode').textContent = `Код: ${game.code}`;
-  $('#tblLeave').textContent = isDM() ? '⏏ Выйти из игры' : 'Покинуть';
+  $('#tblLeave').textContent = isDM() ? '⏏ Выйти' : 'Покинуть'; $('#tblLeave').title = isDM() ? 'Выйти из игры: сохранить и выйти или удалить' : 'Покинуть игру';
   renderTools();
   renderHud(); // панель хода меняет высоту поля — до раскладки поля
   layoutBoard();
