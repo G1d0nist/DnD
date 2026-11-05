@@ -741,3 +741,7 @@ body.tbl-full-on .toasts { z-index: 95; top: 64px; bottom: auto; }
 @keyframes concSpin { to { transform: rotate(360deg); } }
 .tok.conc::after { content: '🌀'; position: absolute; top: -6px; left: -6px; font-size: 12px; filter: drop-shadow(0 0 2px #000); }
 .lg.dmg .lg-dmg { color: #f3a39a; }
+/* Высота и призванные */
+.tok-alt { position: absolute; top: -8px; right: -6px; padding: 0 4px; border-radius: 6px; background: #2e4f7a; color: #fff; font-size: 10px; font-weight: 700; line-height: 14px; box-shadow: 0 1px 3px #000; z-index: 2; }
+.tok-face.ic { font-size: 20px; }
+.tok.pc[data-tok*="_s"] .tok-face { border-style: dashed; }

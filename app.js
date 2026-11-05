@@ -421,6 +421,40 @@ window.dndApp = {
     save(); render();
     return out;
   },
+  // Заклинание со стола без броска урона (атаки заклинанием, телепорт, призыв): ячейка, концентрация и числа заклинателя
+  spendSpell(id, spellId, slotKey) {
+    const c = state.chars[id];
+    if (!c) return null;
+    if (state.current !== id) state.current = id;
+    const s = findById(c.spells, spellId);
+    if (!s) return null;
+    let out = null;
+    tracked(`сотворение: ${s.n}`, () => {
+      const { castLvl, how } = spendSlot(c, s, slotKey);
+      if (s.cn) { endConc(c); c.combat.conc = s.n; pendingConc = 0; }
+      out = { castLvl: castLvl || +s.l, how, atk: spellAtkFor(c, s), mod: spellModFor(c, s), dc: spellDCFor(c, s), hpMax: +c.combat.hpMax || 0 };
+    });
+    toast(`✨ ${esc(s.n)}${out && out.how ? ' — ' + out.how : ''}`);
+    save(); render();
+    return out;
+  },
+  // Бросок атаки заклинанием со стола: попадание по КД, крит — двойные кости; miss: 'half' — половина урона при промахе
+  spellRoll(id, o) {
+    const c = state.chars[id];
+    if (!c) return null;
+    if (state.current !== id) state.current = id;
+    let res = null;
+    tracked(`атака: ${o.n}`, () => {
+      const r = rollD20(`${o.n} → ${o.target || 'цель'}`, o.bonus, { attack: true, kind: 'attack', weapon: false, adv: o.adv, dis: o.dis, ac: o.ac, dice: o.dice || [] });
+      const hit = r.nat !== 1 && (r.crit || r.total >= o.ac), crit = hit && (r.crit || !!o.autoCrit);
+      let d = null;
+      if (o.dmg && (hit || o.miss === 'half')) d = rollDice(`${crit ? 'КРИТ ' : ''}Урон: ${o.n}${o.type ? ` (${o.type})` : ''}`, crit ? scaleDice(o.dmg, 2) : o.dmg);
+      const dmg = d ? Math.max(0, hit ? d.total : Math.floor(d.total / 2)) : 0;
+      res = { total: r.total, nat: r.nat, detail: r.detail, hit, crit, dmg, dmgDetail: d ? d.detail + (hit ? '' : ' → половина при промахе') : '', type: o.type, extra: [] };
+    });
+    save(); render();
+    return res;
+  },
   // Концентрация прервана со стола (Метель, Землетрясение)
   dropConc(id) {
     const c = state.chars[id];
@@ -2814,7 +2848,8 @@ function spellArea(s) {
     dtype: dmgWord(s.x), act: /бонусн/i.test(s.t || '') ? 'bonus' : /реакц/i.test(s.t || '') ? 'reaction' : 'action', ...(base || {}),
     ...Object.fromEntries(['shape', 'size', 'width', 'save', 'half', 'pick', 'act', 'dtype'].filter((k) => M[k] != null).map((k) => [k, M[k]])),
     self, range: self ? 0 : M.range != null ? M.range : base ? base.range : /касан/i.test(r) ? 5 : parseInt(r) || 0, zone: M.zone || null, wall: M.wall || null,
-    ...Object.fromEntries(['upSize', 'persist', 'leave', 'part', 'nParts', 'contiguous'].filter((k) => M[k] != null).map((k) => [k, M[k]])) };
+    ...Object.fromEntries(['upSize', 'persist', 'leave', 'part', 'nParts', 'contiguous', 'summon', 'rays', 'upRays', 'up', 'onHit', 'passenger', 'distinct', 'darts', 'chain', 'miss', 'melee', 'drain'].filter((k) => M[k] != null).map((k) => [k, M[k]])),
+    ...(M.dmg ? { mdmg: M.dmg } : {}) };
 }
 function spellAreaText(s) {
   const r = String(s.r || ''), t = `${r} ${s.x || ''}`, num = (re) => { const m = t.match(re); return m ? +m[1] : 0; };

@@ -26,7 +26,56 @@
 //   zone.trig 'cstart' — в начале хода заклинателя срабатывает для всех внутри (Землетрясение);
 //   zone.restrike — действием (act) можно ударить снова: та же форма в пределах moveFt от первой точки (Призыв молнии) или от себя (Солнечный луч);
 //   zone.concCheck — начавшие ход внутри проверяют концентрацию (Метель); fail.rounds — эффект провала на столько раундов
+// Блок 4. shape 'atk' — атака заклинанием с ячейкой: dmg — кости одного попадания, up — плюс за уровень ячейки, rays/upRays — лучей
+//   (каждый — отдельная атака), distinct — каждой цели не больше одного, onHit — эффект попавшей атаки (vex1 — следующая атака по цели
+//   с преимуществом), drain — заклинатель лечится на половину урона, melee — рукопашная атака заклинанием (5 фт);
+// darts — дротики «Волшебной стрелы» (+1 за уровень): цели можно повторять, каждый попадает; chain — цепь: первая цель и до n других
+//   в chainFt от неё (+1 за уровень); shape 'tp' — телепорт на range фт, passenger — можно взять соседнего союзника;
+// shape 'summon' — призыв токеном: summon { n, ic, size, ac, hp, speed, fly, invul (неуязвим, без хитов), atk: [{ n, dmg, type, reach, range }],
+//   multi, cmdBonus (атака — бонусным действием заклинателя), atkOnCast (сразу атакует при сотворении), aura (область от призванного — как zone + save/dmg/up/dtype/size/pick, cap — всего урона,
+//   после которого исчезает), forms (выбор вида из бестиария, англ. названия), count/upCount (сколько существ). В статах: L — уровень ячейки,
+//   M — модификатор заклинательной характеристики; попадание — бонус атаки заклинаниями заклинателя
 const SPELL_MECH = {
+  'Scorching Ray': { shape: 'atk', rays: 3, upRays: 1, dmg: '2d6', dtype: 'огнём' },
+  'Guiding Bolt': { shape: 'atk', dmg: '4d6', up: '1d6', dtype: 'излучением', onHit: { n: 'Отмечен светом', ic: '✨', vex1: true, rounds: 1 } },
+  'Chromatic Orb': { shape: 'atk', dmg: '3d8', up: '1d8', dtype: 'стихией (на выбор)' },
+  'Ray of Sickness': { shape: 'atk', dmg: '2d8', up: '1d8', dtype: 'ядом', onHit: { n: 'Тошнота', ic: '🤢', cond: 'poisoned', rounds: 1 } },
+  'Witch Bolt': { shape: 'atk', dmg: '2d12', up: '1d12', dtype: 'электричеством' },
+  "Melf's Acid Arrow": { shape: 'atk', dmg: '4d4', up: '1d4', dtype: 'кислотой', miss: 'half' },
+  'Vampiric Touch': { shape: 'atk', melee: true, dmg: '3d6', up: '1d6', dtype: 'некротической энергией', drain: 'half' },
+  'Steel Wind Strike': { shape: 'atk', melee: true, rays: 5, distinct: true, dmg: '6d10', dtype: 'силовым полем', range: 30 },
+  'Magic Missile': { shape: 'target', darts: 3, dmg: '1d4+1', dtype: 'силовым полем', range: 120 },
+  'Chain Lightning': { shape: 'target', save: 'dex', half: true, chain: { n: 3, ft: 30 }, dtype: 'электричеством', range: 150 },
+  'Misty Step': { shape: 'tp', range: 30, act: 'bonus' },
+  'Dimension Door': { shape: 'tp', range: 500, passenger: true },
+  // Призывы
+  'Spiritual Weapon': { shape: 'summon', range: 60, summon: { n: 'Духовное оружие', ic: '🗡', invul: true, fly: true, speed: 20, cmdBonus: true, atkOnCast: true, atk: [{ n: 'Удар', dmg: '1d8+M', up: '1d8', type: 'силовым полем', reach: 5 }] } },
+  'Flaming Sphere': { shape: 'summon', range: 60, summon: { n: 'Пылающий шар', ic: '🔥', invul: true, speed: 30,
+    aura: { size: 5, save: 'dex', half: true, dmg: '2d6', up: '1d6', dtype: 'огнём', trig: ['end'] } } },
+  'Guardian of Faith': { shape: 'summon', range: 30, summon: { n: 'Страж веры', ic: '🛡', invul: true, size: 2, speed: 0,
+    aura: { size: 10, save: 'dex', half: true, dmg: '20', dtype: 'излучением', trig: ['enter', 'start'], pick: true, cap: 60 } } },
+  'Mage Hand': { shape: 'summon', range: 30, summon: { n: 'Волшебная рука', ic: '✋', invul: true, fly: true, speed: 30 } },
+  'Find Familiar': { shape: 'summon', range: 10, summon: { forms: ['Owl', 'Cat', 'Bat', 'Raven', 'Hawk', 'Spider', 'Frog', 'Rat', 'Weasel', 'Crab', 'Lizard', 'Octopus', 'Poisonous Snake'], noAtk: true } },
+  'Find Steed': { shape: 'summon', range: 30, summon: { n: 'Потусторонний скакун', ic: '🐎', size: 2, ac: '10+L', hp: '5+10*L', speed: 60, atk: [{ n: 'Удар копытом', dmg: '1d8+L', type: 'дробящим', reach: 5 }] } },
+  'Animate Dead': { shape: 'summon', range: 10, summon: { forms: ['Skeleton', 'Zombie'], count: 1, upCount: 2 } },
+  'Summon Beast': { shape: 'summon', range: 90, summon: { n: 'Дух зверя', ic: '🐾', ac: '11+L', hp: '20+5*(L-2)', speed: 30, multi: 'L/2', atk: [{ n: 'Укус', dmg: '1d8+4+L', type: 'колющим', reach: 5 }] } },
+  'Summon Fey': { shape: 'summon', range: 90, summon: { n: 'Дух феи', ic: '🧚', ac: '12+L', hp: '30+10*(L-3)', speed: 30, multi: 'L/2', atk: [{ n: 'Клинок фей', dmg: '2d6+3+L', type: 'силовым полем', reach: 5 }] } },
+  'Summon Undead': { shape: 'summon', range: 90, summon: { n: 'Дух нежити', ic: '💀', ac: '11+L', hp: '30+10*(L-3)', speed: 30, fly: true, multi: 'L/2', atk: [{ n: 'Смертельное касание', dmg: '1d8+3+L', type: 'некротической энергией', reach: 5 }] } },
+  'Summon Aberration': { shape: 'summon', range: 90, summon: { n: 'Дух аберрации', ic: '👁', ac: '11+L', hp: '40+10*(L-4)', speed: 30, multi: 'L/2', atk: [{ n: 'Психический удар', dmg: '1d8+3+L', type: 'психической энергией', reach: 5 }] } },
+  'Summon Construct': { shape: 'summon', range: 90, summon: { n: 'Дух конструкта', ic: '🤖', ac: '13+L', hp: '40+15*(L-4)', speed: 30, multi: 'L/2', atk: [{ n: 'Удар', dmg: '1d8+4+L', type: 'дробящим', reach: 5 }] } },
+  'Summon Elemental': { shape: 'summon', range: 90, summon: { n: 'Дух стихии', ic: '🌪', size: 2, ac: '11+L', hp: '50+10*(L-4)', speed: 40, multi: 'L/2', atk: [{ n: 'Удар', dmg: '1d10+4+L', type: 'дробящим', reach: 5 }] } },
+  'Summon Celestial': { shape: 'summon', range: 90, summon: { n: 'Дух небожителя', ic: '😇', size: 2, ac: '11+L', hp: '40+10*(L-5)', speed: 30, fly: true, multi: 'L/2', atk: [{ n: 'Лучистый лук', dmg: '2d6+2+L', type: 'излучением', range: '150/600' }] } },
+  'Summon Dragon': { shape: 'summon', range: 60, summon: { n: 'Дух дракона', ic: '🐉', size: 2, ac: '14+L', hp: '50+10*(L-5)', speed: 30, fly: true, multi: 'L/2', atk: [{ n: 'Когти', dmg: '1d6+4+L', type: 'колющим', reach: 10 }] } },
+  'Summon Fiend': { shape: 'summon', range: 90, summon: { n: 'Дух исчадия', ic: '😈', size: 2, ac: '12+L', hp: '50+15*(L-6)', speed: 40, multi: 'L/2', atk: [{ n: 'Укус', dmg: '1d12+3+L', type: 'некротической энергией', reach: 5 }] } },
+  'Giant Insect': { shape: 'summon', range: 60, summon: { n: 'Гигантское насекомое', ic: '🕷', size: 2, ac: '11+L', hp: '30+10*(L-4)', speed: 40, multi: 'L/2', atk: [{ n: 'Ядовитый укус', dmg: '1d6+3+L', type: 'колющим', reach: 5 }] } },
+  "Bigby's Hand": { shape: 'summon', range: 120, summon: { n: 'Рука Бигби', ic: '✊', size: 2, ac: '20', hp: 'HP', speed: 60, cmdBonus: true, atkOnCast: true, atk: [{ n: 'Сжатый кулак', dmg: '5d8', up: '2d8', type: 'силовым полем', reach: 5 }] } },
+  "Mordenkainen's Sword": { shape: 'summon', range: 90, summon: { n: 'Меч Морденкайнена', ic: '⚔', invul: true, speed: 30, fly: true, cmdBonus: true, atkOnCast: true, atk: [{ n: 'Удар', dmg: '4d12+M', type: 'силовым полем', reach: 5 }] } },
+  "Mordenkainen's Faithful Hound": { shape: 'summon', range: 30, summon: { n: 'Верный пёс', ic: '🐕', invul: true, speed: 0, atk: [{ n: 'Укус', dmg: '4d8', type: 'колющим', reach: 5 }] } },
+  // Призыв животных (2024): стая призрачных зверей; кто входит в 10 фт от неё или заканчивает там ход — Ловкость, 3к10 рубящего
+  'Conjure Animals': { shape: 'summon', range: 60, summon: { n: 'Стая духов', ic: '🐺', invul: true, size: 2, speed: 30,
+    aura: { size: 10, save: 'dex', half: true, dmg: '3d10', up: '1d10', dtype: 'рубящим', trig: ['enter', 'end'], pick: true } } },
+  // Призыв лесных обитателей (2024): духи природы вокруг вас 10 фт — Мудрость, 5к8 силовым полем
+  'Conjure Woodland Beings': { shape: 'aura', size: 10, save: 'wis', half: true, pick: true, dtype: 'силовым полем', zone: { trig: ['enter', 'end'] } },
   // Туманное облако: сфера 20 фт (+20 за уровень), сильно заслонено — сквозь неё не видно
   'Fog Cloud': { shape: 'sphere', size: 20, upSize: 20, range: 120, zone: { trig: [], obscure: 'heavy' } },
   // Тьма: сфера 15 фт магической тьмы — гасит свет, тёмное зрение не помогает
