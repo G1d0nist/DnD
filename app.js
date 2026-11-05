@@ -211,7 +211,7 @@ window.dndApp = {
     if (!c) return null;
     const cb = c.combat;
     return { name: (c.info.name || 'Без имени') + (c.shape ? ` (${c.shape.n})` : ''), img: c.info.portrait || '', poly: !!(c.shape && c.shape.poly), cls: classLabel(c), hp: +cb.hp || 0, hpMax: +cb.hpMax || 1, temp: +cb.temp || 0, ac: +cb.ac || 10,
-      cond: [...cb.conditions, ...(cb.exhaustion ? [`истощение ${cb.exhaustion}`] : [])], conc: cb.conc || '', speed: curSpeed(c), init: initBonus(c), size: c.info.size || 'Средний',
+      cond: [...cb.conditions, ...(cb.exhaustion ? [`истощение ${cb.exhaustion}`] : [])], conc: cb.conc || '', speed: curSpeed(c), init: initBonus(c), size: (c.shape && c.shape.size) || c.info.size || 'Средний', shapeSpd: c.shape ? String(c.shape.speed || '') : '',
       // Рывок и Отход бонусным действием: Хитрое действие плута, Шаг ветра / Терпеливая оборона монаха
       bonus: clsLvl(c, 'Плут') >= 2 || clsLvl(c, 'Монах') >= 2 ? ['dash', 'dis'] : [], atks: attacksPerAction(c), evasion: hasEvasion(c), dsS: +cb.deathS || 0, dsF: +cb.deathF || 0,
       dv: +((String(c.prof.senses || '').match(/тёмное зрение\D*(\d+)/i) || [])[1] || 0),
@@ -221,7 +221,7 @@ window.dndApp = {
       cs: reactSlots(c, 'Counterspell').length > 0, svc: saveBonus(c, 'con'), lvl: lvl(c), aid: +cb.aid || 0, sense: senseOf(c), rage: raging(c),
       // Аура защиты паладина (6+): союзники в 10 фт (с 18 — 30 фт) добавляют мод. Харизмы к спасброскам; Дикий облик друида
       aura: clsLvl(c, 'Паладин') >= 6 ? { r: clsLvl(c, 'Паладин') >= 18 ? 30 : 10, b: Math.max(1, am(c, 'cha')) } : null,
-      wild: !!(c.shape && !c.shape.poly) };
+      wild: !!(c.shape && !c.shape.poly), ward: +cb.ward || 0, wardMax: wardMax(c) };
   },
   // Добыча со стола: золото — в кошелёк, магический предмет — как из каталога, прочее — в инвентарь; возвращает название
   addLoot(id, L) {
@@ -333,7 +333,7 @@ window.dndApp = {
     const c = ch(), s = c.spells.find((x) => x.e === e && (+x.l === 0 || x.prep || x.always)), key = slotKey || (reactSlots(c, e)[0] || {}).key;
     if (!s || !key) return null;
     let r = null;
-    tracked(s.n, () => { r = { ...spendSlot(c, s, key), dc: spellDCFor(c, s), n: s.n }; });
+    tracked(s.n, () => { r = { ...spendSlot(c, s, key), dc: spellDCFor(c, s), n: s.n }; chargeWard(c, s, r.castLvl); });
     save(); render();
     return r;
   },
@@ -356,7 +356,55 @@ window.dndApp = {
       secondWind: F ? { left: left('secondWind') } : null, surge: F >= 2 ? { left: left('actionSurge') } : null,
       flurry: M >= 2 && unarmed ? { focus: left('focus'), n: M >= 10 ? 3 : 2, atk: unarmed.id } : null,
       stun: M >= 5 ? { focus: left('focus'), dc: 8 + am(c, 'wis') + pb(c) } : null, steady: Rg >= 3,
+      // Терпеливая оборона (монах 2+): 1 очко — Отход и Уклонение бонусным действием
+      patient: M >= 2 ? { focus: left('focus') } : null,
+      // Жестокий удар (варвар 9+, при Безрассудной атаке): отказ от преимущества — +1к10 (17+: 2к10) и толчок или подсечка
+      brutal: B >= 9 ? { dice: B >= 17 ? '2d10' : '1d10' } : null,
+      // Хитрый удар (плут 5+): СЛ = 8 + Лов + мастерство
+      cunning: Rg >= 5 ? { dc: 8 + am(c, 'dex') + pb(c) } : null,
+      // Упорный (воин 9+): переброс проваленного спасброска с бонусом уровня воина
+      indom: F >= 9 ? { left: left('indomitable'), bonus: F } : null,
     };
+  },
+  // Предзнаменование со стола: оставшиеся к20; usePortent — забрать одно значение (оно тратится)
+  portent(id) {
+    const c = state.chars[id];
+    if (!c || !portentN(c)) return null;
+    // Ещё не было долгого отдыха с этим умением — бросаем сейчас
+    if (!Array.isArray(c.combat.portent)) { c.combat.portent = Array.from({ length: portentN(c) }, () => die(20)); if (c === ch()) save(); }
+    return { left: [...c.combat.portent], n: portentN(c) };
+  },
+  usePortent(id, i) {
+    const c = state.chars[id], P = c && (c.combat.portent || []);
+    if (!P || P[i] == null) return null;
+    if (state.current !== id) state.current = id;
+    const v = P[i];
+    tracked('предзнаменование', () => { c.combat.portent = P.filter((_, j) => j !== i); });
+    save(); render();
+    return v;
+  },
+  // Дикий облик со стола: доступные звери (по уровню друида), принять облик, вернуться
+  wildForms(id) {
+    const c = state.chars[id], L = c && wildLimit(c);
+    if (!L) return null;
+    const r = c.resources.find((x) => /Дикий облик/.test(x.n));
+    return { left: r ? r.max - r.used : 0, on: c.shape && !c.shape.poly ? c.shape.n : '', temp: L.temp,
+      list: BEASTS().filter((m) => crNum(m.cr) <= L.cr && (L.fly || !/полёт/.test(m.speed))).map((m) => ({ e: m.e, n: m.n, cr: m.cr, ac: m.ac, speed: m.speed, size: m.size })) };
+  },
+  wildShape(id, e) {
+    const c = state.chars[id], m = BEASTS().find((x) => x.e === e);
+    if (!c || !m || c.shape) return false;
+    if (state.current !== id) state.current = id;
+    tracked(`дикий облик: ${m.n}`, () => startShape(c, m));
+    save(); render();
+    return !!c.shape;
+  },
+  wildEnd(id) {
+    const c = state.chars[id];
+    if (!c || !c.shape || c.shape.poly) return;
+    if (state.current !== id) state.current = id;
+    tracked('конец дикого облика', () => endShape(c));
+    save(); render();
   },
   // Применить умение со стола: rage (вкл/выкл), secondWind (лечение), surge — тратят ресурс листа
   classAct(id, k) {
@@ -382,19 +430,23 @@ window.dndApp = {
     const c = state.chars[id];
     if (!c) return null;
     const left = (k) => { const r = c.resources.find((x) => x.auto === k); return r ? r.max - r.used : 0; };
-    const Cl = clsLvl(c, 'Жрец'), Bd = clsLvl(c, 'Бард'), So = clsLvl(c, 'Чародей');
+    const Cl = clsLvl(c, 'Жрец'), Bd = clsLvl(c, 'Бард'), So = clsLvl(c, 'Чародей'), Pa = clsLvl(c, 'Паладин');
     return {
       turn: Cl >= 2 ? { left: left('channelCleric'), dc: 8 + am(c, 'wis') + pb(c) } : null,
+      // Божественная искра (жрец 2+, Божественный канал): 1к8 + Мдр (2к8 с 7, 3к8 с 13, 4к8 с 18) — лечение или урон излучением/некротикой
+      spark: Cl >= 2 ? { left: left('channelCleric'), dc: 8 + am(c, 'wis') + pb(c), f: `${Cl >= 18 ? 4 : Cl >= 13 ? 3 : Cl >= 7 ? 2 : 1}d8${am(c, 'wis') > 0 ? `+${am(c, 'wis')}` : ''}` } : null,
+      // Наложение рук: запас хитов (5 × уровень паладина)
+      loh: Pa ? { left: left('layOnHands') } : null,
       insp: Bd ? { left: left('bardic'), die: Bd >= 15 ? 12 : Bd >= 10 ? 10 : Bd >= 5 ? 8 : 6 } : null,
       innate: So ? { left: left('innateSorcery') } : null,
     };
   },
   // Потратить использование ресурса листа (Божественный канал, Вдохновение, Врождённое колдовство)
-  useRes(id, auto, label) {
+  useRes(id, auto, label, n = 1) {
     const c = state.chars[id], r = c && c.resources.find((x) => x.auto === auto);
-    if (!r || r.max - r.used <= 0) { toast(`${label || 'Ресурс'}: не осталось использований`); return false; }
+    if (!r || r.max - r.used < n) { toast(`${label || 'Ресурс'}: не хватает (осталось ${r ? r.max - r.used : 0})`); return false; }
     if (state.current !== id) state.current = id;
-    tracked(label || auto, () => { r.used++; });
+    tracked(label || auto, () => { r.used += n; });
     save(); render();
     return true;
   },
@@ -449,7 +501,7 @@ window.dndApp = {
     const c = ch(), s = c.spells.find((x) => x.e === 'Shield');
     if (!s) return null;
     let r = null;
-    tracked('Щит', () => { r = spendSlot(c, s, slotKey); toast('🛡 Щит: +5 КД до начала вашего хода'); });
+    tracked('Щит', () => { r = spendSlot(c, s, slotKey); chargeWard(c, s, r.castLvl); toast('🛡 Щит: +5 КД до начала вашего хода'); });
     save(); render();
     return r;
   },
@@ -508,6 +560,7 @@ window.dndApp = {
     let out = null;
     tracked(`сотворение: ${s.n}`, () => {
       const { castLvl, how } = spendSlot(c, s, slotKey);
+      chargeWard(c, s, castLvl);
       if (o.pts) sorcSpend(c, o.pts);
       if (s.cn) { endConc(c); c.combat.conc = s.n; pendingConc = 0; }
       out = { castLvl: castLvl || +s.l, how, atk: spellAtkFor(c, s), mod: spellModFor(c, s), dc: spellDCFor(c, s), hpMax: +c.combat.hpMax || 0 };
@@ -523,7 +576,7 @@ window.dndApp = {
     if (state.current !== id) state.current = id;
     let res = null;
     tracked(`атака: ${o.n}`, () => {
-      const r = rollD20(`${o.n} → ${o.target || 'цель'}`, o.bonus, { attack: true, kind: 'attack', weapon: false, adv: o.adv, dis: o.dis, ac: o.ac, dice: o.dice || [] });
+      const r = rollD20(`${o.n} → ${o.target || 'цель'}`, o.bonus, { attack: true, kind: 'attack', weapon: false, adv: o.adv, dis: o.dis, ac: o.ac, dice: o.dice || [], force: o.force });
       const hit = r.nat !== 1 && (r.crit || r.total >= o.ac), crit = hit && (r.crit || !!o.autoCrit);
       let d = null;
       if (o.dmg && (hit || o.miss === 'half')) d = rollDice(`${crit ? 'КРИТ ' : ''}Урон: ${o.n}${o.type ? ` (${o.type})` : ''}`, crit ? scaleDice(o.dmg, 2) : o.dmg, o.emp || 0);
@@ -602,7 +655,7 @@ window.dndApp = {
     if (!state.chars[id]) return null;
     if (state.current !== id) { state.current = id; render(); }
     const c = ch(), a = ABILITIES.find((x) => x.k === abil);
-    const r = rollD20(`Спасбросок: ${a ? a.n : abil}${o.label ? ` — ${o.label}` : ''}`, saveBonus(c, abil), { kind: 'save', abil, dc, adv: o.adv, dis: o.dis, dice: o.dice });
+    const r = rollD20(`Спасбросок: ${a ? a.n : abil}${o.label ? ` — ${o.label}` : ''}`, saveBonus(c, abil), { kind: 'save', abil, dc, adv: o.adv, dis: o.dis, dice: o.dice, force: o.force });
     save(); render();
     return { total: r.total, nat: r.nat, ok: r.total >= dc, detail: r.detail || 'автоматический провал' };
   },
@@ -621,14 +674,19 @@ window.dndApp = {
       const sup = o.maneuver && c.resources.find((x) => x.auto === 'superiority' && x.used < x.max), sd = `1d${supDie(c)}`;
       const dice = [...(o.dice || []), ...(sup && o.maneuver === 'Точная атака' ? [{ e: sd, n: 'Точная атака' }] : [])];
       if (sup && o.maneuver === 'Точная атака') sup.used += 1;
-      const r = rollD20(`${A.n} → ${o.target || 'цель'}`, A.bonus, { attack: true, kind: 'attack', weapon: !A.spell, adv: o.adv, dis: o.dis, ac: o.ac, dice });
+      const r = rollD20(`${A.n} → ${o.target || 'цель'}`, A.bonus, { attack: true, kind: 'attack', weapon: !A.spell, adv: o.adv, dis: o.dis, ac: o.ac, dice, force: o.force });
       const hit = r.nat !== 1 && (r.crit || r.total >= o.ac);
       const crit = hit && (r.crit || !!o.autoCrit);
       let expr = A.beast ? (crit ? scaleDice(A.dmg, 2) : A.dmg) : A.cantrip ? withMod(crit ? scaleDice(A.dice, 2) : A.dice, A.mod) : A.dmg ? dmgExpr(c, a, crit) : '';
       const extra = [], X = (e) => (crit ? scaleDice(e, 2) : e);
       // Скрытая атака: раз в ход, фехтовальное или дальнобойное, есть преимущество или союзник рядом с целью (и нет помехи)
-      const sneakDice = Math.ceil(clsLvl(c, 'Плут') / 2);
-      if (hit && o.sneakOk && sneakDice && A.fin && (r.mode > 0 || (o.allyNear && r.mode === 0))) { expr += `+${X(`${sneakDice}d6`)}`; extra.push('Скрытая атака'); }
+      // Хитрый удар (плут 5+): одна к6 Скрытой атаки меняется на эффект (сбить с ног, отравить)
+      const sneakDice = Math.ceil(clsLvl(c, 'Плут') / 2), cutD = o.cunning ? 1 : 0;
+      if (hit && o.sneakOk && sneakDice && A.fin && (r.mode > 0 || (o.allyNear && r.mode === 0))) {
+        if (sneakDice - cutD > 0) expr += `+${X(`${sneakDice - cutD}d6`)}`;
+        extra.push('Скрытая атака');
+        if (cutD) extra.push('хитрый удар (−1к6)');
+      }
       // Божественная кара: ячейка тратится только при попадании, 2к8 + 1к8 за уровень выше 1
       let smite = 0;
       const smSpell = o.smite && c.spells.find((s) => s.e === 'Divine Smite');
@@ -839,7 +897,7 @@ function startShape(c, m) {
   const res = c.resources.find((r) => /Дикий облик/.test(r.n));
   if (res && res.used >= res.max) { toast('Использования Дикого облика закончились'); return; }
   if (res) res.used += 1;
-  c.shape = { n: m.n, e: m.e, ac: m.ac, speed: m.speed, ab: m.ab.slice(0, 3), atk: beastAtk(m), x: m.x || '', prevAc: c.combat.ac };
+  c.shape = { n: m.n, e: m.e, ac: m.ac, speed: m.speed, size: m.size || '', ab: m.ab.slice(0, 3), atk: beastAtk(m), x: m.x || '', prevAc: c.combat.ac };
   c.combat.temp = Math.max(+c.combat.temp || 0, L ? L.temp : 0);
   toast(`🐾 Облик: ${esc(m.n)} · +${L ? L.temp : 0} временных хитов`, 'crit');
 }
@@ -1188,6 +1246,8 @@ function rollD20(label, bonus, opts = {}) {
   let nat = r1, detail = `к20 [${r1}]`;
   if (mode === 1) { nat = Math.max(r1, r2); detail = `преимущество (${src.adv.join(', ')}) [${r1}, ${r2}]`; }
   if (mode === -1) { nat = Math.min(r1, r2); detail = `помеха (${src.dis.join(', ')}) [${r1}, ${r2}]`; }
+  // Предзнаменование (прорицатель): к20 заменяется заранее брошенным значением
+  if (opts.force) { nat = +opts.force; detail = `предзнаменование [${nat}]`; }
   if (!mode && src.adv.length && src.dis.length) detail += ` · преимущество и помеха взаимно отменились (${[...src.adv, ...src.dis].join(', ')})`;
   // Надёжный талант: при проверке с владением результат кубика ниже 10 считается 10
   let used = nat;
@@ -2826,11 +2886,14 @@ const hpAmount = () => { const v = parseInt($('#hpAmount').value); return isNaN(
 function applyDamage(n, crit) {
   const c = ch(), cb = c.combat;
   let rest = n;
+  // Магическая защита (Ограждающий): урон сначала принимает защита
+  const warded = Math.min(+cb.ward || 0, rest);
+  cb.ward = (+cb.ward || 0) - warded; rest -= warded;
   const absorbed = Math.min(+cb.temp || 0, rest);
   cb.temp = (+cb.temp || 0) - absorbed; rest -= absorbed;
   const wasZero = (+cb.hp || 0) <= 0;
   cb.hp = (+cb.hp || 0) - rest;
-  let msg = `Получено ${n} урона${absorbed ? ` (${absorbed} поглощено врем. хитами)` : ''}`;
+  let msg = `Получено ${n} урона${warded ? ` (${warded} принято Магической защитой)` : ''}${absorbed ? ` (${absorbed} поглощено врем. хитами)` : ''}`;
   if (cb.hp <= 0) {
     const over = -cb.hp;
     cb.hp = 0;
@@ -2874,6 +2937,10 @@ function doLongRest(c) {
   cb.conditions = cb.conditions.filter((k) => k !== 'unconscious');
   c.effects = []; endConc(c); pendingConc = 0;
   c.shape = null;
+  // Магическая защита гаснет до первого заклинания ограждения; Предзнаменование — новые к20
+  cb.ward = 0; cb.wardOn = false;
+  cb.portent = portentN(c) ? Array.from({ length: portentN(c) }, () => die(20)) : [];
+  if (cb.portent.length) toast(`🔮 Предзнаменование: ${cb.portent.join(', ')}`);
   c.slots.forEach((s) => { s.used = 0; }); c.pact.used = 0;
   c.resources.forEach((r) => { if (r.recharge !== 'none') r.used = 0; });
   (c.companions || []).forEach((p) => { p.hp = p.hpMax; });
@@ -2907,9 +2974,23 @@ function addSpell(src) {
   c.spells.push({ ...src, id: uid(), prep: src.l === 0 });
   toast(`Добавлено: ${esc(src.n)}`);
 }
+// Волшебник-подкласс: уровень волшебника, если подкласс совпадает
+const wizSub = (c, sub) => classList(c).filter((x) => x.cls === 'Волшебник' && x.sub === sub).reduce((s, x) => s + x.lvl, 0);
+// Предзнаменование (Прорицатель 3+): 2 к20 после долгого отдыха, с 14 уровня — 3
+const portentN = (c) => { const L = wizSub(c, 'Прорицатель'); return L >= 14 ? 3 : L >= 3 ? 2 : 0; };
+// Магическая защита (Ограждающий 3+): максимум 2 × уровень волшебника + мод. Интеллекта
+const wardMax = (c) => { const L = wizSub(c, 'Ограждающий'); return L >= 3 ? 2 * L + am(c, 'int') : 0; };
+function chargeWard(c, s, castLvl) {
+  const mx = wardMax(c);
+  if (!mx || s.s !== 'Ограждение' || !(castLvl > 0)) return;
+  const cb = c.combat, was = +cb.ward || 0;
+  cb.ward = cb.wardOn ? Math.min(mx, was + 2 * castLvl) : mx; cb.wardOn = true;
+  if (cb.ward !== was) toast(`🛡 Магическая защита: ${cb.ward}/${mx}`);
+}
 // o: { emp — Усиленное (сколько костей перебросить), ext — Продлённое (длительность ×2) }
 function doCast(s, castLvl, how, o = {}) {
   const c = ch(), cb = c.combat;
+  chargeWard(c, s, castLvl);
   let msg = `✨ ${esc(s.n)}${how ? ' — ' + how : ''}`;
   if (s.cn) {
     if (cb.conc && cb.conc !== s.n) msg += `<div class="rd">Концентрация на «${esc(cb.conc)}» прервана</div>`;

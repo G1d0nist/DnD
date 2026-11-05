@@ -743,6 +743,7 @@ body.tbl-full-on .toasts { z-index: 95; top: 64px; bottom: auto; }
 .lg.dmg .lg-dmg { color: #f3a39a; }
 /* Высота и призванные */
 .tok-alt { position: absolute; top: -8px; right: -6px; padding: 0 4px; border-radius: 6px; background: #2e4f7a; color: #fff; font-size: 10px; font-weight: 700; line-height: 14px; box-shadow: 0 1px 3px #000; z-index: 2; }
+.tok-ward { position: absolute; bottom: 10px; left: -8px; padding: 0 4px; border-radius: 6px; background: #4a5f8f; color: #fff; font-size: 10px; font-weight: 700; line-height: 14px; box-shadow: 0 1px 3px #000, 0 0 6px rgba(140, 180, 255, .8); z-index: 2; pointer-events: none; }
 .tok-face.ic { font-size: 20px; }
 .tok.pc[data-tok*="_s"] .tok-face { border-style: dashed; }
 /* Невидимость и изгнание */

@@ -257,6 +257,10 @@ function pushMyChar() {
       else if (!au.length) upd[`areas/${R.push(ref(gpath('areas'))).key}`] = { n: 'Аура защиты', shape: 'aura', size: s.aura.r, from: myId, att: myId, auraOf: myId, keep: true, by: user.uid, who: s.name, color: '#d4a64a', z: { trig: [] }, zin: [], t: Date.now() };
       else if (+au[0][1].size !== s.aura.r) upd[`areas/${au[0][0]}/size`] = s.aura.r;
       upd[`tokens/${myId}/wild`] = s.wild || null;
+      // Скорость облика (летает ли зверь) — для подъёма на высоту
+      upd[`tokens/${myId}/spd`] = s.shapeSpd || null;
+      // Магическая защита Ограждающего — значок на токене
+      upd[`tokens/${myId}/ward`] = s.wardMax && s.ward > 0 ? s.ward : null;
     }
     // Спутники на поле: хиты, КД и имя — из карточки в листе; убранный из листа спутник уходит и с поля
     Object.entries(game.tokens).forEach(([id, t]) => {
@@ -768,7 +772,7 @@ function renderTokens() {
     el.title = `${label}${showNums ? ` · ${t.hp}/${t.hpMax} хитов${t.ac ? ` · КД ${t.ac}` : ''}` : ''}${(t.cond || []).length ? ` · ${t.cond.map(condName).join(', ')}` : ''}${ec.dodge ? ' · уклоняется' : ''}${ec.dis ? ' · отходит' : ''}${concName(id, t) ? ` · 🌀 концентрация: ${concName(id, t)}` : ''}`;
     const html = `${t.img && !dead ? `<div class="tok-face img" style="background-image:url('${t.img}')"></div>` : `<div class="tok-face${t.ic ? ' ic' : ''}">${dead ? '☠' : t.ic ? esc(t.ic) : esc((t.name || '?').trim().slice(0, 2))}</div>`}
       ${t.hpMax ? `<div class="tok-hp"><div style="width:${pct * 100}%;background:${pct > .5 ? '#5a9e5a' : pct > .25 ? '#d4a64a' : '#c94a3d'}"></div></div>` : ''}
-      ${+t.alt ? `<div class="tok-alt" title="Высота">↑${t.alt}</div>` : ''}<div class="tok-name">${esc(label || '')}${fxOf(id).map(([, f]) => f.ic || '').join('').slice(0, 6)}${(t.cond || []).length ? ` <span class="tok-cond">●${t.cond.length}</span>` : ''}</div>`;
+      ${+t.alt ? `<div class="tok-alt" title="Высота">↑${t.alt}</div>` : ''}${+t.ward ? `<div class="tok-ward" title="Магическая защита: принимает урон первой">🛡${t.ward}</div>` : ''}<div class="tok-name">${esc(label || '')}${fxOf(id).map(([, f]) => f.ic || '').join('').slice(0, 6)}${(t.cond || []).length ? ` <span class="tok-cond">●${t.cond.length}</span>` : ''}</div>`;
     // Пересоздавать содержимое только при изменении — иначе касание пальцем «теряет» токен посреди перетаскивания
     if (el._html !== html) { el.innerHTML = html; el._html = html; }
   });
@@ -1361,9 +1365,9 @@ function npcAttackRoll(t, A, o) {
   // Кости эффектов (+1к4 «Благословения», −1к4 «Порчи»)
   const ex = (o.dice || []).map((x) => { const neg = String(x.e).startsWith('-'), r = rollExpr(String(x.e).replace(/^[+-]/, '')); return { v: neg ? -r.total : r.total, n: x.n }; });
   const exSum = ex.reduce((s, x) => s + x.v, 0);
-  const r1 = die(20), r2 = die(20), nat = mode > 0 ? Math.max(r1, r2) : mode < 0 ? Math.min(r1, r2) : r1, total = nat + A.bonus + exSum;
+  const r1 = die(20), r2 = die(20), nat = o.force ? +o.force : mode > 0 ? Math.max(r1, r2) : mode < 0 ? Math.min(r1, r2) : r1, total = nat + A.bonus + exSum;
   const hit = nat !== 1 && (nat === 20 || total >= o.ac), crit = hit && (nat === 20 || !!o.autoCrit);
-  let detail = mode ? `${mode > 0 ? 'преимущество' : 'помеха'} (${(mode > 0 ? adv : dis).join(', ')}) [${r1}, ${r2}]` : `к20 [${r1}]`;
+  let detail = o.force ? `🔮 предзнаменование [${nat}]` : mode ? `${mode > 0 ? 'преимущество' : 'помеха'} (${(mode > 0 ? adv : dis).join(', ')}) [${r1}, ${r2}]` : `к20 [${r1}]`;
   detail += ` ${fmtMod(A.bonus)}${ex.map((x) => ` ${x.v >= 0 ? '+' : '−'}${Math.abs(x.v)} (${x.n})`).join('')}`;
   if (!mode && adv.length && dis.length) detail += ' · преимущество и помеха взаимно отменились';
   const d = hit && A.dmg ? rollExpr(A.dmg, crit) : null;
@@ -1504,9 +1508,26 @@ async function econAct(a, id, k) {
   if (ACT_LOG[a]) addLog({ kind: 'act', who: t.name, txt: ACT_LOG[a] });
 }
 // Умения воинских классов (кнопки хода): ресурс тратится в листе, на поле — эффект, флаг хода или атака
-function classAction(a, id) {
+function classAction(a, id, k) {
   const t = game.tokens[id], m = me(), e = econ(id), fight = inFight();
   if (!t || !m || !m.charId || !canMove(t)) return;
+  if (a === 'cPortent') {
+    const P = app.portent(m.charId), v = P && P.left[+k];
+    if (!v) return;
+    const seen = Object.entries(game.tokens).filter(([, o]) => !isDead(o) && !(o.hidden && !isDM()) && !o.invul && !(o.cond || []).includes('invisible'));
+    app.openModal(`<h2>🔮 Предзнаменование: ${v}</h2><p class="muted small">Следующий бросок атаки или спасброска этого существа будет ${v} на к20.</p>
+      <div class="list">${seen.map(([tk, o]) => `<button class="atk-pick" data-pt="${tk}"><b>${esc(o.name)}</b></button>`).join('')}</div>
+      <div class="modal-actions"><button data-act="closeModal">Отмена</button></div>`);
+    $$('[data-pt]').forEach((x) => x.addEventListener('click', () => {
+      app.closeModal();
+      const tid = x.dataset.pt;
+      if (app.usePortent(m.charId, +k) == null) return;
+      addEffect(tid, { n: `Предзнаменование: ${v}`, ic: '🔮', portent: v, by: user.uid, from: id });
+      addLog({ kind: 'act', who: t.name, txt: `🔮 Предзнаменование: следующий к20 ${game.tokens[tid].name} — ${v}` });
+      renderAll();
+    }));
+    return;
+  }
   const K = app.classActs(m.charId) || {}, eu = (u) => R.update(ref(gpath(`econ/${id}`)), u).catch(() => {});
   if (a === 'cRage') {
     const r = app.classAct(m.charId, 'rage');
@@ -1535,6 +1556,10 @@ function classAction(a, id) {
     aim = { from: id, charId: m.charId, atk: A, way: 'flurry', left: K.flurry.n, man: '', smite: '' };
     renderAll();
     app.toast(`👊 Шквал ударов: выберите цель (${K.flurry.n} удара)`);
+  } else if (a === 'cPatient') {
+    if (!app.spendFocus(m.charId, 1)) { app.toast('Нет очков сосредоточенности'); return; }
+    eu({ b: 1, dis: 1, dodge: 1 });
+    addLog({ kind: 'act', who: t.name, txt: '🛡 Терпеливая оборона: Отход и Уклонение' });
   } else if (a === 'cSteady') {
     if (e.move > 0) { app.toast('Вы уже перемещались в этом ходу'); return; }
     eu({ b: 1, steady: 1, zero: 1 });
@@ -1562,6 +1587,63 @@ function classAction(a, id) {
       floatText(tid, '🎵', 'fx-heal');
       addLog({ kind: 'act', who: t.name, txt: `🎵 вдохновляет ${game.tokens[tid].name}: к${C.insp.die} к следующей атаке или спасброску` });
     }));
+  } else if (a === 'cSpark') {
+    const C = app.casterActs(m.charId) || {};
+    if (!C.spark) return;
+    app.openModal(`<h2>✴ Божественная искра</h2><p class="muted small">Существо в 30 фт, которое вы видите. ${esc(C.spark.f)}.</p>
+      <div class="list"><button class="atk-pick" data-spk="heal"><b>💚 Лечение</b><span class="muted small">восстановить ${esc(C.spark.f)} хитов</span></button>
+      <button class="atk-pick" data-spk="излучением"><b>☀ Урон излучением</b><span class="muted small">спасбросок Телосложения СЛ ${C.spark.dc}, половина при успехе</span></button>
+      <button class="atk-pick" data-spk="некротической энергией"><b>💀 Некротический урон</b><span class="muted small">спасбросок Телосложения СЛ ${C.spark.dc}, половина при успехе</span></button></div>
+      <div class="modal-actions"><button data-act="closeModal">Отмена</button></div>`);
+    $$('[data-spk]').forEach((x) => x.addEventListener('click', () => {
+      app.closeModal();
+      if (!app.useRes(m.charId, 'channelCleric', 'Божественная искра')) return;
+      if (fight) eu({ a: 1 });
+      const heal = x.dataset.spk === 'heal';
+      // Одна цель в 30 фт: лечение — как у заклинаний лечения, урон — спасбросок Телосложения
+      startCast({ caster: id, info: { n: 'Божественная искра', shape: 'target', size: 0, range: 30, nT: 1, l: 0, dur: 'Мгновенная', act: 'action', f: C.spark.f,
+        ...(heal ? { fxDef: { heal: 1 }, pick: true } : { save: 'con', dc: C.spark.dc, half: true, dtype: x.dataset.spk }) } });
+    }));
+  } else if (a === 'cLoh') {
+    const C = app.casterActs(m.charId) || {};
+    const near = Object.entries(game.tokens).filter(([k, o]) => !isDead(o) && (k === id || distFt(t, o) <= 5) && !o.invul);
+    if (!C.loh) return;
+    app.openModal(`<h2>🤲 Наложение рук</h2><p class="muted small">В запасе ${C.loh.left} хитов. Касание — вы или существо рядом.</p>
+      <div class="form-grid"><label>Кого<select id="lohT">${near.map(([k, o]) => `<option value="${k}">${esc(o.name)}${o.hpMax ? ` (${+o.hp || 0}/${o.hpMax})` : ''}</option>`).join('')}</select></label>
+      <label>Сколько хитов<input id="lohN" type="number" min="0" max="${C.loh.left}" value="${Math.min(C.loh.left, 10)}"></label>
+      <label class="check" style="grid-column:1/-1"><input type="checkbox" id="lohP"> Снять отравление (ещё 5 из запаса)</label></div>
+      <div class="modal-actions"><button data-act="closeModal">Отмена</button><button class="primary" id="lohOk">🤲 Исцелить</button></div>`);
+    $('#lohOk').onclick = () => {
+      const tid = $('#lohT').value, n = Math.max(0, +$('#lohN').value || 0), poison = $('#lohP').checked, cost = n + (poison ? 5 : 0);
+      if (!cost) { app.toast('Укажите, сколько хитов'); return; }
+      if (!app.useRes(m.charId, 'layOnHands', 'Наложение рук', cost)) return;
+      app.closeModal();
+      if (fight) eu({ b: 1 });
+      const T = game.tokens[tid];
+      if (n) addLog({ kind: 'heal', who: t.name, txt: 'Наложение рук', tgt: tid, tgtName: T.name, heal: n, from: id, detail: `из запаса ${n}` });
+      // Отравление снимает владелец цели: эффект «снять состояние»
+      if (poison) addEffect(tid, { n: 'Наложение рук: отравление снято', uncond: 'poisoned', once: true, by: user.uid, from: id });
+      if (!n) addLog({ kind: 'act', who: t.name, txt: `🤲 Наложение рук: ${T.name} — отравление снято` });
+    };
+  } else if (a === 'cWild') {
+    const WF = app.wildForms(m.charId);
+    if (!WF || !WF.list.length) { app.toast('Нет доступных обликов'); return; }
+    app.openModal(`<h2>🐾 Дикий облик</h2><p class="muted small">Хиты остаются ваши, плюс ${WF.temp} временных. КД, скорость, атаки и размер — зверя.</p>
+      <div class="list">${WF.list.map((x) => `<button class="atk-pick" data-wf="${esc(x.e)}"><b>${esc(x.n)}</b><span class="muted small">ПО ${x.cr} · КД ${x.ac} · ${esc(x.speed || '')} · ${esc(x.size || '')}</span></button>`).join('')}</div>
+      <div class="modal-actions"><button data-act="closeModal">Отмена</button></div>`);
+    $$('[data-wf]').forEach((x) => x.addEventListener('click', () => {
+      app.closeModal();
+      if (!app.wildShape(m.charId, x.dataset.wf)) return;
+      if (fight) eu({ b: 1 });
+      floatText(id, '🐾', 'fx-heal');
+      addLog({ kind: 'act', who: t.name, txt: `🐾 принимает Дикий облик: ${(WF.list.find((z) => z.e === x.dataset.wf) || {}).n || ''}` });
+      pushMyChar();
+    }));
+  } else if (a === 'cWildEnd') {
+    app.wildEnd(m.charId);
+    if (fight) eu({ b: 1 });
+    addLog({ kind: 'act', who: t.name, txt: '🐾 возвращается в свой облик' });
+    pushMyChar();
   } else if (a === 'cInnate') {
     if (!app.useRes(m.charId, 'innateSorcery', 'Врождённое колдовство')) return;
     if (fight) eu({ b: 1 });
@@ -1779,6 +1861,8 @@ function openAttack(id) {
   const O = app.combatOpts(m.charId), K = app.classActs(m.charId) || {};
   const opts = `${O.maneuvers && O.maneuvers.length && O.supLeft ? `<label>Приём превосходства (к${O.supDie}, осталось ${O.supLeft})<select id="atkMan"><option value="">— не тратить кость —</option>${O.maneuvers.map((n) => `<option>${esc(n)}</option>`).join('')}</select></label>` : ''}
     ${O.smiteSlots && O.smiteSlots.length && (!inFight() || !e.b) ? `<label>Божественная кара при попадании<select id="atkSmite"><option value="">— нет —</option>${O.smiteSlots.map((s) => `<option value="${s.key}">${esc(s.label)}</option>`).join('')}</select></label>` : ''}
+    ${K.brutal && e.reck && !e.brut ? `<label>Жестокий удар (без преимущества, +${K.brutal.dice})<select id="atkBrutal"><option value="">— нет —</option><option value="push">Мощный удар: толчок на 15 фт</option><option value="slow">Подсекающий удар: скорость −15 фт</option></select></label>` : ''}
+    ${K.cunning ? `<label>Хитрый удар (−1к6 Скрытой атаки, СЛ ${K.cunning.dc})<select id="atkCunning"><option value="">— нет —</option><option value="trip">Подножка: Ловкость или сбит с ног</option><option value="poison">Яд: Телосложение или отравлен</option></select></label>` : ''}
     ${K.stun && K.stun.focus > 0 && !e.stun ? `<label class="check" title="Раз в ход: попадание в ближнем бою — цель проходит спасбросок Телосложения или ошеломлена до начала вашего следующего хода"><input type="checkbox" id="atkStun"> 💫 Ошеломляющий удар при попадании (1 очко, СЛ ${K.stun.dc})</label>` : ''}
     ${O.sneak ? `<p class="muted small">Скрытая атака ${O.sneak}к6 добавится сама — раз в ход, фехтовальным или дальнобойным оружием при преимуществе или если рядом с целью ваш союзник.${e.sa ? ' <b>В этом ходу уже была.</b>' : ''}</p>` : ''}`;
   app.openModal(`<h2>⚔ Атака</h2>
@@ -1799,8 +1883,10 @@ function openAttack(id) {
       way = 'magic';
     }
     const left = way === 'action' ? (e.atk > 0 ? e.atk : per) : way === 'magic' ? A.beams || 1 : 1, stunOn = !!($('#atkStun') || {}).checked;
+    const brutal = ($('#atkBrutal') || {}).value || '', cunning = ($('#atkCunning') || {}).value || '';
     app.closeModal();
-    aim = { from: id, charId: m.charId, atk: A, way, left, man, smite, ...(stunOn ? { stun: true, stunDc: K.stun.dc } : {}) };
+    aim = { from: id, charId: m.charId, atk: A, way, left, man, smite, ...(stunOn ? { stun: true, stunDc: K.stun.dc } : {}),
+      ...(brutal ? { brutal, brutalDice: K.brutal.dice } : {}), ...(cunning ? { cunning, cunDc: K.cunning.dc } : {}) };
     renderAll();
   }));
 }
@@ -2011,7 +2097,9 @@ function attackTarget(tid) {
   if (fxOf(tid).some(([, e]) => e.prot && e.from !== a.from)) dis.push('«Защита»');
   // Безрассудная атака: свои атаки Силой в ближнем бою — с преимуществом; по безрассудному — тоже. Верный прицел — одна атака с преимуществом
   const ea = econ(a.from);
-  if (ea.reck && !ranged && !A.spell && !a.npc) adv.push('безрассудная атака');
+  // Жестокий удар: от преимущества Безрассудной атаки отказываются ради урона и эффекта (раз в ход)
+  const brutal = a.brutal && ea.reck && !ea.brut && !ranged && !A.spell ? a.brutal : '';
+  if (ea.reck && !ranged && !A.spell && !a.npc && !brutal) adv.push('безрассудная атака');
   if (econ(tid).reck) adv.push('цель безрассудна');
   if (A.spell && fxOf(a.from).some(([, f]) => f.innate)) adv.push('врождённое колдовство');
   if (ea.steady) { adv.push('верный прицел'); R.update(ref(gpath(`econ/${a.from}`)), { steady: null }).catch(() => {}); }
@@ -2027,21 +2115,26 @@ function attackTarget(tid) {
   const ac = acOf(T, tid) + cov.bonus;
   // Скрытая атака: раз в ход; союзник атакующего (в сознании) рядом с целью
   const allyNear = Object.entries(game.tokens).some(([k, o]) => k !== a.from && k !== tid && team(o) === team(me_) && !incapTok(o) && distFt(o, T) <= 5);
+  // Предзнаменование прорицателя на атакующем: к20 заменяется заранее брошенным значением (эффект тратится)
+  const ptA = portentOn(a.from);
   // Ауры и эффекты: Святая аура и Предвидение — помеха атакующим, Предвидение — преимущество своим атакам, Защита от оружия — −1к4
   const bA = buffsOf(a.from), bT = buffsOf(tid);
   if (bT.atkDis) dis.push('цель под защитой');
   if (bA.atkAdv) adv.push('предвидение');
-  const ro = { target: T.name, ac, adv, dis, dice: [...fxDice(a.from), ...(bT.ward ? [{ e: '-1d4', n: 'Защита от оружия' }] : [])], autoCrit: d <= 5 && (tc.includes('paralyzed') || tc.includes('unconscious')),
+  const ro = { target: T.name, ac, adv, dis, ...(ptA ? { force: ptA } : {}), dice: [...fxDice(a.from), ...(bT.ward ? [{ e: '-1d4', n: 'Защита от оружия' }] : [])], autoCrit: d <= 5 && (tc.includes('paralyzed') || tc.includes('unconscious')),
     sneakOk: !econ(a.from).sa, allyNear, maneuver: a.man || '', smite: a.smite || '',
     // Метка охотника и Сглаз заклинателя на этой цели, Увеличение, Божественная благосклонность, Мантия крестоносца (+кость оружием)
     dmgDice: [...fxOf(tid).filter(([, e]) => e.mark && e.from === a.from).map(([, e]) => ({ e: e.mark, n: e.n })),
       ...(!A.spell ? fxOf(a.from).filter(([, e]) => e.dmgDie).map(([, e]) => ({ e: e.dmgDie, n: e.n })) : []),
-      ...(!A.spell && bA.dmgDie ? [{ e: bA.dmgDie, n: 'Мантия крестоносца' }] : [])] };
+      ...(!A.spell && bA.dmgDie ? [{ e: bA.dmgDie, n: 'Мантия крестоносца' }] : []),
+      ...(brutal ? [{ e: a.brutalDice || '1d10', n: 'Жестокий удар' }] : [])],
+    cunning: !!a.cunning };
   let res = a.npc ? npcAttackRoll(me_, A, ro)
     : A.lvlSpell ? app.mute(() => app.spellRoll(a.charId, { ...ro, n: A.n, bonus: A.bonus, dmg: A.dmg, type: A.type, miss: A.miss, emp: A.emp || 0 }))
     : app.mute(() => app.attack(a.charId, A.id, ro));
   if (!res) { aim = null; renderAll(); return; }
   useInsp(a.from);
+  if (ptA) usePortentFx(a.from);
   // Ищущее заклинание: промах — 1 очко чародейства и переброс к20 (один раз за сотворение)
   if (A.lvlSpell && !res.hit && a.seek && app.spendSorc(a.charId, 1)) {
     a.seek = false;
@@ -2062,6 +2155,23 @@ function attackTarget(tid) {
     const rr = app.mute(() => app.rollFormula(String(e.retal), e.n));
     if (rr && rr.total) addLog({ kind: 'dmg', who: T.name, txt: `${e.n} — ответный урон`, tgt: a.from, tgtName: me_.name, dmg: rr.total, dtype: e.retalType || '', detail: rr.detail });
   });
+  // Жестокий удар: попадание — толчок на 15 фт (Большой и меньше) или скорость −15 фт до начала следующего хода варвара
+  if (brutal) {
+    R.update(ref(gpath(`econ/${a.from}`)), { brut: 1 }).catch(() => {});
+    if (res.hit) {
+      if (brutal === 'push' && (T.size || 1) <= 2) addEffect(tid, { n: 'Мощный удар', push: 3, once: true, from: a.from, by: user.uid });
+      if (brutal === 'slow') addEffect(tid, { n: 'Подсекающий удар', ic: '🦵', spd: -15, from: a.from, by: user.uid, ...(inFight() ? { until: (game.init.round || 1) + 1 } : {}) });
+      addLog({ kind: 'act', who: me_.name, txt: `💥 Жестокий удар → ${T.name}: ${brutal === 'push' ? 'отброшен на 15 фт' : 'скорость −15 фт'}` });
+    }
+  }
+  // Хитрый удар: сработала Скрытая атака — спасбросок цели (подножка — Ловкость, сбит с ног; яд — Телосложение, отравлен на минуту)
+  if (a.cunning && res.sneak) {
+    const trip = a.cunning === 'trip';
+    if (!trip || (T.size || 1) <= 2)
+      saveRequest(tid, { n: `${me_.name}: Хитрый удар`, who: me_.name, abil: trip ? 'dex' : 'con', dc: a.cunDc || 13, from: a.from,
+        fail: trip ? { n: 'Подножка', cond: 'prone', once: true } : { n: 'Отравление', ic: '🤢', cond: 'poisoned', rounds: 10 } });
+    a.cunning = '';
+  }
   // Ошеломляющий удар (монах 5+): попадание в ближнем бою — 1 очко сосредоточенности, раз в ход; Телосложение или ошеломлён до начала хода монаха
   if (res.hit && !ranged && a.stun && !econ(a.from).stun && app.spendFocus(a.charId, 1)) {
     a.stun = false;
@@ -3017,8 +3127,8 @@ function doCastArea(chosen, gated) {
   const metaTxt = (mm.keys || []).length ? ` · ${mm.keys.map((k) => (META.find((x) => x[0] === k) || [])[1].replace(' заклинание', '')).join(', ')}` : '';
   // Лечение: всем выбранным столько, сколько выпало; применяют владельцы целей
   if (F && F.heal) {
-    const amt = roll ? roll.dmg || 0 : 0;
-    chosen.forEach((id) => addLog({ kind: 'heal', who, txt: I.n + lvlTxt, tgt: id, tgtName: game.tokens[id].name, heal: amt, from: c.caster, detail: roll ? roll.dmgDetail : '' }));
+    const amt = roll ? roll.dmg || roll.total || 0 : 0;
+    chosen.forEach((id) => addLog({ kind: 'heal', who, txt: I.n + lvlTxt, tgt: id, tgtName: game.tokens[id].name, heal: amt, from: c.caster, detail: roll ? roll.dmgDetail || roll.detail || '' : '' }));
     if (A.shape !== 'target') addLog({ kind: 'area', who, txt: `✨ ${I.n}${lvlTxt}: +${amt} хитов · ${names}`, fx: fxShape({ ...A, color: '#5a9e5a' }) });
     spend(); cast = null; hint(''); renderAll();
     return;
@@ -3125,9 +3235,30 @@ function saveMine(k, tid) {
   const dexAdv = A.abil === 'dex' && (econ(tid).dodge || fxOf(tid).some(([, e]) => e.dexAdv));
   // Спутник бросает свой спасбросок (из статблока зверя), урон — в его карточку
   const r = t.comp ? (() => { const d = die(20), b = +((t.sv || {})[A.abil]) || 0; return { total: d + b, ok: d + b >= A.dc, detail: `к20 [${d}] ${fmtMod(b)}` }; })()
-    : app.mute(() => app.rollSave(m.charId, A.abil, A.dc, { label: A.n, adv: [...(dexAdv ? ['Уклонение / Ускорение'] : []), ...(buffsOf(tid).saveAdv ? ['аура / предвидение'] : [])], dis: A.tg[tid].dis ? ['Повышенное заклинание'] : [], dice: saveDice(tid) }));
+    : app.mute(() => app.rollSave(m.charId, A.abil, A.dc, { label: A.n, adv: [...(dexAdv ? ['Уклонение / Ускорение'] : []), ...(buffsOf(tid).saveAdv ? ['аура / предвидение'] : [])], dis: A.tg[tid].dis ? ['Повышенное заклинание'] : [], dice: saveDice(tid), ...(portentOn(tid) ? { force: portentOn(tid) } : {}) }));
   if (!r) return;
   useInsp(tid);
+  if (portentOn(tid)) usePortentFx(tid);
+  // Упорный (воин 9+): провал — можно перебросить с бонусом уровня воина
+  const K = !t.comp ? app.classActs(m.charId) || {} : {};
+  if (!r.ok && K.indom && K.indom.left > 0) {
+    app.openModal(`<h2>🛡 Упорный</h2><p>${esc(A.n)}: спасбросок ${AB_N[A.abil]} — <b>${r.total}</b> против СЛ ${A.dc}, провал.</p>
+      <p class="muted small">Перебросить с бонусом +${K.indom.bonus}? Осталось использований: ${K.indom.left}.</p>
+      <div class="modal-actions"><button id="indNo">Оставить провал</button><button class="primary" id="indYes">🎲 Перебросить</button></div>`);
+    $('#indNo').onclick = () => { app.closeModal(); saveFinish(k, tid, r); };
+    $('#indYes').onclick = () => {
+      app.closeModal();
+      if (!app.useRes(m.charId, 'indomitable', 'Упорный')) { saveFinish(k, tid, r); return; }
+      const r2 = app.mute(() => app.rollSave(m.charId, A.abil, A.dc, { label: `${A.n} (Упорный)`, dice: [...saveDice(tid), { e: String(K.indom.bonus), n: 'Упорный' }] }));
+      saveFinish(k, tid, r2 ? { ...r2, detail: `Упорный: переброс ${r.total} → ${r2.total} · ${r2.detail}` } : r);
+    };
+    return;
+  }
+  saveFinish(k, tid, r);
+}
+function saveFinish(k, tid, r) {
+  const A = game.areas[k], t = game.tokens[tid], m = me();
+  if (!A || !t || !m || !(A.tg || {})[tid] || A.tg[tid].done) return;
   const dmg0 = saveDmg(A, r.ok, !t.comp && (app.summary(m.charId) || {}).evasion), dmg = resists(tid, A.dtype) ? Math.floor(dmg0 / 2) : dmg0;
   R.update(ref(gpath(`areas/${k}/tg/${tid}`)), { done: true, ok: r.ok, roll: r.total, dmg }).catch(() => {});
   if (dmg) { if (t.comp) app.compHp(m.charId, t.comp, -dmg); else app.takeDamage(m.charId, dmg); }
@@ -3170,12 +3301,13 @@ function saveNpcs(k) {
       const dexAdv = (A.abil === 'dex' && (econ(id).dodge || fxOf(id).some(([, e]) => e.dexAdv))) || buffsOf(id).saveAdv;
       const hdis = (cond.includes('restrained') && A.abil === 'dex') || !!(A.tg[id] || {}).dis;
       const mode = !!dexAdv === hdis ? 0 : dexAdv ? 1 : -1;
-      const d1 = die(20), d2 = die(20), nat = mode > 0 ? Math.max(d1, d2) : mode < 0 ? Math.min(d1, d2) : d1;
+      const pt = portentOn(id), d1 = die(20), d2 = die(20), nat = pt || (mode > 0 ? Math.max(d1, d2) : mode < 0 ? Math.min(d1, d2) : d1);
+      if (pt) { usePortentFx(id); note += ` (🔮 предзнаменование ${pt})`; }
       const sd = saveDice(id);
       if (sd.some((x) => /Вдохновение/.test(x.n))) useInsp(id);
       const ex = sd.map((x) => { const neg = String(x.e).startsWith('-'), r = rollExpr(String(x.e).replace(/^[+-]/, '')); return neg ? -r.total : r.total; });
       total = nat + bonus + ex.reduce((s, v) => s + v, 0); ok = total >= A.dc;
-      if (mode) note = mode > 0 ? ` (преим. ${d1}, ${d2})` : ` (помеха ${d1}, ${d2})`;
+      if (mode && !pt) note = mode > 0 ? ` (преим. ${d1}, ${d2})` : ` (помеха ${d1}, ${d2})`;
       if (ex.length) note += ` (${ex.map((v) => (v >= 0 ? `+${v}` : `−${-v}`)).join(' ')})`;
     }
     // Легендарное сопротивление: провал превращается в успех — тратится только против состояний и эффектов, не ради половины урона
@@ -3629,6 +3761,12 @@ const fxOf = (tid) => Object.entries(game.effects || {}).filter(([, e]) => e.tgt
 const acOf = (t, id) => { const fx = fxOf(id), base = (+t.ac || 10) + fx.reduce((s, [, e]) => s + (+e.ac || 0), 0); return Math.max(base, ...fx.map(([, e]) => +e.acMin || 0)); };
 // Кости к броскам от эффектов: Благословение/Порча (всегда), Вдохновение барда (insp — один раз, затем снимается: useInsp)
 const fxDice = (id) => fxOf(id).filter(([, e]) => e.die || e.insp).map(([, e]) => ({ e: e.die || e.insp, n: e.n }));
+// Предзнаменование, наложенное прорицателем на существо: значение к20 для его следующего броска атаки или спасброска
+const portentOn = (id) => { const p = fxOf(id).find(([, e]) => +e.portent); return p ? +p[1].portent : 0; };
+function usePortentFx(id) {
+  const ks = fxOf(id).filter(([, e]) => +e.portent).map(([k]) => k).slice(0, 1);
+  if (ks.length) R.remove(ref(gpath(`effects/${ks[0]}`))).catch(() => {});
+}
 function useInsp(id) {
   const ks = fxOf(id).filter(([, e]) => e.insp).map(([k]) => k);
   if (ks.length) R.update(ref(gpath('effects')), Object.fromEntries(ks.map((k) => [k, null]))).catch(() => {});
@@ -3680,6 +3818,8 @@ function syncEffects() {
           else if (isDM()) { const held = concOf(e.tgt); if (held.length) R.update(ref(gpath()), Object.fromEntries(held.map(([p, x]) => [`${p}/${x}`, null]))).catch(() => {}); }
         }
         [e.cond, e.cond2].forEach((c) => setTokCond(e.tgt, c, true));
+        // Снять состояние (Наложение рук — отравление)
+        if (e.uncond) setTokCond(e.tgt, e.uncond, false);
         if (e.push) pushToken(e.tgt, e.from, +e.push);
         R.remove(ref(gpath(`effects/${k}`))).catch(() => {});
       }
@@ -5922,6 +6062,7 @@ function renderTurn() {
       ${btn('stand', `⬆ Встать (${half} фт)`, 'Тратит половину скорости и снимает «Лежит ничком»', mv.prone && !dm && mv.speed > 0 && mv.left >= half)}
     </div>` : ''}
     ${!dm && canAct && turn ? classActsHtml(id, e) : ''}
+    ${!dm ? portentHtml(id) : ''}
     ${e.dis || e.dodge || e.reck || e.steady ? `<div class="chips mt">${e.dis ? '<span class="chip on"><span>Отход</span></span>' : ''}${e.dodge ? '<span class="chip on"><span>Уклонение</span></span>' : ''}${e.reck ? '<span class="chip on"><span>⚡ Безрассудство</span></span>' : ''}${e.steady ? '<span class="chip on"><span>🎯 Верный прицел</span></span>' : ''}</div>` : ''}
     ${(() => {
       // Вырваться из захвата (действие); реакции на попадание по мне или по союзнику рядом
@@ -5945,13 +6086,26 @@ function classActsHtml(id, e) {
   if (K.secondWind) out.push(b('cWind', `💚 Второе дыхание (${K.secondWind.left})`, 'Бонусное действие: восстановить 1к10 + уровень воина хитов', !e.b && K.secondWind.left > 0));
   if (K.surge && !e.surge) out.push(b('cSurge', `⚡ Всплеск действий (${K.surge.left})`, 'Ещё одно действие в этом ходу (кроме «Магии»)', K.surge.left > 0 && !!e.a));
   if (K.flurry) out.push(b('cFlurry', `👊 Шквал ударов (${K.flurry.n})`, `Бонусное действие и 1 очко сосредоточенности (осталось ${K.flurry.focus}): ${K.flurry.n} безоружных удара`, !e.b && K.flurry.focus > 0));
+  if (K.patient && !(e.dis && e.dodge)) out.push(b('cPatient', '🛡 Терпеливая оборона (1 ци)', `Бонусное действие и 1 очко сосредоточенности (осталось ${K.patient.focus}): Отход и Уклонение`, !e.b && K.patient.focus > 0));
   if (K.steady && !e.steady) out.push(b('cSteady', '🎯 Верный прицел', 'Бонусное действие, если вы ещё не перемещались: преимущество на следующую атаку в этом ходу, скорость 0 до конца хода', !e.b && !(e.move > 0)));
   // Заклинатели: Изгнание нежити (жрец), Вдохновение барда, Врождённое колдовство (чародей)
   const C = app.casterActs(m.charId) || {};
   if (C.turn) out.push(b('cTurn', `☀ Изгнание нежити (${C.turn.left})`, `Действие, Божественный канал: нежить по выбору в 30 фт — спасбросок Мудрости СЛ ${C.turn.dc}, при провале испугана и недееспособна 1 минуту`, !e.a && !(e.atk > 0) && C.turn.left > 0));
+  const WF = app.wildForms(m.charId);
+  if (WF) out.push(WF.on ? b('cWildEnd', `🐾 Вернуться из облика (${esc(WF.on)})`, 'Бонусное действие: вернуться в свой облик', !e.b)
+    : b('cWild', `🐾 Дикий облик (${WF.left})`, `Бонусное действие: облик зверя — его КД, скорость, атаки и размер; +${WF.temp} временных хитов`, !e.b && WF.left > 0));
+  if (C.spark) out.push(b('cSpark', `✴ Божественная искра (${C.spark.left})`, `Действие, Божественный канал: существо в 30 фт — лечение ${C.spark.f} или урон ${C.spark.f} излучением/некротикой (спасбросок Телосложения СЛ ${C.spark.dc}, половина при успехе)`, !e.a && !(e.atk > 0) && C.spark.left > 0));
+  if (C.loh) out.push(b('cLoh', `🤲 Наложение рук (${C.loh.left})`, 'Бонусное действие, касание: восстановить хиты из запаса; 5 из запаса снимают отравление', !e.b && C.loh.left > 0));
   if (C.insp) out.push(b('cInsp', `🎵 Вдохновение (к${C.insp.die}, ${C.insp.left})`, `Бонусное действие: союзник в 60 фт получает к${C.insp.die} — добавится к его следующей атаке или спасброску`, !e.b && C.insp.left > 0));
   if (C.innate && !fxOf(id).some(([, f]) => f.innate)) out.push(b('cInnate', `🔮 Врождённое колдовство (${C.innate.left})`, 'Бонусное действие на 1 минуту: СЛ ваших заклинаний +1, атаки заклинаниями с преимуществом', !e.b && C.innate.left > 0));
   return out.length ? `<div class="row gap wrap mt">${out.join('')}</div>` : '';
+}
+// Предзнаменование прорицателя: брошенные после отдыха к20 — нажмите, чтобы назначить следующий бросок атаки или спасброска существа
+function portentHtml(id) {
+  const m = me(), P = m && m.charId ? app.portent(m.charId) : null;
+  if (!P || !P.left.length) return '';
+  return `<div class="row gap wrap mt"><span class="small" title="Заменяет к20 следующего броска атаки или спасброска выбранного существа (до броска)">🔮 Предзнаменование:</span>
+    ${P.left.map((v, i) => `<button data-tbl="cPortent" data-id="${id}" data-k="${i}" title="Назначить ${v} существу">${v}</button>`).join('')}</div>`;
 }
 // Мои спутники на поле: атака — в ход хозяина действием спутника, вне хода — его реакцией
 function compTurnHtml(turn) {
@@ -6617,7 +6771,7 @@ async function onClick(e) {
     else if (a === 'areaDel') await R.remove(ref(gpath(`areas/${b.dataset.k}`)));
     else if (a === 'logClear') { if (app.confirm('Очистить журнал для всех?')) await R.remove(ref(gpath('log'))); }
     else if (['eco', 'dash', 'dashB', 'dis', 'disB', 'dodge', 'stand'].includes(a)) await econAct(a, b.dataset.id, b.dataset.k);
-    else if (['cRage', 'cReck', 'cWind', 'cSurge', 'cFlurry', 'cSteady', 'cTurn', 'cInsp', 'cInnate'].includes(a)) classAction(a, b.dataset.id);
+    else if (/^c(Rage|Reck|Wind|Surge|Flurry|Steady|Turn|Insp|Innate|Spark|Loh|Wild|WildEnd|Patient|Portent)$/.test(a)) classAction(a, b.dataset.id, b.dataset.k);
     else if (a === 'initDel') await removeFromInit(b.dataset.id);
     else if (a === 'unsel') { selId = null; renderSide(); renderTokens(); }
     else if (a === 'tokDel') { if (app.confirm('Убрать токен с поля?')) { await R.remove(ref(gpath(`tokens/${selId}`))); selId = null; } }
