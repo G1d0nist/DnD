@@ -48,6 +48,9 @@ const SPELL_MECH = {
   'Chain Lightning': { shape: 'target', save: 'dex', half: true, chain: { n: 3, ft: 30 }, dtype: 'электричеством', range: 150 },
   'Misty Step': { shape: 'tp', range: 30, act: 'bonus' },
   'Dimension Door': { shape: 'tp', range: 500, passenger: true },
+  // Иллюзии: токен, который другие видят как настоящий; изучение (Анализ против СЛ заклинателя) или удар раскрывают
+  'Silent Image': { shape: 'summon', range: 60, summon: { n: 'Иллюзия', invul: true, illus: true, speed: 15 } },
+  'Major Image': { shape: 'summon', range: 120, summon: { n: 'Иллюзия', invul: true, illus: true, speed: 30 } },
   // Призывы
   'Spiritual Weapon': { shape: 'summon', range: 60, summon: { n: 'Духовное оружие', ic: '🗡', invul: true, fly: true, speed: 20, cmdBonus: true, atkOnCast: true, atk: [{ n: 'Удар', dmg: '1d8+M', up: '1d8', type: 'силовым полем', reach: 5 }] } },
   'Flaming Sphere': { shape: 'summon', range: 60, summon: { n: 'Пылающий шар', ic: '🔥', invul: true, speed: 30,

@@ -210,7 +210,7 @@ window.dndApp = {
     const c = state.chars[id];
     if (!c) return null;
     const cb = c.combat;
-    return { name: (c.info.name || 'Без имени') + (c.shape ? ` (${c.shape.n})` : ''), img: c.info.portrait || '', cls: classLabel(c), hp: +cb.hp || 0, hpMax: +cb.hpMax || 1, temp: +cb.temp || 0, ac: +cb.ac || 10,
+    return { name: (c.info.name || 'Без имени') + (c.shape ? ` (${c.shape.n})` : ''), img: c.info.portrait || '', poly: !!(c.shape && c.shape.poly), cls: classLabel(c), hp: +cb.hp || 0, hpMax: +cb.hpMax || 1, temp: +cb.temp || 0, ac: +cb.ac || 10,
       cond: [...cb.conditions, ...(cb.exhaustion ? [`истощение ${cb.exhaustion}`] : [])], conc: cb.conc || '', speed: curSpeed(c), init: initBonus(c), size: c.info.size || 'Средний',
       // Рывок и Отход бонусным действием: Хитрое действие плута, Шаг ветра / Терпеливая оборона монаха
       bonus: clsLvl(c, 'Плут') >= 2 || clsLvl(c, 'Монах') >= 2 ? ['dash', 'dis'] : [], atks: attacksPerAction(c), evasion: hasEvasion(c), dsS: +cb.deathS || 0, dsF: +cb.deathF || 0,
@@ -455,6 +455,35 @@ window.dndApp = {
     save(); render();
     return res;
   },
+  // Превращение со стола: облик зверя, временные хиты — его хиты (2024); кончаются — облик спадает
+  polymorph(id, e) {
+    const c = state.chars[id], m = BESTIARY.find((x) => x.e === e);
+    if (!c || !m) return false;
+    if (state.current !== id) state.current = id;
+    tracked(`превращение: ${m.n}`, () => {
+      c.shape = { n: m.n, e: m.e, ac: m.ac, speed: m.speed, ab: m.ab.slice(0, 3), atk: beastAtk(m), x: m.x || '', prevAc: c.combat.ac, poly: true };
+      c.combat.temp = Math.max(+c.combat.temp || 0, avgDice(m.hp));
+    });
+    toast(`🐸 Превращение: ${esc(m.n)}`, 'crit');
+    save(); render();
+    return true;
+  },
+  unpolymorph(id) {
+    const c = state.chars[id];
+    if (!c || !c.shape || !c.shape.poly) return;
+    if (state.current !== id) state.current = id;
+    tracked('конец превращения', () => { endShape(c); c.combat.temp = 0; });
+    save(); render();
+  },
+  // Временные хиты со стола (Псевдожизнь, Доспех Агатиса, Героизм): не складываются — берётся большее
+  setTemp(id, n) {
+    const c = state.chars[id];
+    if (!c || !(n > 0)) return;
+    if (state.current !== id) state.current = id;
+    if ((+c.combat.temp || 0) >= n) return;
+    tracked('временные хиты', () => { c.combat.temp = n; });
+    save(); render();
+  },
   // Концентрация прервана со стола (Метель, Землетрясение)
   dropConc(id) {
     const c = state.chars[id];
@@ -513,6 +542,8 @@ window.dndApp = {
       const smSpell = o.smite && c.spells.find((s) => s.e === 'Divine Smite');
       if (hit && smSpell && !A.spell) { smite = spendSlot(c, smSpell, o.smite).castLvl || 1; expr += `+${X(`${1 + smite}d8`)}`; extra.push(`Божественная кара (${smite} ур.)`); }
       if (hit && sup && o.maneuver !== 'Точная атака') { sup.used += 1; expr += `+${X(sd)}`; extra.push(o.maneuver); }
+      // Метка охотника, Сглаз, Увеличение: дополнительные кости урона при попадании
+      (o.dmgDice || []).forEach((x) => { if (hit) { expr += `+${X(x.e)}`; extra.push(x.n); } });
       let d = null;
       if (hit && expr) d = rollDice(`${crit ? 'КРИТ ' : ''}Урон: ${A.n}${A.type ? ` (${A.type})` : ''}${extra.length ? ` + ${extra.join(', ')}` : ''}`, expr);
       ammoWarn(c, a);
@@ -706,6 +737,8 @@ function wildLimit(c) {
   if (isMoon(c)) cr = Math.max(cr, Math.max(1, Math.floor(D / 3)));
   return { cr, fly: D >= 8, temp: isMoon(c) ? 3 * D : D };
 }
+// Среднее по костям: '3d8+6' → 19
+const avgDice = (e) => { const m = String(e).match(/(\d+)d(\d+)\s*([+-]\s*\d+)?/); return m ? Math.floor((+m[1] * (+m[2] + 1)) / 2) + (m[3] ? +m[3].replace(/\s/g, '') : 0) : +e || 1; };
 const SHAPE_AB = { str: 0, dex: 1, con: 2 };
 const shapeAC = (c) => (isMoon(c) ? Math.max(c.shape.ac, 13 + am(c, 'wis')) : c.shape.ac);
 const beastAtk = (m) => (m.atk || []).map((a, i) => ({ id: `b${i}`, n: a.n, hit: +a.hit || 0, dmg: a.dmg || '', type: a.type || '', range: a.range ? `${a.range} фт` : `${a.reach || 5} фт` }));

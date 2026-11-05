@@ -745,3 +745,10 @@ body.tbl-full-on .toasts { z-index: 95; top: 64px; bottom: auto; }
 .tok-alt { position: absolute; top: -8px; right: -6px; padding: 0 4px; border-radius: 6px; background: #2e4f7a; color: #fff; font-size: 10px; font-weight: 700; line-height: 14px; box-shadow: 0 1px 3px #000; z-index: 2; }
 .tok-face.ic { font-size: 20px; }
 .tok.pc[data-tok*="_s"] .tok-face { border-style: dashed; }
+/* Невидимость и изгнание */
+.tok.invis { opacity: .45; }
+.tok.invis .tok-face { outline: 2px dotted #cfe3ff; outline-offset: 2px; }
+.tok.banished { opacity: .25; filter: grayscale(1); }
+.tok.illus { opacity: .55; }
+.tok.illus .tok-face { border-style: dashed !important; }
+.tok.illus .tok-name::after { content: ' ✨иллюзия'; color: #cfb8ff; }
