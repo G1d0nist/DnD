@@ -885,7 +885,7 @@ function renderTokens() {
     el.title = `${label}${showNums ? ` · ${t.hp}/${t.hpMax} хитов${t.ac ? ` · КД ${t.ac}` : ''}` : ''}${(t.cond || []).length ? ` · ${t.cond.map(condName).join(', ')}` : ''}${ec.dodge ? ' · уклоняется' : ''}${ec.dis ? ' · отходит' : ''}${concName(id, t) ? ` · 🌀 концентрация: ${concName(id, t)}` : ''}`;
     const html = `${t.img && !dead ? `<div class="tok-face img" style="background-image:url('${t.img}')"></div>` : `<div class="tok-face${t.ic ? ' ic' : ''}">${dead ? '☠' : t.ic ? esc(t.ic) : esc((t.name || '?').trim().slice(0, 2))}</div>`}
       ${t.hpMax ? `<div class="tok-hp"><div style="width:${pct * 100}%;background:${pct > .5 ? '#5a9e5a' : pct > .25 ? '#d4a64a' : '#c94a3d'}"></div></div>` : ''}
-      ${+t.alt ? `<div class="tok-alt" title="Высота">↑${t.alt}</div>` : ''}${+t.ward ? `<div class="tok-ward" title="Магическая защита: принимает урон первой">🛡${t.ward}</div>` : ''}<div class="tok-name">${esc(label || '')}${fxOf(id).map(([, f]) => f.ic || '').join('').slice(0, 6)}${(t.cond || []).length ? ` <span class="tok-cond">●${t.cond.length}</span>` : ''}</div>`;
+      ${+t.alt ? `<div class="tok-alt" title="Высота">↑${t.alt}</div>` : ''}${+t.ward ? `<div class="tok-ward" title="Магическая защита: принимает урон первой">🛡${t.ward}</div>` : ''}<div class="tok-name">${esc(label || '')}${fxOf(id).filter(([, f]) => f.ic).slice(0, 4).map(([, f]) => `<span class="tok-fx" title="${esc(fxTip(f))}">${f.ic}</span>`).join('')}${(t.cond || []).length ? ` <span class="tok-cond">●${t.cond.length}</span>` : ''}</div>`;
     // Пересоздавать содержимое только при изменении — иначе касание пальцем «теряет» токен посреди перетаскивания
     if (el._html !== html) { el.innerHTML = html; el._html = html; }
   });
@@ -906,7 +906,20 @@ function hint(text, e) {
 }
 function onDown(e) {
   if (!game || e.button > 0 || pinch || touchPts.size > 1) return;
-  const tokEl = e.target.closest('[data-tok]'), p = cellAt(e);
+  const p = cellAt(e);
+  let tokEl = e.target.closest('[data-tok]');
+  // Пальцем легко промахнуться мимо маленького токена: ближайший видимый токен в ¾ клетки от его края — считаем попаданием
+  if (!tokEl && e.pointerType === 'touch' && (tool === 'move' || aim || (cast && cast.area.shape === 'target'))
+    && !chestAt(p.x, p.y) && !dropAt(p.x, p.y) && !(game.doors || {})[`${p.x}_${p.y}`]) {
+    let best = null;
+    $$('#tblTokens [data-tok]').forEach((el) => {
+      const t = game.tokens[el.dataset.tok];
+      if (!t) return;
+      const s = t.size || 1, dx = Math.max(t.x * CELL - p.px, 0, p.px - (t.x + s) * CELL), dy = Math.max(t.y * CELL - p.py, 0, p.py - (t.y + s) * CELL), d = Math.hypot(dx, dy);
+      if (d <= CELL * 0.75 && (!best || d < best.d)) best = { el, d };
+    });
+    if (best) tokEl = best.el;
+  }
   // «Переставить меня»: нажатие на клетку ставит персонажа; нажатие на свой токен — сразу обычное перетаскивание
   if (tool === 'place') {
     tool = 'move'; renderTools(); $('#tblBoard').dataset.tool = tool;
@@ -2148,6 +2161,12 @@ function unseen(aid, tid) {
   if (v === 'fog') return 'туман';
   if (v === 'dark' && !ts && !(s.ds && d <= s.ds)) return 'тьма';
   return '';
+}
+// Подсказка к значку эффекта: название, сколько раундов осталось, концентрация, источник
+const fxLeft = (f) => (inFight() && +f.until ? Math.max(0, +f.until - (game.init.round || 1) + 1) : 0);
+function fxTip(f) {
+  const left = fxLeft(f), src = f.from && game.tokens[f.from] ? game.tokens[f.from].name : '';
+  return `${f.n || 'Эффект'}${left ? ` — ещё ${left} ${left === 1 ? 'раунд' : left < 5 ? 'раунда' : 'раундов'}` : ''}${f.conc ? ' · пока держится концентрация' : ''}${src && src !== f.n ? ` · от: ${src}` : ''}`;
 }
 // Строка «Чувства» в карточке существа
 function sensesLine(id) {
@@ -3835,6 +3854,7 @@ function checkMyTurn() {
   if (hero && m.charId) app.setTemp(m.charId, +hero[1].thpTurn);
   const mine = game.tokens[`pc_${user.uid}`];
   app.toast(mine && isDown(mine) && !isStable(mine) && !isDead(mine) ? '💀 Ваш ход: вы без сознания — бросьте спасбросок от смерти' : '⚔ Ваш ход!', 'crit');
+  snd('turn');
   // С начала 2-го раунда каждый ваш ход сдвигает эффекты в листе на раунд
   if (game.init.round > 1) app.tickRound(m.charId);
 }
@@ -5928,6 +5948,41 @@ function tokCenter(id) {
   const s = (t.size || 1) * CELL;
   return { x: t.x * CELL + s / 2, y: t.y * CELL + s / 2, s };
 }
+// Звуки стола — синтез в браузере, без файлов: удар, крит, промах, заклинание, лечение, падение, «ваш ход».
+// Выключаются кнопкой 🔊 на панели (запоминается на устройстве)
+let sndOn = (() => { try { return localStorage.getItem('dnd55-snd') !== '0'; } catch (e) { return true; } })(), actx = null, sndLast = 0;
+function snd(kind) {
+  if (!sndOn) return;
+  const now = Date.now();
+  if (now - sndLast < 60) return; // пачка записей журнала — не какофония
+  sndLast = now;
+  try {
+    actx = actx || new (window.AudioContext || window.webkitAudioContext)();
+    if (actx.state === 'suspended') actx.resume();
+    const t0 = actx.currentTime + 0.01, out = actx.createGain();
+    out.gain.value = 0.16; out.connect(actx.destination);
+    const env = (g, at, d, peak = 1) => { g.gain.setValueAtTime(0.0001, t0 + at); g.gain.exponentialRampToValueAtTime(peak, t0 + at + 0.012); g.gain.exponentialRampToValueAtTime(0.0001, t0 + at + d); };
+    const tone = (f, d, type = 'sine', at = 0, f2 = 0, peak = 1) => {
+      const o = actx.createOscillator(), g = actx.createGain();
+      o.type = type; o.frequency.setValueAtTime(f, t0 + at); if (f2) o.frequency.exponentialRampToValueAtTime(f2, t0 + at + d);
+      env(g, at, d, peak); o.connect(g); g.connect(out); o.start(t0 + at); o.stop(t0 + at + d + 0.03);
+    };
+    const noise = (d, at = 0, freq = 800, q = 1, peak = 1) => {
+      const len = Math.ceil(actx.sampleRate * d), buf = actx.createBuffer(1, len, actx.sampleRate), ch = buf.getChannelData(0);
+      for (let i = 0; i < len; i++) ch[i] = Math.random() * 2 - 1;
+      const s = actx.createBufferSource(), f = actx.createBiquadFilter(), g = actx.createGain();
+      s.buffer = buf; f.type = 'bandpass'; f.frequency.value = freq; f.Q.value = q;
+      env(g, at, d, peak); s.connect(f); f.connect(g); g.connect(out); s.start(t0 + at); s.stop(t0 + at + d + 0.03);
+    };
+    if (kind === 'hit') { noise(0.12, 0, 500, 0.8); tone(140, 0.16, 'triangle', 0, 55, 0.8); }
+    else if (kind === 'crit') { noise(0.14, 0, 450, 0.8); tone(130, 0.2, 'triangle', 0, 50); tone(880, 0.22, 'sine', 0.06, 0, 0.5); tone(1320, 0.32, 'sine', 0.13, 0, 0.45); }
+    else if (kind === 'miss') noise(0.22, 0, 2600, 0.6, 0.6);
+    else if (kind === 'spell') { tone(520, 0.4, 'sine', 0, 1100, 0.5); tone(780, 0.45, 'triangle', 0.07, 1600, 0.35); noise(0.3, 0.05, 5000, 2, 0.25); }
+    else if (kind === 'heal') { tone(523, 0.22, 'sine', 0, 0, 0.5); tone(659, 0.22, 'sine', 0.09, 0, 0.5); tone(784, 0.35, 'sine', 0.18, 0, 0.5); }
+    else if (kind === 'down') tone(240, 0.6, 'sawtooth', 0, 70, 0.35);
+    else if (kind === 'turn') { tone(660, 0.12, 'sine', 0, 0, 0.5); tone(990, 0.18, 'sine', 0.11, 0, 0.5); }
+  } catch (e) { /* звук недоступен — молча */ }
+}
 function fxLog() {
   if (!game) return;
   logList().slice().reverse().forEach((e) => {
@@ -5940,6 +5995,12 @@ function fxLog() {
       else if (e.kind === 'dmg') fxHit(e.tgt, e.dmg, {});
       else if (e.kind === 'area' && e.fx) fxArea(e.fx);
       else if (e.kind === 'save' && e.res) e.res.forEach((r, i) => setTimeout(() => fxHit(r.id, r.dmg, { saved: r.ok, down: r.down }), 200 + i * 140));
+      // Звук к событию журнала; кто-то упал — низкий гул следом
+      if (e.kind === 'atk') snd(e.crit ? 'crit' : e.hit ? 'hit' : 'miss');
+      else if (e.kind === 'heal') snd('heal');
+      else if (e.kind === 'dmg' || (e.kind === 'save' && (e.res || []).some((r) => r.dmg))) snd('hit');
+      else if (e.kind === 'area') snd('spell');
+      if (e.down || (e.res || []).some((r) => r.down)) setTimeout(() => snd('down'), 300);
       if (e.down) skulls.add(e.k);
       return;
     }
@@ -6172,7 +6233,8 @@ function renderTools() {
   const brushes = ['tree', 'rock', 'bush', 'road', 'sand', 'bridge', 'furn', 'floor', 'crate', 'grave', 'mushroom', 'stairs', 'lava', 'chasm'], rough = ['thicket', 'bog', 'rubble', 'slope', 'snow', 'ice'];
   const handouts = isDM() || hoMine().length ? b('handouts', `📜 Материалы${!isDM() && hoMine().length ? ` (${hoMine().length})` : ''}`, isDM() ? 'Показать игрокам картинку, письмо или карту' : 'Что показывал мастер') : '';
   const base = t('move', '✋ Двигать', 'Перетаскивайте токены; шаг — WASD или стрелки') + t('ruler', '📏 Линейка', 'Протяните, чтобы измерить расстояние')
-    + b('keys', '⌨', 'Клавиши: шаг WASD, атака Q, заклинание E, спасбросок Alt… — посмотреть и переназначить (K)');
+    + b('keys', '⌨', 'Клавиши: шаг WASD, атака Q, заклинание E, спасбросок Alt… — посмотреть и переназначить (K)')
+    + b('sound', sndOn ? '🔊' : '🔇', sndOn ? 'Звуки стола включены — выключить' : 'Звуки стола выключены — включить');
   if (!isDM()) {
     $('#tblTools').innerHTML = `<div class="seg">${base}${!(hasMine && inFight()) ? t('place', hasMine ? '📍 Переставить меня' : '📍 Поставить персонажа', 'Нажмите на клетку') : ''}
       ${me() && me().charId && app.companions(me().charId).length ? b('compPick', '🐾 Спутник', 'Поставить спутника из листа на поле', tool === 'placeComp') : ''}
@@ -6382,7 +6444,7 @@ function renderSide() {
     ${t.speed ? `<div class="muted small">Скорость ${t.speed} фт${t.init != null ? ` · инициатива ${t.init >= 0 ? '+' : ''}${t.init}` : ''}</div>` : ''}
     ${t.shop ? `<div class="mt"><button class="primary" data-tbl="shop">🛒 Товары</button> <span class="muted small">${esc(SHOP_N[t.shop.kind] || '')}</span></div>` : ''}
     ${(t.cond || []).length ? `<div class="chips mt">${t.cond.map((c) => `<span class="chip on"><span>${esc(condName(c))}</span></span>`).join('')}</div>` : ''}
-    ${fxOf(selId).length ? `<div class="chips mt">${fxOf(selId).map(([k, f]) => `<span class="chip on" title="${esc(f.spell || '')}"><span>${f.ic || '✦'} ${esc(f.n || '')}</span>${dm || mine || f.by === user.uid ? `<button data-tbl="fxDel" data-k="${k}" title="Снять эффект">✕</button>` : ''}</span>`).join('')}</div>` : ''}
+    ${fxOf(selId).length ? `<div class="chips mt">${fxOf(selId).map(([k, f]) => `<span class="chip on" title="${esc(fxTip(f))}"><span>${f.ic || '✦'} ${esc(f.n || '')}${fxLeft(f) ? ` · ${fxLeft(f)} р.` : ''}</span>${dm || mine || f.by === user.uid ? `<button data-tbl="fxDel" data-k="${k}" title="Снять эффект">✕</button>` : ''}</span>`).join('')}</div>` : ''}
     ${t.illus && !dm && !mine && !illusSeen.has(selId) ? '<div class="row gap wrap mt"><button data-tbl="illusCheck" title="Действие «Изучение»: Интеллект (Анализ) против СЛ заклинателя">🔍 Изучить</button></div>' : t.illus && (dm || mine || illusSeen.has(selId)) ? '<div class="muted small mt">✨ Иллюзия</div>' : ''}
     ${sensesLine(selId)}
     ${dm && t.kind === 'pc' && !t.comp && !t.sum ? `<div class="row gap wrap mt"><button data-tbl="abilDm" data-id="${selId}" title="Базовые характеристики персонажа — игрок сам их менять не может">✎ Характеристики</button></div>` : ''}
@@ -6985,6 +7047,7 @@ async function onClick(e) {
     else if (a === 'saveMine') saveMine(b.dataset.k, b.dataset.id);
     else if (a === 'abilDm') abilDmDialog(b.dataset.id);
     else if (a === 'undo') undoLast();
+    else if (a === 'sound') { sndOn = !sndOn; try { localStorage.setItem('dnd55-snd', sndOn ? '1' : '0'); } catch (err) { /* без хранилища */ } if (sndOn) snd('turn'); renderTools(); }
     else if (a === 'areaAgain') areaAgain(b.dataset.k);
     else if (a === 'zoneMove') zoneMoveStart(b.dataset.k);
     else if (a === 'wallMode' && cast) wallSetMode(b.dataset.m);

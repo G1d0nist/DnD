@@ -1,6 +1,6 @@
 'use strict';
 // Увеличивайте версию при изменении файлов, чтобы обновить кэш у пользователей.
-const CACHE = 'dnd55-v63';
+const CACHE = 'dnd55-v64';
 const FILES = ['./', 'index.html', 'style.css', 'app.js', 'data.js', 'data2.js', 'bestiary.js', 'mapgen.js', 'spellmech.js', 'table.js', 'sync.js', 'firebase-config.js', 'manifest.webmanifest', 'icon.svg'];
 // Кроме своих файлов кэшируем только шрифты и SDK Firebase; запросы к базе Firestore и входу не трогаем.
 const CACHE_HOSTS = ['fonts.googleapis.com', 'fonts.gstatic.com', 'www.gstatic.com'];

@@ -314,6 +314,7 @@ button.stat:hover { border-color: var(--gold); }
 .tok-hp { position: absolute; left: 4px; right: 4px; bottom: -3px; height: 5px; background: #000a; border-radius: 3px; overflow: hidden; }
 .tok-hp > div { height: 100%; transition: width .3s; }
 .tok-name { position: absolute; left: 50%; top: 100%; transform: translateX(-50%); margin-top: 3px; white-space: nowrap; font-size: 10px; padding: 0 4px; border-radius: 4px; background: #000b; color: #eee; pointer-events: none; }
+.tok-name .tok-fx { pointer-events: auto; cursor: help; padding: 0 1px; }
 .tok-cond { color: #f3b1a8; }
 .tbl-hint { position: absolute; z-index: 10; padding: 2px 8px; border-radius: 6px; background: #000d; color: var(--gold2); font-size: 12px; pointer-events: none; white-space: nowrap; }
 .tbl-side { display: grid; gap: 10px; }
@@ -449,9 +450,12 @@ button.stat:hover { border-color: var(--gold); }
 }
 @media (max-width: 760px) {
   .g-main, .g-combat, .g-spells, .g-inv, .g-notes { grid-template-columns: 1fr; }
-  .quickbar { grid-template-columns: 1fr; position: static; }
+  /* minmax(0, 1fr): верхняя панель не шире экрана телефона, ряды кнопок переносятся */
+  .quickbar { grid-template-columns: minmax(0, 1fr); position: static; }
+  .quickbar > * { min-width: 0; }
   .qb-stats { justify-content: space-between; }
   .qb-right { align-items: stretch; }
+  .qb-right > * { flex-wrap: wrap; }
   .form-grid.three { grid-template-columns: 1fr 1fr 1fr; }
   .form-grid .w2 { grid-column: auto; }
   .abil-grid { grid-template-columns: repeat(2, 1fr); }
@@ -758,3 +762,10 @@ body.tbl-full-on .toasts { z-index: 95; top: 64px; bottom: auto; }
 .tok.illus { opacity: .55; }
 .tok.illus .tok-face { border-style: dashed !important; }
 .tok.illus .tok-name::after { content: ' ✨иллюзия'; color: #cfb8ff; }
+/* Сенсорный экран (телефон, планшет): кнопки, пункты меню и галочки крупнее — пальцем легче попасть */
+@media (pointer: coarse) {
+  .tbl-hud button, #tblTools button, .tm-btn, .tm-pop button, .tbl-side button, .modal button, .atk-pick { min-height: 42px; }
+  .hud-slot { min-height: 54px; }
+  .modal .check input[type="checkbox"], .modal .check input[type="radio"] { width: 20px; height: 20px; }
+  .tok-fx { font-size: 13px; }
+}
