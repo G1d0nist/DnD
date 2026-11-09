@@ -754,6 +754,7 @@ body.tbl-full-on .toasts { z-index: 95; top: 64px; bottom: auto; }
 .tok.reckless:not(.conc)::after { content: '⚡'; position: absolute; left: -6px; top: -8px; font-size: 14px; filter: drop-shadow(0 0 2px #000); pointer-events: none; }
 .tok.wild .tok-face { outline: 2px solid #6fbf5a; outline-offset: 2px; filter: sepia(.35) hue-rotate(40deg); }
 .tok.banished { opacity: .25; filter: grayscale(1); }
+.tok.magic-sense .tok-face { box-shadow: 0 0 0 2px #b98cff, 0 0 14px 4px rgba(185, 140, 255, .8); }
 .tok.illus { opacity: .55; }
 .tok.illus .tok-face { border-style: dashed !important; }
 .tok.illus .tok-name::after { content: ' ✨иллюзия'; color: #cfb8ff; }

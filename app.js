@@ -292,7 +292,7 @@ window.dndApp = {
     const plain = (s) => ({ shape: 'target', size: 0, width: 5, save: '', half: false, self: false, range: /касан/i.test(s.r || '') ? 5 : parseInt(s.r) || 0,
       dtype: dmgWord(s.x), act: /бонусн/i.test(s.t || '') ? 'bonus' : /реакц/i.test(s.t || '') ? 'reaction' : 'action', pick: false });
     return c.spells.filter((s) => +s.l === 0 || s.prep || s.always).map((s) => ({ s, a: spellArea(s) || (extra.includes(s.e) ? plain(s) : null) })).filter((x) => x.a)
-      .map(({ s, a }) => ({ id: s.id, e: s.e || '', n: s.n, l: +s.l, f: s.f || '', u: s.u || '', addMod: !!s.addMod, cn: !!s.cn, dur: s.d || '', comp: s.c || '', sch: s.s || '', rt: !!s.rt, dc: spellDCFor(c, s), slots: slotOptions(c, s), ...a }));
+      .map(({ s, a }) => ({ id: s.id, e: s.e || '', n: s.n, l: +s.l, f: s.f || '', u: s.u || '', addMod: !!s.addMod, cn: !!s.cn, dur: s.d || '', comp: s.c || '', sch: s.s || '', rt: !!s.rt, ct: s.t || '', dc: spellDCFor(c, s), slots: slotOptions(c, s), ...a }));
   },
   // Портрет персонажа (маленький JPEG) — хранится в листе, стол показывает его на токене
   setPortrait(id, data) { const c = state.chars[id]; if (!c) return; c.info.portrait = data || ''; c.updatedAt = Date.now(); if (c === ch()) { save(); render(); } else lsSet(STORE, JSON.stringify(state)); },
@@ -3099,7 +3099,7 @@ function spellArea(s) {
     dtype: dmgWord(s.x), act: /бонусн/i.test(s.t || '') ? 'bonus' : /реакц/i.test(s.t || '') ? 'reaction' : 'action', ...(base || {}),
     ...Object.fromEntries(['shape', 'size', 'width', 'save', 'half', 'pick', 'act', 'dtype'].filter((k) => M[k] != null).map((k) => [k, M[k]])),
     self, range: self ? 0 : M.range != null ? M.range : base ? base.range : /касан/i.test(r) ? 5 : parseInt(r) || 0, zone: M.zone || null, wall: M.wall || null,
-    ...Object.fromEntries(['upSize', 'persist', 'leave', 'part', 'nParts', 'contiguous', 'summon', 'rays', 'upRays', 'up', 'onHit', 'passenger', 'distinct', 'darts', 'chain', 'miss', 'melee', 'drain', 'light', 'dispel'].filter((k) => M[k] != null).map((k) => [k, M[k]])),
+    ...Object.fromEntries(['upSize', 'persist', 'leave', 'part', 'nParts', 'contiguous', 'summon', 'rays', 'upRays', 'up', 'onHit', 'passenger', 'distinct', 'darts', 'chain', 'miss', 'melee', 'drain', 'light', 'dispel', 'glyph', 'choose'].filter((k) => M[k] != null).map((k) => [k, M[k]])),
     ...(M.dmg ? { mdmg: M.dmg } : {}) };
 }
 function spellAreaText(s) {

@@ -767,7 +767,10 @@ function renderTokens() {
     el.style.width = el.style.height = s * CELL + 'px';
     el.style.setProperty('--tc', t.kind === 'npc' ? SIDE_COLOR[t.side || 'enemy'] : t.color || '#d4a64a');
     const down = isDown(t), dead = down && isDead(t), label = down ? downLabel(t) : t.name;
-    el.className = `tok ${t.kind} side-${team(t)} ${canMove(t) ? 'mine' : ''} ${selId === id ? 'sel' : ''} ${cur && cur.tokenId === id ? 'turn' : ''} ${t.hidden ? 'hid' : ''} ${down ? 'down' : ''} ${dead ? 'dead' : ''} ${kbdPick === id && (aim || cast) ? 'kpick' : ''} ${concName(id, t) ? 'conc' : ''} ${invis ? 'invis' : ''} ${banned ? 'banished' : ''} ${fxOf(id).some(([, f]) => f.rage) ? 'raging' : ''} ${econ(id).reck ? 'reckless' : ''} ${t.wild ? 'wild' : ''} ${t.illus && (t.owner === user.uid || isDM() || illusSeen.has(id)) ? 'illus' : ''}`;
+    // Обнаружение магии: магическое существо в пределах светится; иллюзия выдаёт себя школой магии
+    const sensed = inDetect(t.x, t.y, s) && isMagicTok(id, t);
+    if (sensed && t.illus) illusSeen.add(id);
+    el.className = `tok ${sensed ? 'magic-sense' : ''} ${t.kind} side-${team(t)} ${canMove(t) ? 'mine' : ''} ${selId === id ? 'sel' : ''} ${cur && cur.tokenId === id ? 'turn' : ''} ${t.hidden ? 'hid' : ''} ${down ? 'down' : ''} ${dead ? 'dead' : ''} ${kbdPick === id && (aim || cast) ? 'kpick' : ''} ${concName(id, t) ? 'conc' : ''} ${invis ? 'invis' : ''} ${banned ? 'banished' : ''} ${fxOf(id).some(([, f]) => f.rage) ? 'raging' : ''} ${econ(id).reck ? 'reckless' : ''} ${t.wild ? 'wild' : ''} ${t.illus && (t.owner === user.uid || isDM() || illusSeen.has(id)) ? 'illus' : ''}`;
     const ec = inFight() ? econ(id) : {};
     el.title = `${label}${showNums ? ` · ${t.hp}/${t.hpMax} хитов${t.ac ? ` · КД ${t.ac}` : ''}` : ''}${(t.cond || []).length ? ` · ${t.cond.map(condName).join(', ')}` : ''}${ec.dodge ? ' · уклоняется' : ''}${ec.dis ? ' · отходит' : ''}${concName(id, t) ? ` · 🌀 концентрация: ${concName(id, t)}` : ''}`;
     const html = `${t.img && !dead ? `<div class="tok-face img" style="background-image:url('${t.img}')"></div>` : `<div class="tok-face${t.ic ? ' ic' : ''}">${dead ? '☠' : t.ic ? esc(t.ic) : esc((t.name || '?').trim().slice(0, 2))}</div>`}
@@ -1483,6 +1486,8 @@ function moveInfo(id) {
   // Скорость с эффектами: «Ускорение» — вдвое, «Замедление» — вдвое меньше, приём «Замедление» — −10 фт
   let speed = speedOf(t);
   fxOf(id).forEach(([, f]) => { if (f.spd === 'x2') speed *= 2; else if (f.spd === 'half') speed = Math.floor(speed / 10) * 5; else if (+f.spd) speed = Math.max(0, speed + +f.spd); });
+  // Газообразная форма — скорость ровно 10 фт
+  fxOf(id).forEach(([, f]) => { if (+f.spdSet) speed = +f.spdSet; });
   if (e.zero) speed = 0; // Верный прицел: скорость 0 до конца хода
   const incap = isDown(t) || cond.some((k) => INCAP.includes(k)), bonus = (charOf(t) || {}).bonus || [];
   const total = speed * (1 + (e.dash || 0));
@@ -1850,6 +1855,7 @@ function openAttack(id) {
   const t = game.tokens[id], m = me(), e = econ(id), turn = isTurnOf(id);
   if (!t || !m || !m.charId) return;
   if (incapTok(t)) { app.toast('Вы недееспособны и не можете атаковать'); return; }
+  if (fxOf(id).some(([, f]) => f.gas)) { app.toast('🌫 В газообразной форме нельзя атаковать'); return; }
   const atks = app.attacks(m.charId), per = (app.summary(m.charId) || {}).atks || 1;
   const ways = [];
   if (turn && (e.atk > 0 || !e.a)) ways.push(['action', e.atk > 0 ? `Действие «Атака» — осталось атак: ${e.atk}` : `Действие «Атака»${per > 1 ? ` (${per} атаки)` : ''}`]);
@@ -2011,6 +2017,16 @@ function sensesLine(id) {
   if (dv) out.push(`тёмное ${dv} фт`);
   return out.length ? `<div class="muted small mt">👁 Зрение: ${out.join(', ')}</div>` : '';
 }
+// Обнаружение магии: мои области-«чувства» (у мастера — все); точка в пределах — магия там видна
+function inDetect(x, y, size = 1) {
+  return Object.values(game.areas || {}).some((A) => A.z && A.z.detect && A.keep && (A.by === user.uid || isDM()) && game.tokens[A.from]
+    && distFt(game.tokens[A.from], { x, y, size }) <= (+A.size || 30));
+}
+// Что излучает магию: призванные, иллюзии, существа под заклинаниями, с Магической защитой, заклинатели из бестиария
+function isMagicTok(id, t) {
+  return !!(t.sum || t.illus || t.invul || +t.ward || fxOf(id).some(([, e]) => e.spell || e.ic) || (t.kind === 'npc' && /заклинани|магич/i.test(String(t.tr || ''))));
+}
+const magicLoot = (items) => (items || []).some((it) => it.kind === 'magic' || it.att || +it.r >= 1 || /^Свиток/.test(it.n || ''));
 // Видит ли невидимых (для показа токенов): Видение невидимого, истинное или слепое зрение в пределах
 function seesInvis(aid, tid) {
   const A = game.tokens[aid], T = game.tokens[tid];
@@ -2447,8 +2463,16 @@ function drawAreas() {
   const cv = $('#tblAreas'), g = cv.getContext('2d');
   g.clearRect(0, 0, cv.width, cv.height);
   if (!game) return;
-  const list = Object.values(game.areas || {});
+  // Глиф оберегания виден только поставившему и мастеру
+  const list = Object.values(game.areas || {}).filter((A) => !A.glyph || A.by === user.uid || isDM());
   if (cast && cast.area && cast.area.ox != null) list.push({ ...cast.area, preview: true });
+  // Обнаружение магии: сундуки и брошенные вещи с магическими предметами в пределах — фиолетовое свечение
+  [...Object.values(game.chests || {}).map((C) => [C, (C.loot || {}).items]), ...Object.values(game.drops || {}).map((D) => [D, D.items])].forEach(([P, items]) => {
+    if (!magicLoot(items) || !inDetect(P.x, P.y)) return;
+    const cx = (P.x + 0.5) * CELL, cy = (P.y + 0.5) * CELL, gr = g.createRadialGradient(cx, cy, 2, cx, cy, CELL * 0.8);
+    gr.addColorStop(0, 'rgba(190, 140, 255, .75)'); gr.addColorStop(1, 'rgba(190, 140, 255, 0)');
+    g.fillStyle = gr; g.fillRect(cx - CELL, cy - CELL, CELL * 2, CELL * 2);
+  });
   list.forEach((A) => {
     const col = A.color || '#d4a64a';
     g.save();
@@ -2890,6 +2914,7 @@ function cancelCast() { cast = null; hint(''); renderAll(); }
 function openCast(id) {
   const m = me(), e = econ(id), turn = isTurnOf(id);
   if (!m || !m.charId) return;
+  if (fxOf(id).some(([, f]) => f.gas)) { app.toast('🌫 В газообразной форме нельзя творить заклинания'); return; }
   const list = app.areaSpells(m.charId, Object.keys(SPELL_FX));
   const can = (act) => !inFight() || (act === 'reaction' ? !e.r : turn && (act === 'bonus' ? !e.b : !e.a && !(e.atk > 0)));
   const ACT_N = { action: 'действие', bonus: 'бонусное', reaction: 'реакция' };
@@ -2924,6 +2949,8 @@ const spellComp = (name) => ((typeof SPELLS !== 'undefined' && SPELLS.find((s) =
 function spellPick(id, I) {
   const m = me(), F = SPELL_FX[I.e];
   if (!m || !m.charId) return;
+  // Накладывается минуту и дольше (Глиф оберегания — 1 час) — не в бою
+  if (inFight() && /минут|час/i.test(I.ct || '')) { app.toast(`«${esc(I.n)}» накладывается ${esc(I.ct)} — в бою нельзя`); return; }
   const mi = app.metaInfo(m.charId) || { opts: [], pts: 0, cha: 1 };
   const metas = metaFor(I, F, mi), hasSubtle = metas.some((x) => x[0] === 'subtle');
   if (silenced(id) && needsV(I.comp) && !hasSubtle) { app.toast('🔇 В Тишине нельзя заклинания со словесным компонентом'); return; }
@@ -3063,7 +3090,8 @@ function confirmCast() {
   }
   // Выбор при сотворении: вид энергии (Защита от энергии), облик зверя (Превращение)
   const forms = F && F.forms ? F.forms.map((e) => BEST().find((m) => m.e === e)).filter(Boolean) : [];
-  const chooseHtml = F && F.choose ? `<label class="mt">Вид урона<select id="cChoose">${F.choose.map(([v, n]) => `<option value="${v}">${n}</option>`).join('')}</select></label>`
+  const CH = (F && F.choose) || I.choose;
+  const chooseHtml = CH ? `<label class="mt">Вид урона<select id="cChoose">${CH.map(([v, n]) => `<option value="${v}">${n}</option>`).join('')}</select></label>`
     : forms.length ? `<label class="mt">Облик<select id="cChoose">${forms.map((m) => `<option value="${esc(m.e)}">${esc(m.n)} (ПО ${m.cr}, ${avgExpr(m.hp)} хитов)</option>`).join('')}</select></label>` : '';
   // Осторожное заклинание (чародей: до мод. Харизмы) и Ваяние заклинаний (Воплотитель, школа Воплощения: 1 + уровень) — кого уберечь
   const mm = cast.meta || {}, mi = cast.mi || {};
@@ -3125,6 +3153,17 @@ function doCastArea(chosen, gated) {
   const spend = () => castSpend(c);
   const until = inFight() && !I.persist ? (game.init.round || 1) + durR(c) : null, conc = I.cn ? c.caster : null;
   const metaTxt = (mm.keys || []).length ? ` · ${mm.keys.map((k) => (META.find((x) => x[0] === k) || [])[1].replace(' заклинание', '')).join(', ')}` : '';
+  // Глиф оберегания: скрытый глиф в клетке (видят поставивший и мастер); взрыв — когда враг войдёт в клетку (zoneTick)
+  if (I.glyph) {
+    const [gx, gy] = areaCells(A)[0] || [Math.floor(A.ox), Math.floor(A.oy)], dt = cast.choice || (I.choose ? I.choose[0][0] : 'огнём');
+    const G = { ...A, n: I.n + lvlTxt, keep: true, glyph: { size: I.glyph.size }, gx, gy, by: user.uid, who, abil: I.save || 'dex', dc: I.dc || 13, half: true,
+      expr: (roll && roll.expr) || I.f || '5d8', dtype: dt, ck: src ? team(src) : '', from: c.caster || null, color: '#b98cff', t: Date.now() };
+    delete G.preview; delete G.cur;
+    R.set(ref(gpath(`areas/${R.push(ref(gpath('areas'))).key}`)), Object.fromEntries(Object.entries(G).filter(([, v]) => v !== undefined))).catch(() => {});
+    spend(); cast = null; hint(''); renderAll();
+    app.toast(`🔯 Глиф поставлен (${esc(dt)}) — его видите только вы и мастер`);
+    return;
+  }
   // Лечение: всем выбранным столько, сколько выпало; применяют владельцы целей
   if (F && F.heal) {
     const amt = roll ? roll.dmg || roll.total || 0 : 0;
@@ -3235,7 +3274,7 @@ function saveMine(k, tid) {
   const dexAdv = A.abil === 'dex' && (econ(tid).dodge || fxOf(tid).some(([, e]) => e.dexAdv));
   // Спутник бросает свой спасбросок (из статблока зверя), урон — в его карточку
   const r = t.comp ? (() => { const d = die(20), b = +((t.sv || {})[A.abil]) || 0; return { total: d + b, ok: d + b >= A.dc, detail: `к20 [${d}] ${fmtMod(b)}` }; })()
-    : app.mute(() => app.rollSave(m.charId, A.abil, A.dc, { label: A.n, adv: [...(dexAdv ? ['Уклонение / Ускорение'] : []), ...(buffsOf(tid).saveAdv ? ['аура / предвидение'] : [])], dis: A.tg[tid].dis ? ['Повышенное заклинание'] : [], dice: saveDice(tid), ...(portentOn(tid) ? { force: portentOn(tid) } : {}) }));
+    : app.mute(() => app.rollSave(m.charId, A.abil, A.dc, { label: A.n, adv: [...(dexAdv ? ['Уклонение / Ускорение'] : []), ...(buffsOf(tid).saveAdv ? ['аура / предвидение'] : []), ...(buffsOf(tid).gasAdv && ['str', 'dex', 'con'].includes(A.abil) ? ['газообразная форма'] : [])], dis: A.tg[tid].dis ? ['Повышенное заклинание'] : [], dice: saveDice(tid), ...(portentOn(tid) ? { force: portentOn(tid) } : {}) }));
   if (!r) return;
   useInsp(tid);
   if (portentOn(tid)) usePortentFx(tid);
@@ -3298,7 +3337,7 @@ function saveNpcs(k) {
     let ok, total, note = '';
     if ((A.abil === 'str' || A.abil === 'dex') && ((t.hpMax && (+t.hp || 0) <= 0) || cond.some((x) => AUTO_FAIL_T.includes(x)))) { ok = false; total = '—'; note = ' (автопровал)'; }
     else {
-      const dexAdv = (A.abil === 'dex' && (econ(id).dodge || fxOf(id).some(([, e]) => e.dexAdv))) || buffsOf(id).saveAdv;
+      const bf = buffsOf(id), dexAdv = (A.abil === 'dex' && (econ(id).dodge || fxOf(id).some(([, e]) => e.dexAdv))) || bf.saveAdv || (bf.gasAdv && ['str', 'dex', 'con'].includes(A.abil));
       const hdis = (cond.includes('restrained') && A.abil === 'dex') || !!(A.tg[id] || {}).dis;
       const mode = !!dexAdv === hdis ? 0 : dexAdv ? 1 : -1;
       const pt = portentOn(id), d1 = die(20), d2 = die(20), nat = pt || (mode > 0 ? Math.max(d1, d2) : mode < 0 ? Math.min(d1, d2) : d1);
@@ -3396,8 +3435,32 @@ function zoneFire(k, A, id, why) {
   }
 }
 // Изменения на поле: кто вошёл в области, кто прошёл по «Росту шипов»
+// Глиф оберегания сработал: исчезает, взрыв сферой — спасброски как у обычной области
+const glyphFired = new Set();
+function fireGlyph(k, A, id) {
+  if (glyphFired.has(k)) return;
+  glyphFired.add(k);
+  R.remove(ref(gpath(`areas/${k}`))).catch(() => {});
+  const r = rollZone(A.expr, A.n);
+  const E = { n: `${A.n}: взрыв`, shape: 'sphere', size: (A.glyph || {}).size || 20, ox: A.gx + 0.5, oy: A.gy + 0.5, by: user.uid, who: A.who || '', abil: A.abil || 'dex', dc: A.dc || 13,
+    half: true, dmg: r ? r.total : 0, dmgDetail: r ? r.detail : '', expr: A.expr || '', dtype: A.dtype || '', keep: false, color: '#b98cff', t: Date.now() };
+  const ids = areaTokens(E);
+  if (ids.length) E.tg = Object.fromEntries(ids.map((x) => [x, { done: false }]));
+  const ek = R.push(ref(gpath('areas'))).key;
+  R.set(ref(gpath(`areas/${ek}`)), E).catch(() => {});
+  if (!ids.length) setTimeout(() => R.remove(ref(gpath(`areas/${ek}`))).catch(() => {}), 6000);
+  addLog({ kind: 'area', who: E.who, txt: `🔯 ${game.tokens[id].name} задевает глиф — ${E.n}: ${E.dmg} ${E.dtype} · спасбросок ${AB_N[E.abil]} СЛ ${E.dc}${ids.length ? ` · задеты: ${ids.map((x) => game.tokens[x].name).join(', ')}` : ''}`,
+    detail: E.dmgDetail, fx: fxShape(E) });
+}
 function zoneTick() {
   if (!game || !isDM()) return;
+  // Глифы: срабатывают и вне боя — враг поставившего (или любой, если сторона неизвестна) встал в клетку глифа
+  Object.entries(game.areas || {}).forEach(([k, A]) => {
+    if (!A.glyph || A.gx == null) return;
+    const hit = Object.entries(game.tokens || {}).find(([, t]) => !isDead(t) && !t.invul && (!A.ck || (team(t) !== A.ck && team(t) !== 'neutral'))
+      && A.gx >= t.x && A.gx < t.x + (t.size || 1) && A.gy >= t.y && A.gy < t.y + (t.size || 1));
+    if (hit) fireGlyph(k, A, hit[0]);
+  });
   const fight = inFight(), before = new Map(zoneSeen);
   Object.entries(game.areas || {}).forEach(([k, A]) => {
     if (!A.z || !A.keep) return;
@@ -3680,6 +3743,11 @@ const SPELL_FX = {
   'Blade Ward': { n: 1, fx: { n: 'Защита от оружия', ic: '🛡', ward: true } },
   'Protection from Poison': { n: 1, fx: { n: 'Защита от яда', ic: '🧪', resist: ['poison'] } },
   'Foresight': { n: 1, fx: { n: 'Предвидение', ic: '🔮', atkAdv: true, atkDis: true, saveAdv: true } },
+  // Падение пёрышком: до 5 существ опускаются плавно — без урона и без «ничком»
+  'Feather Fall': { n: 5, fx: { n: 'Падение пёрышком', ic: '🪶', ffall: true } },
+  // Газообразная форма: летает со скоростью 10 фт, сопротивление физическому урону, преимущество на спасброски Сил/Лов/Тел;
+  // атаковать и творить заклинания нельзя
+  'Gaseous Form': { n: 1, fx: { n: 'Газообразная форма', ic: '🌫', fly: 10, spdSet: 10, resist: ['bps'], gas: true } },
   'Fear': { fail: { n: 'Ужас', ic: '😱', cond: 'frightened' }, rep: true },
   // Полёт: скорость полёта 60 фт (высота — кнопками ▲▼); Левитация: цель поднимается на 20 фт, ходить не может
   'Fly': { n: 1, up: 1, fx: { n: 'Полёт', ic: '🕊', fly: 60 } },
@@ -3749,6 +3817,8 @@ function auraBuff(id) {
 function buffsOf(id) {
   const b = { ...auraBuff(id) };
   fxOf(id).forEach(([, e]) => ['saveAdv', 'atkDis', 'atkAdv', 'ward'].forEach((k) => { if (e[k]) b[k] = true; }));
+  // Газообразная форма: преимущество на спасброски Силы, Ловкости и Телосложения
+  if (fxOf(id).some(([, e]) => e.gas)) b.gasAdv = true;
   return b;
 }
 // Снять «невидимость до первого действия» (Невидимость, Убежище) — атаковал или сотворил заклинание
@@ -3894,6 +3964,12 @@ function syncEffects() {
     if (alt > 0 && !lev && !canFly(id) && !falling.has(id)) {
       falling.add(id);
       setTimeout(() => falling.delete(id), 3000);
+      // Падение пёрышком: опускается плавно — без урона и без «ничком»
+      if (fxOf(id).some(([, f]) => f.ffall)) {
+        R.update(ref(gpath(`tokens/${id}`)), { alt: null }).catch(() => {});
+        addLog({ kind: 'act', who: t.name, txt: `🪶 плавно опускается с ${alt} фт — без урона` });
+        return;
+      }
       const n = Math.min(20, Math.floor(alt / 10)), r = n ? app.mute(() => app.rollFormula(`${n}d6`, 'Падение')) : null;
       R.update(ref(gpath(`tokens/${id}`)), { alt: null }).catch(() => {});
       if (r && r.total) { addLog({ kind: 'dmg', who: '', txt: `падает с ${alt} фт`, tgt: id, tgtName: t.name, dmg: r.total, dtype: 'дробящим', detail: r.detail }); setTokCond(id, 'prone', true); }
@@ -6298,6 +6374,7 @@ function quickAttack(id, atkId) {
   const t = game.tokens[id], m = me(), e = econ(id), turn = isTurnOf(id);
   if (!t || !m || !m.charId) return;
   if (incapTok(t)) { app.toast('Вы недееспособны и не можете атаковать'); return; }
+  if (fxOf(id).some(([, f]) => f.gas)) { app.toast('🌫 В газообразной форме нельзя атаковать'); return; }
   const A = app.attacks(m.charId).find((a) => a.id === atkId) || SPECIAL_ATK.find((a) => a.id === atkId);
   if (!A) return;
   if (A.spell && silenced(id) && needsV(spellComp(A.n))) { app.toast('🔇 В Тишине нельзя заклинания со словесным компонентом'); return; }
