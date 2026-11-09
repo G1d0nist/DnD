@@ -153,8 +153,9 @@ function subscribe(gid, code) {
   on('reveal', (v) => { game.reveal = v || {}; });
   on('seen', (v) => { game.seen = v || {}; });
   on('lights', (v) => { game.lights = v || {}; drawTerrain(); });
+  on('notes', (v) => { game.notes = v || {}; drawTerrain(); });
   on('doors', (v) => { game.doors = v || {}; drawTerrain(); });
-  on('effects', (v) => { game.effects = v || {}; syncEffects(); });
+  on('effects', (v) => { game.effects = v || {}; syncEffects(); undoTrack(); });
   on('xp', (v) => { game.xp = v || {}; });
   on('scenes', (v) => { game.scenes = v || {}; });
   on('rest', (v) => { game.rest = v; handleRest(); });
@@ -166,14 +167,16 @@ function subscribe(gid, code) {
   on('trades', (v) => { game.trades = v || {}; syncTrades(); });
   on('travel', (v) => { game.travel = v || {}; syncTravel(); });
   on(`lootAward/${user.uid}`, (v) => { game.lootAw = v; applyLoot(); });
-  on('members', (v) => { game.members = v || {}; syncEffects(); applyXp(); applyLoot(); handleRest(); syncChests(); });
-  on('tokens', (v) => { game.tokens = v || {}; cleanupInit(); syncEffects(); awardKills(); zoneTick(); concWatch(); });
+  on('members', (v) => { game.members = v || {}; syncEffects(); applyXp(); applyLoot(); handleRest(); syncChests(); abilSync(); });
+  on('abilSeen', (v) => { game.abilSeen = v || {}; abilSync(); });
+  on(`abilEdit/${user.uid}`, (v) => { if (v && v.abil) applyAbilEdit(v); });
+  on('tokens', (v) => { game.tokens = v || {}; cleanupInit(); syncEffects(); awardKills(); zoneTick(); concWatch(); undoTrack(); });
   on('map', (v) => { game.map = v || {}; drawTerrain(); });
   on('init', (v) => { game.init = v; checkMyTurn(); checkNpcTurn(); cleanupInit(); syncEffects(); zoneTurn(); });
-  on('econ', (v) => { game.econ = v || {}; });
+  on('econ', (v) => { game.econ = v || {}; undoTrack(); });
   on('cs', (v) => { game.cs = v || {}; csCheck(); notifyCs(); });
   on('log', (v) => { game.log = v || {}; applyLog(); notifyLog(); fxLog(); });
-  on('areas', (v) => { game.areas = v || {}; rebuildWalls(); wallEject(); drawAreas(); notifyAreas(); autoNpcSaves(); zoneTick(); syncEffects(); });
+  on('areas', (v) => { game.areas = v || {}; rebuildWalls(); wallEject(); drawAreas(); notifyAreas(); autoNpcSaves(); zoneTick(); syncEffects(); undoTrack(); });
   // Присутствие: онлайн, пока открыта вкладка
   unsubs.push(R.onValue(ref('.info/connected'), (s) => {
     if (!s.val() || !game) return;
@@ -187,7 +190,106 @@ function tryRejoin() {
   try { saved = JSON.parse(ls.get(GAME_KEY)); } catch (e) { saved = null; }
   if (saved && saved.id && saved.uid === user.uid && (!game || game.id !== saved.id)) subscribe(saved.id, saved.code);
 }
+// Заметки мастера на поле: { x, y, ic, txt } — ловушка, тайник, секрет; игрокам не показываются
+const NOTE_IC = [['📝', 'заметка'], ['⚠', 'ловушка'], ['💰', 'тайник'], ['👁', 'секрет'], ['🚪', 'проход'], ['💀', 'засада'], ['📜', 'сюжет']];
+function noteDialog(k, x, y) {
+  const N = k ? (game.notes || {})[k] : { x, y, ic: '📝', txt: '' };
+  if (!N) return;
+  app.openModal(`<h2>${k ? 'Заметка' : '＋ Заметка'} мастера</h2><p class="muted small">Видите только вы. Клетка ${N.x + 1}:${N.y + 1}.</p>
+    <div class="row gap wrap">${NOTE_IC.map(([ic, n]) => `<label class="check" title="${n}"><input type="radio" name="noteIc" value="${ic}" ${N.ic === ic ? 'checked' : ''}> ${ic} ${n}</label>`).join('')}</div>
+    <label class="mt">Текст<textarea id="noteTxt" rows="4" maxlength="500">${esc(N.txt || '')}</textarea></label>
+    <div class="modal-actions">${k ? '<button class="danger" id="noteDel">Удалить</button>' : ''}<button data-act="closeModal">Отмена</button><button class="primary" id="noteOk">Сохранить</button></div>`);
+  $('#noteOk').onclick = () => {
+    const v = { x: N.x, y: N.y, ic: ($('input[name="noteIc"]:checked') || {}).value || '📝', txt: $('#noteTxt').value.trim().slice(0, 500) };
+    app.closeModal();
+    R.set(ref(gpath(`notes/${k || R.push(ref(gpath('notes'))).key}`)), v).catch(() => {});
+  };
+  if ($('#noteDel')) $('#noteDel').onclick = () => { app.closeModal(); R.remove(ref(gpath(`notes/${k}`))).catch(() => {}); };
+}
+// Отмена у мастера: снимки поля (токены, эффекты, области, ресурсы хода) — один снимок на «пачку» изменений;
+// «↶» возвращает предыдущий. Хиты, состояния и КД персонажей игроков живут в их листах — их не трогаем (там своя отмена)
+const undoStack = [];
+let undoCur = null, undoT = null, undoSkip = false;
+function undoTrack() {
+  if (!game || !isDM()) return;
+  clearTimeout(undoT);
+  undoT = setTimeout(() => {
+    if (!game) return;
+    const snap = JSON.stringify({ tokens: game.tokens || {}, effects: game.effects || {}, areas: game.areas || {}, econ: game.econ || {} });
+    if (undoSkip) { undoSkip = false; undoCur = snap; renderTools(); return; }
+    if (undoCur && undoCur !== snap) { undoStack.push(undoCur); if (undoStack.length > 30) undoStack.shift(); renderTools(); }
+    undoCur = snap;
+  }, 500);
+}
+function undoLast() {
+  if (!isDM()) return;
+  const prev = undoStack.pop();
+  if (!prev) { app.toast('Отменять нечего'); return; }
+  const P = JSON.parse(prev);
+  Object.entries(P.tokens).forEach(([id, t]) => {
+    const cur = game.tokens[id];
+    if (cur && t.kind === 'pc' && !t.comp && !t.sum) ['hp', 'hpMax', 'temp', 'cond', 'ac', 'name', 'dsS', 'dsF', 'speed', 'size'].forEach((f) => { t[f] = cur[f] ?? null; });
+  });
+  undoSkip = true;
+  R.update(ref(gpath()), { tokens: P.tokens, effects: P.effects, areas: P.areas, econ: P.econ }).catch((e) => app.toast(`Не удалось: ${esc(e.code || e.message)}`));
+  addLog({ kind: 'sys', txt: '↶ Мастер отменяет последнее изменение на поле' });
+  renderTools();
+}
+// Базовые характеристики за столом: у игрока правка в листе закрыта (меняет мастер); мастер видит любые изменения в журнале
+const ABN = { str: 'Сил', dex: 'Лов', con: 'Тел', int: 'Инт', wis: 'Мдр', cha: 'Хар' };
+function abilSync() {
+  if (!game || !user) return;
+  const m = me();
+  if (!isDM() && m && m.charId) app.setLock(m.charId, (game.meta || {}).name || game.code || 'игра');
+  if (!isDM()) return;
+  // Мастер: сверяем базовые значения игроков с последними известными; изменение не через мастера — предупреждение
+  const seen = game.abilSeen || {}, upd = {};
+  Object.entries(game.members || {}).forEach(([uid, mm]) => {
+    const a = mm.role !== 'dm' && mm.char && mm.char.abil;
+    if (!a) return;
+    const was = seen[uid];
+    const key = JSON.stringify(Object.keys(ABN).map((k) => +a[k] || 10));
+    if (!was) { upd[`abilSeen/${uid}`] = { v: key, char: mm.charId || '' }; return; }
+    // Правка мастера ещё не дошла до листа игрока — ждём, не предупреждаем
+    if (was.pend) { if (was.v === key) upd[`abilSeen/${uid}/pend`] = null; return; }
+    if (was.v === key) return;
+    const old = JSON.parse(was.v), diff = Object.keys(ABN).map((k, i) => (+a[k] || 10) !== old[i] ? `${ABN[k]} ${old[i]}→${+a[k] || 10}` : '').filter(Boolean);
+    upd[`abilSeen/${uid}`] = { v: key, char: mm.charId || '' };
+    // Другой персонаж того же игрока — просто запоминаем
+    if (was.char && mm.charId && was.char !== mm.charId) return;
+    addLog({ kind: 'sys', txt: `⚠ ${(mm.char || {}).name || mm.name}: базовые характеристики изменены не мастером — ${diff.join(', ')}` });
+  });
+  if (Object.keys(upd).length) R.update(ref(gpath()), upd).catch(() => {});
+}
+// Игрок: мастер прислал новые характеристики — в лист, запись снимается
+function applyAbilEdit(v) {
+  const m = me();
+  if (!m || !m.charId || isDM()) return;
+  R.remove(ref(gpath(`abilEdit/${user.uid}`))).catch(() => {});
+  app.dmSetAbil(m.charId, v.abil);
+  pushMyChar();
+}
+// Мастер: окно правки характеристик персонажа игрока
+function abilDmDialog(id) {
+  const t = game.tokens[id], mm = t && (game.members || {})[t.owner], a = mm && mm.char && mm.char.abil;
+  if (!isDM() || !a) { app.toast('Нет данных листа этого игрока'); return; }
+  app.openModal(`<h2>✎ Характеристики: ${esc(t.name)}</h2><p class="muted small">Базовые значения (без бонусов предыстории и черт). Игрок получит их в лист, запись появится в журнале.</p>
+    <div class="form-grid">${Object.entries(ABN).map(([k, n]) => `<label>${n}<input type="number" min="1" max="30" data-ab="${k}" value="${+a[k] || 10}"></label>`).join('')}</div>
+    <label class="mt">Причина<input id="abWhy" placeholder="например: потеря руки, благословение божества"></label>
+    <div class="modal-actions"><button data-act="closeModal">Отмена</button><button class="primary" id="abOk">Сохранить</button></div>`);
+  $('#abOk').onclick = () => {
+    const abil = Object.fromEntries($$('[data-ab]').map((x) => [x.dataset.ab, Math.max(1, Math.min(30, +x.value || 10))]));
+    const diff = Object.keys(ABN).filter((k) => abil[k] !== (+a[k] || 10)).map((k) => `${ABN[k]} ${+a[k] || 10}→${abil[k]}`), why = ($('#abWhy').value || '').trim();
+    app.closeModal();
+    if (!diff.length) return;
+    const key = JSON.stringify(Object.keys(ABN).map((k) => abil[k]));
+    R.update(ref(gpath()), { [`abilEdit/${t.owner}`]: { abil, t: Date.now() }, [`abilSeen/${t.owner}`]: { v: key, char: mm.charId || '', pend: true } }).catch(() => {});
+    addLog({ kind: 'sys', txt: `🎲 Мастер меняет характеристики ${t.name}: ${diff.join(', ')}${why ? ` (${why})` : ''}` });
+  };
+}
 function leaveLocal() {
+  const lm = game && user && !isDM() ? me() : null;
+  if (lm && lm.charId) app.setLock(lm.charId, null);
   unsubs.forEach((u) => u());
   unsubs = [];
   game = null; selId = null; aim = null; cast = null; ruler = null; bgImg = null; bgSrc = ''; camFree = false; camKey = '';
@@ -218,7 +320,8 @@ async function leaveGame() {
     return;
   } else {
     if (!app.confirm('Покинуть игру? Ваш токен уберётся с поля.')) return;
-    const id = game.id;
+    const id = game.id, lm = me();
+    if (lm && lm.charId) app.setLock(lm.charId, null);
     await R.remove(ref(`games/${id}/tokens/pc_${user.uid}`)).catch(() => {});
     await R.remove(ref(`games/${id}/init/list/${user.uid}`)).catch(() => {});
     await R.remove(ref(`games/${id}/members/${user.uid}`)).catch(() => {});
@@ -500,6 +603,13 @@ function drawTerrain() {
   });
   // Источники света видит только мастер
   if (isDM()) Object.values(game.lights || {}).forEach((L) => { g.font = '18px system-ui'; g.fillText('💡', L.x * CELL + 10, L.y * CELL + 27); });
+  // Заметки мастера: значок и начало текста — только у мастера (в «Виде игроков» скрыты)
+  if (isDM() && !fogPreview) Object.values(game.notes || {}).forEach((N) => {
+    g.fillStyle = 'rgba(30, 24, 12, .55)'; g.fillRect(N.x * CELL + 1, N.y * CELL + 1, CELL - 2, CELL - 2);
+    g.strokeStyle = 'rgba(242, 227, 191, .7)'; g.setLineDash([3, 3]); g.strokeRect(N.x * CELL + 1.5, N.y * CELL + 1.5, CELL - 3, CELL - 3); g.setLineDash([]);
+    g.font = '18px system-ui'; g.fillStyle = '#f2c94c'; g.fillText(N.ic || '📝', N.x * CELL + 9, N.y * CELL + 26);
+    if (N.txt) { g.font = '10px system-ui'; g.fillStyle = '#f2e3bf'; g.fillText(N.txt.length > 16 ? `${N.txt.slice(0, 15)}…` : N.txt, N.x * CELL + CELL + 2, N.y * CELL + 14); }
+  });
   // Сундуки: закрытый, открытый; мастер видит замок и ловушку
   Object.values(game.chests || {}).forEach((C) => {
     g.font = '22px system-ui'; g.fillText(C.o ? '📭' : '🧰', C.x * CELL + 8, C.y * CELL + 29);
@@ -856,6 +966,10 @@ function onDown(e) {
     if (lk) R.remove(ref(gpath(`lights/${lk}`))); else R.set(ref(gpath(`lights/${R.push(ref(gpath('lights'))).key}`)), { x: p.x, y: p.y, b: 20, d: 20 });
     return;
   }
+  // Заметки мастера: видит только он; нажатие инструментом — создать или изменить, «Двигать» — посмотреть
+  const note = Object.entries(game.notes || {}).find(([, n]) => n.x === p.x && n.y === p.y);
+  if (tool === 'note' && isDM()) { noteDialog(note ? note[0] : null, p.x, p.y); return; }
+  if (tool === 'move' && isDM() && !tokEl && note) { noteDialog(note[0]); return; }
   if (tool === 'move' && !tokEl && (game.doors || {})[ck]) { toggleDoor(ck, e.shiftKey); return; }
   // Сундук: мастер ставит инструментом и правит нажатием, игрок — открывает, стоя рядом
   const chest = !tokEl && chestAt(p.x, p.y);
@@ -1194,6 +1308,8 @@ function encDialog() {
       ${esc((m.char || {}).name || m.name)}<input type="number" min="1" max="20" data-encl="${uid}" value="${p.lvl || (m.char || {}).lvl || 1}"></label>`; }).join('') || '<p class="muted small">Игроков ещё нет — добавьте уровни вручную:</p>'}
       <label class="check">Ещё персонажей<input type="number" min="0" max="8" id="encExtraN" value="${enc.extraN || 0}"> ур.<input type="number" min="1" max="20" id="encExtraL" value="${enc.extraL || 1}"></label></div>
     <div id="encMeter" class="enc-meter mt"></div>
+    <div class="row gap wrap mt"><select id="encDiff" style="width:auto">${ENC_N.map((n, i) => `<option value="${i}" ${i === 1 ? 'selected' : ''}>${n}</option>`).join('')}</select>
+      <button id="encAuto" title="Случайные существа из бестиария под бюджет выбранной сложности; строка поиска ниже сужает выбор (например, «гоблин» или «нежить»)">🎲 Подобрать</button></div>
     <div id="encList" class="list mt"></div>
     <label class="mt">Бестиарий<input id="encFind" placeholder="Поиск: гоблин, дракон, 1/4…" autocomplete="off"></label><div id="encMon" class="mon-list"></div>
     <div class="row gap wrap mt"><label class="check"><input type="checkbox" id="encHid" ${enc.hid ? 'checked' : ''}> Скрыты от игроков</label>
@@ -1232,6 +1348,34 @@ function encDialog() {
     encSave(); draw();
   });
   $('#encClear').onclick = () => { enc.list = []; encSave(); draw(); };
+  // Подбор под сложность (2024): бюджет опыта группы, существа не сильнее среднего уровня, не больше 8, без «пустых» ПО 0
+  $('#encAuto').onclick = () => {
+    const lv = party();
+    if (!lv.length) { app.toast('Отметьте персонажей группы'); return; }
+    const di = +$('#encDiff').value, target = lv.reduce((s, l) => s + ENC_BUDGET[l][di], 0), floor = di ? lv.reduce((s, l) => s + ENC_BUDGET[l][di - 1], 0) : target * 0.6;
+    const avg = Math.round(lv.reduce((a, b) => a + b, 0) / lv.length), q = ($('#encFind').value || '').trim().toLowerCase();
+    const pool = BEST().filter((m) => crXp(m.cr) > 0 && crXp(m.cr) <= target && crNum(m.cr) <= Math.max(1, avg)
+      && (!q || m.n.toLowerCase().includes(q) || m.e.toLowerCase().includes(q) || String(m.type || '').toLowerCase().includes(q) || String(TYPE_N[m.type] || '').includes(q) || m.cr === q));
+    if (!pool.length) { app.toast('Под этот бюджет и поиск никого не нашлось'); return; }
+    let best = null;
+    // Несколько попыток — берём набор ближе всего к бюджету, но не ниже предыдущей ступени
+    for (let tries = 0; tries < 40; tries++) {
+      const picks = [], kinds = pool.slice().sort(() => Math.random() - 0.5).slice(0, 1 + Math.floor(Math.random() * 3));
+      let left = target;
+      while (picks.length < 8) {
+        const fit = kinds.filter((m) => crXp(m.cr) <= left);
+        if (!fit.length) break;
+        const m = fit[Math.floor(Math.random() * fit.length)];
+        picks.push(m); left -= crXp(m.cr);
+      }
+      const xp = target - left;
+      if (picks.length && (!best || (xp >= floor && Math.abs(target - xp) < Math.abs(target - best.xp)) || best.xp < floor)) best = { picks, xp };
+    }
+    enc.list = [];
+    best.picks.forEach((m) => { const x = enc.list.find((y) => y.e === m.e); if (x) x.n += 1; else enc.list.push({ e: m.e, n: 1 }); });
+    encSave(); draw();
+    app.toast(`🎲 Подобрано: ${best.picks.length} существ, ${best.xp} оп. из ${target}`);
+  };
   $('#encPut').onclick = () => {
     if (!enc.list.length) { app.toast('Добавьте существ'); return; }
     app.closeModal();
@@ -5655,7 +5799,7 @@ function scaleDialog() {
     if (dx || dy || nw !== W() || nh !== H()) {
       const keys = (M) => { const out = {}; Object.entries(M || {}).forEach(([k, val2]) => { const [x, y] = k.split('_').map(Number); if (inB(x + dx, y + dy)) out[`${x + dx}_${y + dy}`] = val2; }); return Object.keys(out).length ? out : null; };
       const objs = (M) => { const out = {}; Object.entries(M || {}).forEach(([k, o]) => { if (inB(o.x + dx, o.y + dy)) out[k] = { ...o, x: o.x + dx, y: o.y + dy }; }); return Object.keys(out).length ? out : null; };
-      Object.assign(upd, { map: keys(game.map), doors: keys(game.doors), reveal: keys(game.reveal), seen: keys(game.seen), lights: objs(game.lights), chests: objs(game.chests), drops: objs(game.drops), areas: null, 'meta/w': nw, 'meta/h': nh });
+      Object.assign(upd, { map: keys(game.map), doors: keys(game.doors), reveal: keys(game.reveal), seen: keys(game.seen), lights: objs(game.lights), notes: objs(game.notes), chests: objs(game.chests), drops: objs(game.drops), areas: null, 'meta/w': nw, 'meta/h': nh });
       Object.entries(game.tokens || {}).forEach(([id, t]) => { const s = t.size || 1;
         upd[`tokens/${id}/x`] = Math.max(0, Math.min(nw - s, t.x + dx)); upd[`tokens/${id}/y`] = Math.max(0, Math.min(nh - s, t.y + dy)); });
       const G = (game.meta || {}).gen;
@@ -5680,7 +5824,7 @@ function sceneSnap() {
   const npcs = {}, pcs = {}, m = game.meta || {};
   Object.entries(game.tokens || {}).forEach(([id, t]) => { if (t.kind === 'npc') npcs[id] = t; else pcs[id] = { x: t.x, y: t.y }; });
   return { w: W(), h: H(), ft: m.ft || null, world: m.world || null, worldFrom: m.worldFrom || null, links: m.links || null, bg: m.bg || null, fog: m.fog || null, ground: m.ground || null, gen: m.gen || null, map: game.map || null, doors: game.doors || null, lights: game.lights || null, chests: game.chests || null,
-    reveal: game.reveal || null, seen: game.seen || null, drops: game.drops || null, bgimg: bgSrc ? { data: bgSrc } : null, npcs, pcs };
+    reveal: game.reveal || null, seen: game.seen || null, drops: game.drops || null, notes: game.notes || null, bgimg: bgSrc ? { data: bgSrc } : null, npcs, pcs };
 }
 // Сохранить текущее поле в его сцену (или в новую «Сцена N»)
 function saveScene() {
@@ -5692,7 +5836,7 @@ function saveScene() {
 async function loadScene(sid, empty, name) {
   await saveScene();
   const snap = empty ? { w: 30, h: 20 } : (await R.get(ref(gpath(`sceneData/${sid}`)))).val() || {};
-  const upd = { map: snap.map || null, doors: snap.doors || null, lights: snap.lights || null, reveal: snap.reveal || null, seen: snap.seen || null,
+  const upd = { map: snap.map || null, doors: snap.doors || null, lights: snap.lights || null, notes: snap.notes || null, reveal: snap.reveal || null, seen: snap.seen || null,
     bgimg: snap.bgimg || null, 'meta/w': snap.w || 30, 'meta/h': snap.h || 20, 'meta/bg': snap.bg || null, 'meta/fog': snap.fog || null, 'meta/scene': sid,
     chests: snap.chests || null, 'meta/ground': snap.ground || null, 'meta/gen': snap.gen || null, 'meta/ft': snap.ft || null, 'meta/world': snap.world || null, 'meta/worldFrom': snap.worldFrom || null, 'meta/links': snap.links || null, drops: snap.drops || null,
     areas: null, init: null, econ: null };
@@ -6037,18 +6181,18 @@ function renderTools() {
     return;
   }
   // Мастер: выпадающие меню по группам; на кнопке меню — выбранный в нём инструмент
-  const TL = { wall: '▮ Стена', difficult: '▦ Трудная', water: '≈ Вода', erase: '⌫ Ластик', door: '🚪 Дверь', light: '💡 Свет', chest: '🧰 Сундук', reveal: '👁 Открыть туман',
+  const TL = { wall: '▮ Стена', difficult: '▦ Трудная', water: '≈ Вода', erase: '⌫ Ластик', door: '🚪 Дверь', light: '💡 Свет', chest: '🧰 Сундук', note: '📝 Заметка', reveal: '👁 Открыть туман',
     conceal: '🌫 Скрыть туманом', enemy: '＋ Существо', area: '◯ Область', encPlace: '⚔ Столкновение', ...Object.fromEntries([...rough, ...brushes].map((k) => [k, `${TERRAIN[k].ic} ${TERRAIN[k].n}`])) };
   const sep = '<div class="tm-sep"></div>';
   const menu = (id, title, keys, html, on) => {
     const cur = keys.includes(tool) ? TL[tool] : '';
     return `<div class="tmenu"><button class="tm-btn ${cur || on ? 'on' : ''}" data-tmenu="${id}">${cur || title} ▾</button><div class="tm-pop" data-tmpop="${id}" hidden>${html}</div></div>`;
   };
-  const drawKeys = ['wall', 'difficult', 'water', ...rough, ...brushes, 'erase', 'door', 'light', 'chest', 'reveal', 'conceal'];
+  const drawKeys = ['wall', 'difficult', 'water', ...rough, ...brushes, 'erase', 'door', 'light', 'chest', 'note', 'reveal', 'conceal'];
   $('#tblTools').innerHTML = `<div class="seg">${base}</div>`
     + menu('draw', '🖌 Рисовать', drawKeys, ['wall', 'difficult', 'water'].map((k) => t(k, TL[k])).join('') + sep + rough.map((k) => t(k, TL[k], 'Труднопроходимая местность: перемещение вдвое дороже')).join('') + sep + brushes.map((k) => t(k, TL[k])).join('') + sep
       + t('erase', TL.erase) + t('door', TL.door, 'Поставить или убрать дверь. Открыть — нажатием с «Двигать», запереть — с Shift')
-      + t('light', TL.light, 'Поставить или убрать источник света (20 фт яркого + 20 тусклого)') + t('chest', TL.chest, 'Поставить сундук с добычей по уровню, замком и ловушкой; нажатие на сундук — изменить')
+      + t('light', TL.light, 'Поставить или убрать источник света (20 фт яркого + 20 тусклого)') + t('chest', TL.chest, 'Поставить сундук с добычей по уровню, замком и ловушкой; нажатие на сундук — изменить') + t('note', TL.note, 'Заметка мастера в клетке: ловушка, тайник, секрет — игроки её не видят')
       + (fogOn() ? sep + t('reveal', TL.reveal, 'Кисть: открыть клетки для игроков') + t('conceal', TL.conceal, 'Кисть: закрыть клетки туманом') : ''))
     + menu('map', '🗺 Карта', [], b('gen', '🎲 Генератор', 'Создать местность или локацию по шаблону: лес, река, горы, подземелье, замок, город…')
       + b('mapCfg', '🗺 Карта и туман', 'Карта-подложка, размер поля, туман войны')
@@ -6063,7 +6207,8 @@ function renderTools() {
       + b('bestiary', '🐉 Бестиарий', 'Свои существа: создать, изменить встроенное, перенести файлом') + sep
       + b('freeMove', '🔓 Свободно', 'Двигать любые токены без учёта хода и скорости (толчок, перенос тела). То же — перетаскивание с Shift', freeMove), freeMove)
     + menu('game', '🎲 Игра', ['area'], t('area', TL.area, 'Область со спасброском: дыхание, ловушка… Конус и линия — от выделенного существа')
-      + b('rest', '🏕 Отдых', 'Короткий или долгий отдых для всей группы') + handouts);
+      + b('rest', '🏕 Отдых', 'Короткий или долгий отдых для всей группы') + handouts)
+    + `<button data-tbl="undo" title="Отменить последнее изменение на поле (Ctrl+Z): перемещение, хиты существ, состояния, области. Хиты в листах игроков отменяют сами игроки" ${undoStack.length ? '' : 'disabled'}>↶</button>`;
   // Открытое меню остаётся открытым, когда стол перерисовывается от чужих действий
   if (openMenu) placeMenu(openMenu);
 }
@@ -6240,6 +6385,7 @@ function renderSide() {
     ${fxOf(selId).length ? `<div class="chips mt">${fxOf(selId).map(([k, f]) => `<span class="chip on" title="${esc(f.spell || '')}"><span>${f.ic || '✦'} ${esc(f.n || '')}</span>${dm || mine || f.by === user.uid ? `<button data-tbl="fxDel" data-k="${k}" title="Снять эффект">✕</button>` : ''}</span>`).join('')}</div>` : ''}
     ${t.illus && !dm && !mine && !illusSeen.has(selId) ? '<div class="row gap wrap mt"><button data-tbl="illusCheck" title="Действие «Изучение»: Интеллект (Анализ) против СЛ заклинателя">🔍 Изучить</button></div>' : t.illus && (dm || mine || illusSeen.has(selId)) ? '<div class="muted small mt">✨ Иллюзия</div>' : ''}
     ${sensesLine(selId)}
+    ${dm && t.kind === 'pc' && !t.comp && !t.sum ? `<div class="row gap wrap mt"><button data-tbl="abilDm" data-id="${selId}" title="Базовые характеристики персонажа — игрок сам их менять не может">✎ Характеристики</button></div>` : ''}
     ${(dm || mine) && (canFly(selId) || levOf(selId)) ? `<div class="row gap wrap mt"><span class="small">Высота: <b>${+t.alt || 0} фт</b></span><button data-tbl="alt" data-id="${selId}" data-d="10">▲ +10</button><button data-tbl="alt" data-id="${selId}" data-d="-10" ${+t.alt ? '' : 'disabled'}>▼ −10</button></div>` : ''}
     ${dm || mine ? `<div class="row gap wrap mt"><label>Свет <select data-tbl-light>${LIGHTS.map(([v, n], i) => `<option value="${i}" ${(t.lt ? +t.lt.i || 0 : 0) === i ? 'selected' : ''}>${n}${v ? ` (${v.replace('/', '+')} фт)` : ''}</option>`).join('')}</select></label></div>` : ''}
     ${dm && t.kind === 'npc' ? `${npcStatHtml(t)}
@@ -6630,6 +6776,8 @@ function onKeyDown(e) {
   if (!game || !$('#tblBoard') || !$('#tblBoard').offsetParent) return; // стол не на экране
   const typing = e.target.closest && e.target.closest('input, textarea, select, [contenteditable="true"]');
   const modal = $('#modal') && !$('#modal').hidden;
+  // Мастер: Ctrl+Z — отменить последнее изменение на поле
+  if (isDM() && (e.ctrlKey || e.metaKey) && e.code === 'KeyZ' && !e.shiftKey && !typing && !modal) { e.preventDefault(); undoLast(); return; }
   if (e.key === 'Escape') {
     if (modal || typing) return;
     kbdPick = null;
@@ -6835,6 +6983,8 @@ async function onClick(e) {
     else if (a === 'castDone') { if (cast) confirmCast(); }
     else if (a === 'fxDel') await R.remove(ref(gpath(`effects/${b.dataset.k}`)));
     else if (a === 'saveMine') saveMine(b.dataset.k, b.dataset.id);
+    else if (a === 'abilDm') abilDmDialog(b.dataset.id);
+    else if (a === 'undo') undoLast();
     else if (a === 'areaAgain') areaAgain(b.dataset.k);
     else if (a === 'zoneMove') zoneMoveStart(b.dataset.k);
     else if (a === 'wallMode' && cast) wallSetMode(b.dataset.m);

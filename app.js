@@ -221,7 +221,9 @@ window.dndApp = {
       cs: reactSlots(c, 'Counterspell').length > 0, svc: saveBonus(c, 'con'), lvl: lvl(c), aid: +cb.aid || 0, sense: senseOf(c), rage: raging(c),
       // Аура защиты паладина (6+): союзники в 10 фт (с 18 — 30 фт) добавляют мод. Харизмы к спасброскам; Дикий облик друида
       aura: clsLvl(c, 'Паладин') >= 6 ? { r: clsLvl(c, 'Паладин') >= 18 ? 30 : 10, b: Math.max(1, am(c, 'cha')) } : null,
-      wild: !!(c.shape && !c.shape.poly), ward: +cb.ward || 0, wardMax: wardMax(c) };
+      wild: !!(c.shape && !c.shape.poly), ward: +cb.ward || 0, wardMax: wardMax(c),
+      // Базовые характеристики — мастер видит и меняет их со стола
+      abil: Object.fromEntries(ABILITIES.map((a) => [a.k, +c.abil[a.k] || 10])) };
   },
   // Добыча со стола: золото — в кошелёк, магический предмет — как из каталога, прочее — в инвентарь; возвращает название
   addLoot(id, L) {
@@ -424,6 +426,25 @@ window.dndApp = {
     }
     save(); render();
     return out;
+  },
+  // Стол: персонаж игрока за столом — правка характеристик закрыта (name — название игры; null — снять)
+  setLock(id, name) {
+    if (!state.chars[id]) return;
+    const was = abilLock.get(id) || null;
+    if (name) abilLock.set(id, name); else abilLock.delete(id);
+    if ((was || null) !== (name || null) && state.current === id) render();
+  },
+  // Мастер со стола меняет базовые характеристики: { str: 14, … }
+  dmSetAbil(id, abil) {
+    const c = state.chars[id];
+    if (!c || !abil) return false;
+    if (state.current !== id) state.current = id;
+    const ch0 = ABILITIES.filter((a) => abil[a.k] != null && +abil[a.k] !== +c.abil[a.k]).map((a) => `${a.n} ${c.abil[a.k]}→${abil[a.k]}`);
+    if (!ch0.length) return false;
+    tracked('характеристики (мастер)', () => { ABILITIES.forEach((a) => { if (abil[a.k] != null) c.abil[a.k] = Math.max(1, Math.min(30, +abil[a.k])); }); c.abilSet = true; });
+    toast(`🎲 Мастер изменил характеристики: ${esc(ch0.join(', '))}`, 'crit');
+    save(); render();
+    return true;
   },
   // Умения заклинателей для стола: Изгнание нежити (жрец 2+), Вдохновение барда, Врождённое колдовство (чародей)
   casterActs(id) {
@@ -1481,13 +1502,17 @@ function renderHeader() {
 
 // Режим правки базовых значений (кнопка «Изменить»); в обычном режиме поля скрыты
 let abilEdit = false;
+// Персонаж за игровым столом (игроком): базовые характеристики меняет только мастер — id листа → название игры
+const abilLock = new Map();
 function renderAbil() {
-  const c = ch();
+  const c = ch(), lock = abilLock.get(state.current);
+  if (lock) abilEdit = false;
   $('#abilGrid').classList.toggle('editing', abilEdit);
   $('#abilEditBtn').textContent = abilEdit ? '✓ Готово' : '✎ Изменить';
   $('#abilEditBtn').classList.toggle('primary', abilEdit);
-  $('#abilGenBtn').hidden = !!c.abilSet && !abilEdit;
-  $('#abilHint').textContent = abilEdit
+  $('#abilEditBtn').hidden = !!lock;
+  $('#abilGenBtn').hidden = !!lock || (!!c.abilSet && !abilEdit);
+  $('#abilHint').textContent = lock ? `🔒 Персонаж за столом «${lock}»: базовые характеристики меняет мастер (например, после потери конечности).` : abilEdit
     ? 'Правка базовых значений — без бонусов предыстории и черт (они добавятся сами). Используйте, например, при потере конечности или по решению мастера.'
     : 'Нажмите на модификатор — проверка, на «Спас» — спасбросок. Галочка — владение спасброском. Наведите на значение, чтобы увидеть, из чего оно складывается.';
   ABILITIES.forEach((a) => {
@@ -3729,9 +3754,10 @@ const ACT = {
     if (e.conc && c.combat.conc === e.n) c.combat.conc = '';
     c.effects = c.effects.filter((x) => x !== e);
   },
-  abilGen() { openAbilGen(); },
+  abilGen() { if (abilLock.get(state.current)) { toast('🔒 Характеристики меняет мастер'); return; } openAbilGen(); },
   abilEdit() {
     const c = ch();
+    if (abilLock.get(state.current)) { abilEdit = false; toast('🔒 Персонаж за игровым столом — характеристики меняет мастер'); return; }
     abilEdit = !abilEdit;
     // Закончили правку — характеристики считаются заданными, «Генерация» больше не нужна
     if (!abilEdit && Object.values(c.abil).some((v) => +v !== 10)) c.abilSet = true;
