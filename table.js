@@ -2624,6 +2624,56 @@ function promptOpportunity(e) {
     reactModal(`${esc(o.name)}: атака по возможности?`, items);
   });
 }
+/* ---------- Обучение: подсказки при первом входе на стол ---------- */
+// [селектор, заголовок, текст]; шаги, чьих элементов нет на экране, пропускаются. Один раз на устройстве (своя роль), повтор — кнопка ❓
+const TOUR_PL = [
+  ['#tblBoard', '🗺 Поле', 'Перетаскивайте своего персонажа мышью или пальцем. В бою подсветка покажет, докуда хватит скорости; шаг клавишами — WASD или стрелки.'],
+  ['[data-tool="place"]', '📍 Поставить персонажа', 'Если вашего персонажа ещё нет на поле — нажмите и выберите клетку.'],
+  ['#tblTurn', '⚔ Ваш ход', 'Здесь атака, заклинания, Рывок, Отход, Уклонение и умения вашего класса. Когда по вам попадут, стол сам предложит реакцию.'],
+  ['#tblMtabs', '📜 Очередь и журнал', 'Вкладки справа: очередь инициативы, журнал бросков и чат («/r 2d6» — бросок для всех).'],
+  ['[data-tbl="journal"]', '📓 Журнал кампании', 'Квесты, знакомые персонажи и заметки — общие для всей группы.'],
+  ['[data-tbl="keys"]', '⌨ Клавиши', 'Q — атака, E — заклинание, Alt — спасбросок; все клавиши можно переназначить.'],
+];
+const TOUR_DM = [
+  ['[data-tmenu="draw"]', '🖌 Рисовать', 'Стены, вода, труднопроходимая местность, двери, свет, сундуки и заметки мастера (их видите только вы).'],
+  ['[data-tmenu="map"]', '🗺 Карта', 'Генератор местности, туман войны, масштаб, сцены (несколько полей) и путешествие.'],
+  ['[data-tmenu="mon"]', '🐉 Существа', 'Существо из бестиария, ⚔ конструктор столкновения с оценкой сложности, 👥 заселить поле.'],
+  ['[data-tmenu="game"]', '🎲 Игра', 'Области (дыхание, ловушки), отдых группы, материалы для игроков.'],
+  ['#tblMtabs', '🎲 Инициатива', '«🎲 Враги» бросает инициативу существам, «⚔ Начать бой», «▶ Следующий ход». В ход существа — подсказки и 🤖 авто-ход.'],
+  ['[data-tbl="undo"]', '↶ Отмена', 'Отменить последнее изменение на поле (Ctrl+Z): перемещение, хиты существ, области.'],
+  ['[data-tbl="copy"]', '🔗 Приглашение', 'Код игры и ссылка для игроков.'],
+];
+let tourChecked = false;
+function tourMaybe() {
+  if (tourChecked || !game || !user || !$('#tblBoard') || !$('#tblBoard').offsetParent) return;
+  tourChecked = true;
+  if (!ls.get(`dnd55-tour-${isDM() ? 'dm' : 'pl'}`)) setTimeout(() => tour(), 1200);
+}
+function tour() {
+  const steps = (isDM() ? TOUR_DM : TOUR_PL).filter(([sel]) => { const el = $(sel); return el && el.offsetParent; });
+  ls.set(`dnd55-tour-${isDM() ? 'dm' : 'pl'}`, '1');
+  let i = 0;
+  const end = () => { $('#tourBox')?.remove(); $$('.tour-hl').forEach((x) => x.classList.remove('tour-hl')); };
+  const show = () => {
+    end();
+    if (i >= steps.length) return;
+    const [sel, h, txt] = steps[i], el = $(sel);
+    if (!el) { i++; show(); return; }
+    el.classList.add('tour-hl');
+    el.scrollIntoView({ block: 'nearest' });
+    const r = el.getBoundingClientRect(), box = document.createElement('div');
+    box.id = 'tourBox'; box.className = 'tour-box';
+    box.innerHTML = `<b>${h}</b><p>${txt}</p><div class="row between"><span class="muted small">${i + 1} из ${steps.length}</span>
+      <span class="row gap"><button id="tourSkip">Пропустить</button><button class="primary" id="tourNext">${i + 1 < steps.length ? 'Дальше' : 'Понятно'}</button></span></div>`;
+    document.body.appendChild(box);
+    const bw = box.offsetWidth, bh = box.offsetHeight, below = r.bottom + bh + 12 < innerHeight;
+    box.style.left = `${Math.max(8, Math.min(innerWidth - bw - 8, r.left + r.width / 2 - bw / 2))}px`;
+    box.style.top = `${below ? r.bottom + 8 : Math.max(8, r.top - bh - 8)}px`;
+    $('#tourNext').onclick = () => { i++; show(); };
+    $('#tourSkip').onclick = end;
+  };
+  show();
+}
 /* ---------- Журнал кампании ---------- */
 // games/{id}/journal/{k}: { type: quest | npc | note, title, text, status (квест: active | done | failed), where (NPC), img (портрет NPC,
 // маленький JPEG), hidden (мастер скрыл от игроков), by (uid автора), who, t }. Пишут все участники; править — автор и мастер
@@ -6462,6 +6512,7 @@ function renderAll() {
   renderSaves();
   renderCastBar();
   renderMtabs();
+  tourMaybe();
 }
 /* ---------- Телефон: вкладки панели, масштаб пальцами ---------- */
 const narrow = () => window.matchMedia('(max-width: 760px)').matches;
@@ -6565,7 +6616,7 @@ function renderTools() {
   const base = t('move', '✋ Двигать', 'Перетаскивайте токены; шаг — WASD или стрелки') + t('ruler', '📏 Линейка', 'Протяните, чтобы измерить расстояние')
     + b('keys', '⌨', 'Клавиши: шаг WASD, атака Q, заклинание E, спасбросок Alt… — посмотреть и переназначить (K)')
     + b('sound', sndOn ? '🔊' : '🔇', sndOn ? 'Звуки стола включены — выключить' : 'Звуки стола выключены — включить')
-    + b('journal', '📓', 'Журнал кампании: квесты, персонажи (NPC), заметки — общий для всех')
+    + b('journal', '📓', 'Журнал кампании: квесты, персонажи (NPC), заметки — общий для всех') + b('tour', '❓', 'Подсказки: как пользоваться столом')
     + (!(game.meta || {}).world ? b('clock', `🕰 ${travelClock(game.travel || {})} ${dayPart().ic}`, isDM() ? 'Время кампании: сдвинуть часы, освещение по времени суток' : 'Время кампании') : '');
   if (!isDM()) {
     $('#tblTools').innerHTML = `<div class="seg">${base}${!(hasMine && inFight()) ? t('place', hasMine ? '📍 Переставить меня' : '📍 Поставить персонажа', 'Нажмите на клетку') : ''}
@@ -7373,6 +7424,7 @@ async function onClick(e) {
     else if (a === 'undo') undoLast();
     else if (a === 'npcAuto') npcAutoTurn(b.dataset.id);
     else if (a === 'journal') journalDialog();
+    else if (a === 'tour') tour();
     else if (a === 'clock') { if (isDM()) timeDialog(); else app.toast(`🕰 ${esc(travelClock(game.travel || {}))} · ${dayPart().ic} ${dayPart().n}`); }
     else if (a === 'sound') { sndOn = !sndOn; try { localStorage.setItem('dnd55-snd', sndOn ? '1' : '0'); } catch (err) { /* без хранилища */ } if (sndOn) snd('turn'); renderTools(); }
     else if (a === 'areaAgain') areaAgain(b.dataset.k);

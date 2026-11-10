@@ -179,6 +179,9 @@ function save(touch = true) {
   }, 250);
 }
 const ch = () => state.chars[state.current];
+// Печать через меню браузера (Ctrl+P) — тот же печатный вид, что и по кнопке 🖨
+window.addEventListener('beforeprint', () => document.body.classList.add('printing'));
+window.addEventListener('afterprint', () => document.body.classList.remove('printing'));
 
 /* ---------- Облако: версии персонажей и корзина ---------- */
 // Документ users/{uid}/chars/{id}: json — текущий лист; hist — до 5 прошлых версий [{ at, json }], новая — не чаще раза в час
@@ -3865,6 +3868,14 @@ const ACT = {
     const c = ch(), e = findById(c.effects, el.dataset.id);
     if (e.conc && c.combat.conc === e.n) c.combat.conc = '';
     c.effects = c.effects.filter((x) => x !== e);
+  },
+  // Печать листа (или «Сохранить как PDF» в окне печати): светлая тема, все разделы подряд, без кнопок и стола
+  printChar() {
+    closeModal();
+    document.body.classList.add('printing');
+    const done = () => { document.body.classList.remove('printing'); window.removeEventListener('afterprint', done); };
+    window.addEventListener('afterprint', done);
+    setTimeout(() => { window.print(); setTimeout(done, 1500); }, 50);
   },
   abilGen() { if (abilLock.get(state.current)) { toast('🔒 Характеристики меняет мастер'); return; } openAbilGen(); },
   abilEdit() {

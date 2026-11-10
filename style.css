@@ -776,3 +776,27 @@ body.tbl-full-on .toasts { z-index: 95; top: 64px; bottom: auto; }
 .fight-sum th, .fight-sum td { padding: 4px 6px; border-bottom: 1px solid var(--line); text-align: center; }
 .fight-sum td:first-child, .fight-sum th:first-child { text-align: left; }
 .jrn-img { width: 36px; height: 36px; border-radius: 8px; object-fit: cover; flex: 0 0 auto; }
+/* Печать листа (кнопка 🖨 или Ctrl+P): светлая тема, все разделы подряд, без кнопок, стола и справочника */
+body.printing {
+  --bg: #fff; --bg2: #fff; --card: #fff; --card2: #f4efe6; --line: #c9bfae; --text: #161210; --muted: #5d5346;
+  --gold: #7a5a12; --gold2: #7a5a12; --shadow: none; color-scheme: light; background: #fff !important; color: #161210;
+}
+body.printing .topbar, body.printing .tabs, body.printing #tab-table, body.printing #tab-ref, body.printing .dice-fab, body.printing .dice-panel,
+body.printing .toasts, body.printing .modal, body.printing .qb-right, body.printing .hpctl, body.printing .btns, body.printing .modal-actions,
+body.printing #spellFilter, body.printing #spellSchool, body.printing .prep, body.printing [data-act="castSpell"], body.printing [data-act^="add"], body.printing [data-act^="edit"],
+body.printing [data-act^="del"], body.printing [data-act="portraitPick"], body.printing .ghost, body.printing #abilEditBtn, body.printing #abilGenBtn { display: none !important; }
+body.printing button:not([data-act="rollCheck"]):not([data-act="rollSave"]):not([data-act="skillInfo"]):not([data-act="rollSkill"]):not([data-act="skillProf"]):not([data-act="deathPip"]):not([data-act="exh"]):not([data-act="resPip"]):not([data-act="slotPip"]):not([data-act="spellAttack"]):not([data-act="atkRoll"]):not([data-act="dmgRoll"]):not([data-act="cond"]):not([data-act="toggleOpen"]) { display: none !important; }
+/* Кнопки-значения (модификаторы, навыки, спасброски) печатаются как обычный текст */
+body.printing button { border: none !important; background: none !important; color: inherit !important; box-shadow: none !important; }
+body.printing .tab { display: block !important; animation: none !important; transform: none !important; opacity: 1 !important; }
+body.printing .quickbar { position: static !important; background: #fff !important; border-bottom: 2px solid #7a5a12; }
+body.printing .card { box-shadow: none !important; background: #fff !important; break-inside: avoid; }
+body.printing #tab-spells, body.printing #tab-inventory { break-before: page; }
+body.printing input, body.printing select, body.printing textarea { border: none !important; background: transparent !important; color: #161210 !important; box-shadow: none !important; }
+body.printing .hpbar { background: #eee !important; }
+@page { margin: 12mm; }
+/* Обучение: подсказка у элемента и его подсветка */
+.tour-box { position: fixed; z-index: 120; max-width: 320px; padding: 12px 14px; border-radius: 12px; background: var(--card2); border: 2px solid var(--gold);
+  box-shadow: 0 8px 28px rgba(0,0,0,.55); font-size: 14px; }
+.tour-box p { margin: 6px 0 10px; line-height: 1.4; }
+.tour-hl { outline: 3px solid var(--gold) !important; outline-offset: 3px; border-radius: 8px; position: relative; z-index: 110; }
