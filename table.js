@@ -177,6 +177,7 @@ function subscribe(gid, code) {
   on('cs', (v) => { game.cs = v || {}; csCheck(); notifyCs(); });
   on('log', (v) => { game.log = v || {}; applyLog(); notifyLog(); fxLog(); fightTally(); });
   on('fstats', (v) => { game.fstats = v || null; });
+  on('journal', (v) => { game.journal = v || {}; if ($('#jrnBox')) journalDraw(); });
   on('areas', (v) => { game.areas = v || {}; rebuildWalls(); wallEject(); drawAreas(); notifyAreas(); autoNpcSaves(); zoneTick(); syncEffects(); undoTrack(); });
   // Присутствие: онлайн, пока открыта вкладка
   unsubs.push(R.onValue(ref('.info/connected'), (s) => {
@@ -2583,6 +2584,77 @@ function promptOpportunity(e) {
     }
     reactModal(`${esc(o.name)}: атака по возможности?`, items);
   });
+}
+/* ---------- Журнал кампании ---------- */
+// games/{id}/journal/{k}: { type: quest | npc | note, title, text, status (квест: active | done | failed), where (NPC), img (портрет NPC,
+// маленький JPEG), hidden (мастер скрыл от игроков), by (uid автора), who, t }. Пишут все участники; править — автор и мастер
+const JRN_T = [['quest', '📜 Квесты'], ['npc', '👤 Персонажи'], ['note', '📝 Заметки']];
+const QST = { active: ['⏳', 'идёт'], done: ['✅', 'выполнен'], failed: ['❌', 'провален'] };
+let jrnTab = 'quest';
+function journalDialog() {
+  app.openModal(`<div id="jrnBox"><h2>📓 Журнал кампании</h2>
+    <div class="seg">${JRN_T.map(([k, n]) => `<button data-jt="${k}" class="${jrnTab === k ? 'on' : ''}">${n}</button>`).join('')}</div>
+    <div id="jrnList" class="list mt"></div>
+    <div class="modal-actions"><button data-act="closeModal">Закрыть</button><button class="primary" id="jrnAdd">＋ Добавить</button></div></div>`);
+  $$('[data-jt]').forEach((b) => b.addEventListener('click', () => { jrnTab = b.dataset.jt; $$('[data-jt]').forEach((x) => x.classList.toggle('on', x === b)); journalDraw(); }));
+  $('#jrnAdd').onclick = () => journalEdit(null);
+  journalDraw();
+}
+function journalDraw() {
+  const box = $('#jrnList');
+  if (!box) return;
+  const dm = isDM(), mineOk = (x) => dm || x.by === user.uid;
+  const ord = { active: 0, done: 1, failed: 2 };
+  const rows = Object.entries(game.journal || {}).filter(([, x]) => x.type === jrnTab && (dm || !x.hidden))
+    .sort(([, a], [, b]) => (jrnTab === 'quest' ? (ord[a.status] ?? 0) - (ord[b.status] ?? 0) : 0) || (b.t || 0) - (a.t || 0));
+  box.innerHTML = rows.map(([k, x]) => `<div class="li ${x.hidden ? 'dim' : ''}"><div class="li-head">
+      ${x.img ? `<img class="jrn-img" src="${x.img}" alt="">` : ''}
+      <span class="li-title">${jrnTab === 'quest' ? `${(QST[x.status] || QST.active)[0]} ` : ''}${esc(x.title || 'Без названия')}</span>
+      <span class="li-sub">${jrnTab === 'quest' ? (QST[x.status] || QST.active)[1] : jrnTab === 'npc' && x.where ? esc(x.where) : ''}${x.hidden ? ' · 🙈 скрыто от игроков' : ''} · ${esc(x.who || '')}</span>
+      <span class="btns">${dm ? `<button class="ghost" data-jh="${k}" title="${x.hidden ? 'Показать игрокам' : 'Скрыть от игроков'}">${x.hidden ? '🙈' : '👁'}</button>` : ''}
+        ${mineOk(x) ? `<button class="ghost" data-je="${k}" title="Изменить">✎</button><button class="ghost" data-jd="${k}" title="Удалить">✕</button>` : ''}</span></div>
+      ${x.text ? `<div class="li-desc"><p>${esc(x.text).replace(/\n/g, '<br>')}</p></div>` : ''}</div>`).join('')
+    || `<p class="muted">${jrnTab === 'quest' ? 'Квестов пока нет.' : jrnTab === 'npc' ? 'Знакомых персонажей пока нет.' : 'Заметок пока нет.'}</p>`;
+  $$('[data-jh]').forEach((b) => b.addEventListener('click', () => { const x = game.journal[b.dataset.jh]; R.update(ref(gpath(`journal/${b.dataset.jh}`)), { hidden: x.hidden ? null : true }).catch(() => {}); }));
+  $$('[data-je]').forEach((b) => b.addEventListener('click', () => journalEdit(b.dataset.je)));
+  $$('[data-jd]').forEach((b) => b.addEventListener('click', () => { if (app.confirm('Удалить запись?')) R.remove(ref(gpath(`journal/${b.dataset.jd}`))).catch(() => {}); }));
+}
+function journalEdit(k) {
+  const x = k ? game.journal[k] : { type: jrnTab, title: '', text: '', status: 'active', where: '' };
+  let img = x.img || '';
+  app.openModal(`<h2>${k ? '✎ Запись' : '＋ Новая запись'}: ${(JRN_T.find(([t]) => t === x.type) || [, ''])[1]}</h2>
+    <div class="form-grid"><label style="grid-column:1/-1">Название<input id="jrT" maxlength="80" value="${esc(x.title || '')}"></label>
+    ${x.type === 'quest' ? `<label>Статус<select id="jrS">${Object.entries(QST).map(([v, [ic, n]]) => `<option value="${v}" ${x.status === v ? 'selected' : ''}>${ic} ${n}</option>`).join('')}</select></label>` : ''}
+    ${x.type === 'npc' ? `<label>Где встретили / кто это<input id="jrW" maxlength="80" value="${esc(x.where || '')}"></label>
+      <label>Портрет<input id="jrI" type="file" accept="image/*"></label>` : ''}
+    <label style="grid-column:1/-1">Текст<textarea id="jrX" rows="6" maxlength="3000">${esc(x.text || '')}</textarea></label>
+    ${isDM() ? `<label class="check"><input type="checkbox" id="jrH" ${x.hidden ? 'checked' : ''}> 🙈 Скрыть от игроков</label>` : ''}</div>
+    <div class="modal-actions"><button id="jrBack">Назад</button><button class="primary" id="jrOk">Сохранить</button></div>`);
+  // Портрет NPC — уменьшенный квадрат 96×96 (JPEG), чтобы запись оставалась лёгкой
+  if ($('#jrI')) $('#jrI').addEventListener('change', () => {
+    const f = $('#jrI').files[0];
+    if (!f) return;
+    const im = new Image();
+    im.onload = () => {
+      const cv = document.createElement('canvas'), S = 96, side = Math.min(im.width, im.height);
+      cv.width = cv.height = S;
+      cv.getContext('2d').drawImage(im, (im.width - side) / 2, (im.height - side) / 2, side, side, 0, 0, S, S);
+      img = cv.toDataURL('image/jpeg', 0.8);
+      URL.revokeObjectURL(im.src);
+    };
+    im.src = URL.createObjectURL(f);
+  });
+  $('#jrBack').onclick = () => journalDialog();
+  $('#jrOk').onclick = () => {
+    const title = $('#jrT').value.trim();
+    if (!title) { app.toast('Укажите название'); return; }
+    const v = { type: x.type, title, text: $('#jrX').value.trim(), t: x.t || Date.now(), by: x.by || user.uid, who: x.who || myName(),
+      ...(x.type === 'quest' ? { status: $('#jrS').value } : {}), ...(x.type === 'npc' ? { where: $('#jrW').value.trim(), ...(img ? { img } : {}) } : {}),
+      ...(isDM() && $('#jrH').checked ? { hidden: true } : !isDM() && x.hidden ? { hidden: true } : {}) };
+    R.set(ref(gpath(`journal/${k || R.push(ref(gpath('journal'))).key}`)), v).catch((err) => app.toast(`Не удалось сохранить: ${esc(err.code || err.message)}`));
+    if (!k && !v.hidden) addLog({ kind: 'sys', txt: `📓 ${myName()} добавляет в журнал кампании ${{ quest: 'квест', npc: 'персонажа', note: 'заметку' }[x.type]} «${title}»` });
+    journalDialog();
+  };
 }
 /* ---------- Сводка боя ---------- */
 // games/{id}/fstats: { start, last — время последней учтённой записи журнала, by: { имя: { dealt, taken, hit, miss, crit, kills, healed } } }
@@ -6413,7 +6485,8 @@ function renderTools() {
   const handouts = isDM() || hoMine().length ? b('handouts', `📜 Материалы${!isDM() && hoMine().length ? ` (${hoMine().length})` : ''}`, isDM() ? 'Показать игрокам картинку, письмо или карту' : 'Что показывал мастер') : '';
   const base = t('move', '✋ Двигать', 'Перетаскивайте токены; шаг — WASD или стрелки') + t('ruler', '📏 Линейка', 'Протяните, чтобы измерить расстояние')
     + b('keys', '⌨', 'Клавиши: шаг WASD, атака Q, заклинание E, спасбросок Alt… — посмотреть и переназначить (K)')
-    + b('sound', sndOn ? '🔊' : '🔇', sndOn ? 'Звуки стола включены — выключить' : 'Звуки стола выключены — включить');
+    + b('sound', sndOn ? '🔊' : '🔇', sndOn ? 'Звуки стола включены — выключить' : 'Звуки стола выключены — включить')
+    + b('journal', '📓', 'Журнал кампании: квесты, персонажи (NPC), заметки — общий для всех');
   if (!isDM()) {
     $('#tblTools').innerHTML = `<div class="seg">${base}${!(hasMine && inFight()) ? t('place', hasMine ? '📍 Переставить меня' : '📍 Поставить персонажа', 'Нажмите на клетку') : ''}
       ${me() && me().charId && app.companions(me().charId).length ? b('compPick', '🐾 Спутник', 'Поставить спутника из листа на поле', tool === 'placeComp') : ''}
@@ -7219,6 +7292,7 @@ async function onClick(e) {
     else if (a === 'abilDm') abilDmDialog(b.dataset.id);
     else if (a === 'undo') undoLast();
     else if (a === 'npcAuto') npcAutoTurn(b.dataset.id);
+    else if (a === 'journal') journalDialog();
     else if (a === 'sound') { sndOn = !sndOn; try { localStorage.setItem('dnd55-snd', sndOn ? '1' : '0'); } catch (err) { /* без хранилища */ } if (sndOn) snd('turn'); renderTools(); }
     else if (a === 'areaAgain') areaAgain(b.dataset.k);
     else if (a === 'zoneMove') zoneMoveStart(b.dataset.k);
