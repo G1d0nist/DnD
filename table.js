@@ -178,6 +178,7 @@ function subscribe(gid, code) {
   on('log', (v) => { game.log = v || {}; applyLog(); notifyLog(); fxLog(); fightTally(); });
   on('fstats', (v) => { game.fstats = v || null; });
   on('journal', (v) => { game.journal = v || {}; if ($('#jrnBox')) journalDraw(); });
+  on('deals', (v) => { game.deals = v || {}; });
   on('areas', (v) => { game.areas = v || {}; rebuildWalls(); wallEject(); drawAreas(); notifyAreas(); autoNpcSaves(); zoneTick(); syncEffects(); undoTrack(); });
   // Присутствие: онлайн, пока открыта вкладка
   unsubs.push(R.onValue(ref('.info/connected'), (s) => {
@@ -5564,7 +5565,7 @@ function populate(L, o) {
   return { tokens, notes };
 }
 // Мирные локации: стража, жители, торговцы, жрецы — нейтральные NPC с именами и чертами характера
-const SHOP_N = { general: 'лавка: снаряжение и припасы', smith: 'кузница: оружие и доспехи', alchemist: 'алхимик: зелья и свитки' };
+const SHOP_N = { general: 'лавка: снаряжение и припасы', smith: 'кузница: оружие и доспехи', alchemist: 'алхимик: зелья и свитки', curio: 'лавка диковин: магические предметы' };
 function peacefulNpcs(L, F, tokens, notes, key) {
   const T = L.tpl, R_ = (lo, hi) => lo + Math.floor(Math.random() * (hi - lo + 1)), roomsOf = (k) => (L.rooms || []).filter((r) => r.kind === k);
   // Кто где: [существо, роль, сколько, где — тип комнаты, 'road', 'gate', 'any' или сама комната]
@@ -5590,7 +5591,9 @@ function peacefulNpcs(L, F, tokens, notes, key) {
       ['Noble', 'знатный гость', chance(0.4) ? 1 : 0, 'room'], ['Commoner', 'постоялец', R_(0, 2), 'room'], ['Commoner', 'кухарка', 1, 'kitchen'], ['Commoner', 'конюх', n_('stable') ? 1 : 0, 'stable']];
   // Торговцы: в городе — в лавках и на рынке, в деревне — лавочник, в замке — кузнец в кузнице, в таверне — иногда бродячий торговец
   const shops = T === 'city' ? [...roomsOf('shop').slice(0, 3).map((r, i) => ['Commoner', ['торговец', 'кузнец', 'алхимик'][i], 1, r, ['general', 'smith', 'alchemist'][i]]),
-    ...roomsOf('market').flatMap((r) => [['Commoner', 'торговец', 1, r, 'general'], ['Commoner', 'алхимик', 1, r, 'alchemist'], ...(chance(0.5) ? [['Commoner', 'оружейник', 1, r, 'smith']] : [])])]
+    ...roomsOf('market').flatMap((r) => [['Commoner', 'торговец', 1, r, 'general'], ['Commoner', 'алхимик', 1, r, 'alchemist'], ...(chance(0.5) ? [['Commoner', 'оружейник', 1, r, 'smith']] : [])]),
+    // В большом городе — иногда лавка диковин
+    ...(big && chance(0.5) ? [['Mage', 'хозяин лавки диковин', 1, roomsOf('shop')[3] || 'any', 'curio']] : [])]
     : T === 'village' ? [['Commoner', 'лавочник', 1, 'house', 'general']] : T === 'castle' ? [['Commoner', 'кузнец', 1, n_('smithy') ? 'smithy' : 'barracks', 'smith']]
     : T === 'fair' ? roomsOf('stall').slice(0, 5).map((r, i) => ['Commoner', ['торговец', 'оружейник', 'алхимик', 'торговец', 'знахарь'][i], 1, r, ['general', 'smith', 'alchemist', 'general', 'alchemist'][i]])
     : T === 'temple' ? [['Acolyte', 'торговец святынями', 1, 'nave', 'alchemist']]
@@ -5614,7 +5617,7 @@ function peacefulNpcs(L, F, tokens, notes, key) {
       if (!p) continue;
       const N = npcName(role, usedNames), trait = pickOne(TRAITS);
       tokens[key()] = monToken(mon, `${N.name}, ${N.role}`, p[0], p[1], { side: 'neutral', dsOn: true, color: SIDE_COLOR.neutral, tr: `${mon.x ? `${mon.x} ` : ''}Характер: ${trait}.`,
-        ...(shop ? { shop: { kind: shop, items: shopStock(shop, big) } } : {}) });
+        ...(shop ? { shop: { kind: shop, tier: big ? 1 : 0, items: shopStock(shop, big) } } : {}) });
       who.push(`${N.name} (${N.role}${shop ? ', 🛒' : ''})`);
     }
   });
@@ -5626,8 +5629,21 @@ const fmtPrice = (gp) => (gp >= 1 ? `${+gp.toFixed(2)} зм` : gp >= 0.1 ? `${Ma
 // Цена магического предмета по редкости (DMG 2024: 100 / 400 / 4000 / 40 000 / 200 000 зм), расходники — вдвое дешевле
 const RAR_PRICE = [100, 400, 4000, 40000, 200000];
 const magicPrice = (it) => { const p = RAR_PRICE[it.r] || 400; return it.n === 'Зелье лечения' ? 50 : /Свиток|Зелье/.test(it.n) ? p / 2 : p; };
-function shopStock(kind, big) {
+// Размер поселения: 0 — деревня (обычные товары, простые зелья), 1 — город (необычные), 2 — столица (редкие, лавка диковин)
+const TIER_N = ['деревня', 'город', 'столица'];
+function shopStock(kind, big, tier = big ? 1 : 0) {
+  big = big || tier >= 1;
   const items = [], add = (L, price) => { if (L && price > 0 && !items.some((x) => x.n === L.n)) items.push({ ...L, price }); };
+  // Лавка диковин: магические предметы до редкости поселения
+  if (kind === 'curio') pickN(MI().filter((m) => m.r >= 1 && m.r <= Math.max(1, tier)), 3 + tier * 2).forEach((M) => { const it = magicItem(M); add(it, magicPrice(it)); });
+  if (kind === 'smith' && tier >= 2) pickN(MI().filter((m) => m.r === 2 && m.pick), 2).forEach((M) => { const it = magicItem(M); add(it, magicPrice(it)); });
+  if (kind === 'alchemist' && tier >= 2) pickN(MI().filter((m) => /^Зелье/.test(m.n) && m.r === 2), 2).forEach((M) => { const it = magicItem(M); add(it, magicPrice(it)); });
+  if (kind === 'alchemist' && tier === 0) {
+    const M = MI().find((m) => m.n === 'Зелье лечения'); if (M) { const it = magicItem(M); add(it, magicPrice(it)); }
+    const anti = GEAR.find((g) => g.n === 'Противоядие'); if (anti) add({ kind: 'item', n: anti.n, qty: 1 }, costGp(anti.cost));
+    pickN(SPELLS.filter((s) => +s.l <= 1), 2).forEach((s) => { const it = scrollItem(s); add(it, magicPrice(it)); });
+    return items;
+  }
   if (kind === 'general') pickN(GEAR.filter((g) => costGp(g.cost) > 0 && costGp(g.cost) <= 60), big ? 16 : 10).forEach((g) => add({ kind: 'item', n: g.n, qty: 1 }, costGp(g.cost)));
   if (kind === 'smith') {
     pickN(WEAPONS, big ? 12 : 7).forEach((w) => add({ kind: 'item', n: w.n, qty: 1 }, costGp(w.cost)));
@@ -5650,17 +5666,40 @@ function shopDialog(id, sell = false) {
   const near = dm || (mine && distFt(mine, t) <= 5 + FT());
   const inv = !dm && m && m.charId ? app.inventory(m.charId) : null;
   sell = sell && !!inv;
-  const sellList = sell ? inv.items.map((i) => ({ ...i, p: sellPrice(i) })) : [];
+  // Торг: итог проверки Убеждения у этого торговца на сегодня (день кампании) — скидка (+) или наценка (−), в процентах
+  const today = Math.floor(gameHour() / 24), D = !dm && user ? (game.deals || {})[`${id}_${user.uid}`] : null, pct = D && D.day === today ? +D.pct || 0 : 0;
+  const buyP = (p) => Math.max(0.01, Math.round(p * (1 - pct / 100) * 100) / 100), sellP = (p) => Math.round(p * (1 + pct / 100) * 100) / 100;
+  const sellList = sell ? inv.items.map((i) => ({ ...i, p: sellP(sellPrice(i)) })) : [];
+  const tier = S.tier ?? 0;
   app.openModal(`<div><h2>🛒 ${esc(t.name)}</h2>
     ${inv ? `<div class="seg mt"><button class="${sell ? '' : 'on'}" id="shBuy">Купить</button><button class="${sell ? 'on' : ''}" id="shSell">Продать</button></div>` : ''}
-    <p class="muted small">${SHOP_N[S.kind] || 'товары'}${purse != null ? ` · у вас ${fmtPrice(purse)}` : ''}${!near ? ` · <b>подойдите ближе (через клетку или вплотную), чтобы ${sell ? 'продать' : 'купить'}</b>` : ''}</p>
+    <p class="muted small">${SHOP_N[S.kind] || 'товары'} · ${TIER_N[tier]}${purse != null ? ` · у вас ${fmtPrice(purse)}` : ''}${!near ? ` · <b>подойдите ближе (через клетку или вплотную), чтобы ${sell ? 'продать' : 'купить'}</b>` : ''}</p>
+    ${pct ? `<p class="small ${pct > 0 ? '' : 'warn-text'}">${pct > 0 ? `🤝 Удачный торг: покупка −${pct}%, продажа +${pct}%` : `😠 Торговец раздражён: покупка +${-pct}%, продажа −${-pct}%`} (до конца дня)</p>`
+      : !dm && near && inv && !(D && D.day === today) ? '<div class="mt"><button id="shHaggle" title="Проверка Убеждения против СЛ 15, раз в день у этого торговца: успех — скидка 10% (на 5 больше — 20%), сильный провал — наценка 10%">🗣 Торговаться (Убеждение)</button></div>' : ''}
+    ${dm ? `<div class="row gap wrap mt"><select id="shTier" style="width:auto">${TIER_N.map((n, i) => `<option value="${i}" ${i === tier ? 'selected' : ''}>${n}</option>`).join('')}</select>
+      <select id="shKind" style="width:auto">${Object.entries(SHOP_N).map(([k, n]) => `<option value="${k}" ${k === S.kind ? 'selected' : ''}>${n.split(':')[0]}</option>`).join('')}</select>
+      <button id="shRestock" title="Новый ассортимент по виду лавки и размеру поселения">🔄 Новый товар</button></div>` : ''}
     ${sell ? `<p class="muted small">Торговец платит половину цены; драгоценности и предметы искусства — полную стоимость. Надетый доспех сначала снимите.</p>
     <div class="list">${sellList.map((i) => `<div class="enc-row"><span><b>${esc(i.n)}</b>${i.qty > 1 ? ` <span class="muted small">×${i.qty}</span>` : ''}${wornArmor(i) ? ' <span class="muted small">надет</span>' : ''}</span>
       <span class="row gap">${i.p > 0 ? `<b>${fmtPrice(i.p)}</b><button data-sell="${i.id}" ${near && !wornArmor(i) ? '' : 'disabled'}>Продать</button>` : '<span class="muted small">не купит</span>'}</span></div>`).join('') || '<p class="muted">Продавать нечего.</p>'}</div>`
     : `<div class="list">${(S.items || []).map((it, i) => `<div class="enc-row"><span><b>${esc(it.n)}</b>${it.r >= 1 ? ` <span class="muted small">${RAR_N[it.r]}</span>` : ''}</span>
-      <span class="row gap"><b>${fmtPrice(it.price)}</b>${dm ? '' : `<button data-buy="${i}" ${near && purse >= it.price ? '' : 'disabled'}>Купить</button>`}</span></div>`).join('') || '<p class="muted">Прилавок пуст.</p>'}</div>`}
+      <span class="row gap"><b>${fmtPrice(buyP(it.price))}</b>${pct ? ` <s class="muted small">${fmtPrice(it.price)}</s>` : ''}${dm ? '' : `<button data-buy="${i}" ${near && purse >= buyP(it.price) ? '' : 'disabled'}>Купить</button>`}</span></div>`).join('') || '<p class="muted">Прилавок пуст.</p>'}</div>`}
     <div class="modal-actions"><button data-act="closeModal">Закрыть</button></div></div>`);
   if ($('#shBuy')) { $('#shBuy').onclick = () => shopDialog(id, false); $('#shSell').onclick = () => shopDialog(id, true); }
+  if ($('#shHaggle')) $('#shHaggle').onclick = () => {
+    const r = app.mute(() => app.check(m.charId, { skill: 'persuasion', dc: 15, label: `Торг с ${t.name}` }));
+    if (!r) return;
+    const p = r.total >= 20 ? 20 : r.ok ? 10 : r.total <= 10 ? -10 : 0;
+    R.set(ref(gpath(`deals/${id}_${user.uid}`)), { pct: p, day: today, t: Date.now() }).catch(() => {});
+    game.deals = { ...(game.deals || {}), [`${id}_${user.uid}`]: { pct: p, day: today } };
+    addLog({ kind: 'act', who: mine ? mine.name : myName(), txt: `🗣 торгуется с ${t.name}: Убеждение ${r.total} — ${p > 0 ? `скидка ${p}%` : p < 0 ? 'торговец раздражён, наценка 10%' : 'без уступок'}` });
+    shopDialog(id, sell);
+  };
+  if ($('#shRestock')) $('#shRestock').onclick = () => {
+    const tr = +$('#shTier').value, kind = $('#shKind').value;
+    R.update(ref(gpath(`tokens/${id}`)), { shop: { kind, tier: tr, items: shopStock(kind, tr >= 1, tr) } }).then(() => shopDialog(id)).catch(() => {});
+    addLog({ kind: 'sys', txt: `🛒 ${t.name}: новый товар (${SHOP_N[kind].split(':')[0]}, ${TIER_N[tr]})` });
+  };
   $$('[data-sell]').forEach((b) => b.addEventListener('click', () => {
     const i = sellList.find((x) => x.id === b.dataset.sell);
     if (!i || !app.takeItems(m.charId, [{ id: i.id, qty: 1 }], 0)) { app.toast('Этого предмета уже нет'); return; }
@@ -5670,7 +5709,7 @@ function shopDialog(id, sell = false) {
     shopDialog(id, true);
   }));
   $$('[data-buy]').forEach((b) => b.addEventListener('click', () => {
-    const { price, ...L } = S.items[+b.dataset.buy];
+    const { price: base, ...L } = S.items[+b.dataset.buy], price = buyP(base);
     const r = app.mute(() => app.buy(m.charId, L, price));
     if (!r || !r.ok) { app.toast('Не хватает денег'); return; }
     addLog({ kind: 'act', who: mine ? mine.name : myName(), txt: `🛒 покупает «${r.name}» у ${t.name} за ${fmtPrice(price)}` });
