@@ -2577,6 +2577,59 @@ function promptOpportunity(e) {
     reactModal(`${esc(o.name)}: атака по возможности?`, items);
   });
 }
+/* ---------- Мастер: подсказки на ход существа и авто-ход ---------- */
+// Враги существа, которых оно видит (живые, не спрятанные), ближние — первыми
+function npcFoes(id) {
+  const t = game.tokens[id];
+  return Object.entries(game.tokens).filter(([k, o]) => k !== id && hostile(t, o) && !isDead(o) && !o.hidden && !o.invul && !o.illus && !unseen(id, k))
+    .map(([k, o]) => ({ k, o, d: distFt(t, o) })).sort((a, b) => a.d - b.d);
+}
+function npcAdviceHtml(id) {
+  const t = game.tokens[id], foes = npcFoes(id);
+  if (!foes.length) return '<div class="muted small mt">🤖 Видимых врагов нет.</div>';
+  const reach = Math.max(5, ...npcAttacks(t).map((a) => a.rng.reach || 0)), speed = moveInfo(id).left;
+  const near = foes[0], close = foes.filter((f) => f.d <= reach + speed);
+  const weak = close.filter((f) => f.o.hpMax).sort((a, b) => (a.o.hp / a.o.hpMax) - (b.o.hp / b.o.hpMax))[0];
+  const conc = foes.find((f) => concName(f.k, f.o));
+  return `<div class="muted small mt">🎯 Ближайший: <b>${esc(near.o.name)}</b> (${near.d} фт)${weak && weak.k !== near.k ? ` · 💔 слабее всех рядом: <b>${esc(weak.o.name)}</b> (${weak.o.hp}/${weak.o.hpMax})` : ''}${conc ? ` · 🔮 держит концентрацию: <b>${esc(conc.o.name)}</b> («${esc(concName(conc.k, conc.o))}»)` : ''}</div>`;
+}
+// Авто-ход: подойти по самому дешёвому пути к ближайшему врагу и ударить всеми атаками; без рукопашной — выстрел с места
+function npcAutoTurn(id) {
+  const t = game.tokens[id], e = econ(id);
+  if (!t || !isDM() || e.a || incapTok(t)) return;
+  const foes = npcFoes(id);
+  if (!foes.length) { app.toast('Существо не видит врагов'); return; }
+  const atks = npcAttacks(t), melee = atks.filter((a) => a.rng.reach > 0), ranged = atks.filter((a) => a.rng.near);
+  const T = foes[0].o, tid = foes[0].k, s = t.size || 1, reach = melee.length ? Math.max(...melee.map((a) => a.rng.reach)) : 0;
+  let moved = '';
+  if (melee.length && distFt(t, T) > reach && !(e.move > 0)) {
+    const mv = moveInfo(id), occ = occupancy(id), dist = reachMap(t.x, t.y, mv.left, occ, mv.prone, zoneDiff(id));
+    let best = null;
+    dist.forEach((cost, k) => {
+      const [x, y] = k.split('_').map(Number);
+      for (let dx = 0; dx < s; dx++) for (let dy = 0; dy < s; dy++) if (occ.has(`${x + dx}_${y + dy}`) || !freeCell(x + dx, y + dy, 1, id)) return;
+      const c = { x, y, size: s }, d = distFt(c, T), ok = d <= reach;
+      // Сначала — клетки, откуда достаёт; среди них — дешевле; не достать — ближе к цели
+      const score = ok ? cost : 1e6 + d * 100 + cost;
+      if (!best || score < best.score) best = { x, y, cost, score, ok };
+    });
+    if (best && (best.x !== t.x || best.y !== t.y)) {
+      const fx = t.x, fy = t.y;
+      R.update(ref(gpath()), { [`tokens/${id}/x`]: best.x, [`tokens/${id}/y`]: best.y, [`econ/${id}/move`]: (e.move || 0) + best.cost }).catch(() => {});
+      checkOpportunity(id, { ...t, x: best.x, y: best.y }, fx, fy);
+      t.x = best.x; t.y = best.y; renderTokens();
+      moved = ` · идёт ${best.cost} фт`;
+    }
+  }
+  const A = melee.length && distFt(t, T) <= reach ? melee[0] : ranged.find((a) => distFt(t, T) <= a.rng.far);
+  addLog({ kind: 'act', who: t.name, txt: `🤖 авто-ход: цель — ${T.name}${moved}${A ? '' : ' · не достать в этот ход'}` });
+  if (!A) { renderAll(); return; }
+  const per = +t.multi || 1;
+  aim = { from: id, npc: true, atk: A, way: 'action', left: per };
+  for (let i = 0; i < per && aim && game.tokens[tid] && !isDead(game.tokens[tid]); i++) attackTarget(tid);
+  aim = null;
+  renderAll();
+}
 // Вернуть часть урона цели (отменённое попадание, уменьшение урона): лечение применяет владелец цели
 function refund(tid, n, who, txt) {
   const t = game.tokens[tid];
@@ -6416,7 +6469,9 @@ function renderTurn() {
       ? `<div class="aim-bar mt">🎯 ${aim.from !== id ? `${esc(game.tokens[aim.from].name)}: ` : ''}выберите цель для «${esc(aim.atk.n)}»${aim.left > 1 ? ` · атак: ${aim.left}` : ''}<button data-tbl="aimOff">${aim.way === 'action' && aim.left < (aim.npc ? +game.tokens[aim.from].multi || 1 : (app.summary(aim.charId) || {}).atks || 1) ? 'Готово' : 'Отмена'}</button></div>`
       : !dm && !mv.incap && ((turn && (e.atk > 0 || !e.a || !e.b)) || !e.r) ? `<div class="row gap wrap mt"><button class="primary" data-tbl="attack" data-id="${id}">⚔ Атака${e.atk > 0 ? ` (ещё ${e.atk})` : !turn ? ' реакцией' : ''}</button>
         ${!(e.atk > 0) ? `<button class="primary" data-tbl="spell" data-id="${id}">✨ Заклинание</button>` : ''}</div>`
-      : dm && t.kind === 'npc' && !mv.incap && (e.atk > 0 || !e.a || !e.b) ? `<div class="mt"><button class="primary" data-tbl="npcAttack" data-id="${id}">⚔ Атака${e.atk > 0 ? ` (ещё ${e.atk})` : ''}</button></div>` : ''}
+      : dm && t.kind === 'npc' && !mv.incap && (e.atk > 0 || !e.a || !e.b) ? `<div class="row gap wrap mt"><button class="primary" data-tbl="npcAttack" data-id="${id}">⚔ Атака${e.atk > 0 ? ` (ещё ${e.atk})` : ''}</button>
+        ${turn && !e.a && !(e.atk > 0) ? `<button data-tbl="npcAuto" data-id="${id}" title="Подойти к ближайшему врагу по самому дешёвому пути и атаковать всеми атаками">🤖 Авто-ход</button>` : ''}</div>
+        ${turn ? npcAdviceHtml(id) : ''}` : ''}
     ${canAct && turn ? `<div class="row gap wrap mt">
       ${btn('dash', '🏃 Рывок', 'Действие: ещё одна скорость перемещения на этот ход', !e.a && mv.speed > 0)}
       ${btn('dis', '↩ Отход', 'Действие: до конца хода ваше перемещение не провоцирует атаки по возможности', !e.a && !e.dis)}
@@ -7118,6 +7173,7 @@ async function onClick(e) {
     else if (a === 'saveMine') saveMine(b.dataset.k, b.dataset.id);
     else if (a === 'abilDm') abilDmDialog(b.dataset.id);
     else if (a === 'undo') undoLast();
+    else if (a === 'npcAuto') npcAutoTurn(b.dataset.id);
     else if (a === 'sound') { sndOn = !sndOn; try { localStorage.setItem('dnd55-snd', sndOn ? '1' : '0'); } catch (err) { /* без хранилища */ } if (sndOn) snd('turn'); renderTools(); }
     else if (a === 'areaAgain') areaAgain(b.dataset.k);
     else if (a === 'zoneMove') zoneMoveStart(b.dataset.k);
