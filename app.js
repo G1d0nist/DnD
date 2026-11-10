@@ -610,7 +610,7 @@ window.dndApp = {
   // Выполнить fn без отправки бросков в общий журнал (стол пишет туда сам)
   mute(fn) { rollMute++; try { return fn(); } finally { rollMute--; } },
   // Отдых, объявленный мастером на столе
-  longRest(id) { if (!state.chars[id]) return; if (state.current !== id) state.current = id; tracked('долгий отдых', () => doLongRest(ch())); save(); render(); },
+  longRest(id) { if (!state.chars[id]) return; if (state.current !== id) state.current = id; tracked('долгий отдых', () => doLongRest(ch())); save(); render(); setTimeout(() => openPrepDialog(ch()), 800); },
   shortRest(id) { if (!state.chars[id]) return; if (state.current !== id) { state.current = id; render(); } ACT.shortRest(); },
   // Опыт со стола; canLevel — хватает на следующий уровень
   addXp(id, n) {
@@ -1707,6 +1707,30 @@ function spellLimits(c) {
     if (k) cantrips = (cantrips || 0) + k[e.lvl >= 10 ? 2 : e.lvl >= 4 ? 1 : 0];
   });
   return { prep, cantrips, note: parts.length ? `Подготовленных заклинаний — ${parts.join(', ')}. «Всегда подготовленные» не считаются.` : '' };
+}
+// После долгого отдыха жрец, друид, паладин и волшебник (PHB 2024) могут сменить подготовленные заклинания — окно с галочками
+const PREP_REST = ['Жрец', 'Друид', 'Паладин', 'Волшебник'];
+function openPrepDialog(c = ch()) {
+  if (!classList(c).some((e) => PREP_REST.includes(e.cls))) return;
+  const list = c.spells.filter((s) => +s.l > 0 && !s.always).sort((a, b) => a.l - b.l || a.n.localeCompare(b.n, 'ru'));
+  if (!list.length) return;
+  const draw = () => {
+    const lim = spellLimits(c), cnt = spellCounts(c), sch = ($('#prepSch') || {}).value || '';
+    $('#prepBody').innerHTML = `<div class="row between"><span>Подготовлено <b class="${lim.prep != null && cnt.prep > lim.prep ? 'warn-text' : ''}">${cnt.prep}/${lim.prep ?? '—'}</b></span>
+      <select id="prepSch" style="width:auto"><option value="">Все школы</option>${schoolOpts(sch)}</select></div>
+      <div class="list mt">${list.filter((s) => !sch || s.s === sch).map((s) => `<label class="check"><input type="checkbox" data-prep="${s.id}" ${s.prep ? 'checked' : ''}>
+        <span><b>${esc(s.n)}</b> <span class="muted small">${s.l} ур. · ${esc(s.s || '')}${s.cn ? ' · К' : ''}${s.rt ? ' · Р' : ''}</span></span></label>`).join('')}</div>`;
+    $$('[data-prep]').forEach((x) => x.addEventListener('change', () => {
+      const s = findById(c.spells, x.dataset.prep), L = spellLimits(c).prep;
+      if (x.checked && L != null && spellCounts(c).prep >= L) { x.checked = false; toast(`Не больше ${L} подготовленных`); return; }
+      tracked('подготовка заклинаний', () => { s.prep = x.checked; });
+      save(); draw();
+    }));
+    $('#prepSch').addEventListener('input', draw);
+  };
+  openModal(`<h2>📖 Подготовка заклинаний</h2><p class="muted small">После долгого отдыха можно сменить подготовленные заклинания. «Всегда подготовленные» не считаются.</p>
+    <div id="prepBody"></div><div class="modal-actions"><button class="primary" data-act="closeModal">Готово</button></div>`);
+  draw();
 }
 const spellCounts = (c) => ({ prep: c.spells.filter((s) => s.l > 0 && s.prep && !s.always).length, cantrips: c.spells.filter((s) => +s.l === 0 && !s.always).length });
 function renderSpells() {
@@ -3481,6 +3505,7 @@ const ACT = {
   longRest() {
     if (!confirmBox('Завершить долгий отдых? Восстановятся хиты, все кости хитов, ячейки и ресурсы; истощение уменьшится на 1.')) return;
     doLongRest(ch());
+    setTimeout(() => openPrepDialog(ch()), 600);
   },
   applyClass() {
     const c = ch(), name = c.info.cls.trim();

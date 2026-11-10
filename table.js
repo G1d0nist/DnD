@@ -345,6 +345,12 @@ function pushMyChar() {
     lastSent = key;
     const { img, ...char } = s;
     const upd = { [`members/${user.uid}/char`]: char };
+    // Новый уровень — объявить столу
+    const prevLvl = ((game.members[user.uid] || {}).char || {}).lvl;
+    if (prevLvl && s.lvl > prevLvl && game.tokens[`pc_${user.uid}`]) {
+      addLog({ kind: 'sys', txt: `⬆ ${s.name} достигает ${s.lvl} уровня!` });
+      floatText(`pc_${user.uid}`, `⬆ ${s.lvl}`, 'fx-heal');
+    }
     if (game.tokens[`pc_${user.uid}`]) {
       Object.assign(upd, { [`tokens/pc_${user.uid}/name`]: s.name, [`tokens/pc_${user.uid}/hp`]: s.hp, [`tokens/pc_${user.uid}/hpMax`]: s.hpMax,
         [`tokens/pc_${user.uid}/temp`]: s.temp, [`tokens/pc_${user.uid}/ac`]: s.ac, [`tokens/pc_${user.uid}/cond`]: s.cond, [`tokens/pc_${user.uid}/speed`]: s.speed,
