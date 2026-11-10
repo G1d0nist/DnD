@@ -1041,10 +1041,21 @@ function onDown(e) {
 function aimHint(e) {
   const tokEl = e.target.closest && e.target.closest('[data-tok]'), from = game.tokens[aim.from];
   const T = tokEl && tokEl.dataset.tok !== aim.from && game.tokens[tokEl.dataset.tok];
-  if (!T || !from) { hint('', e); return; }
-  const d = distFt(from, T), r = aim.atk.rng;
-  hint(r.reach && d <= r.reach ? `${d} фт — ближний бой` : r.near && d <= r.far ? `${d} фт${d > r.near ? ' — большая дистанция (помеха)' : ''}` : `${d} фт — не достать`, e);
+  if (!T || !from) { hint('', e); if (aimLine) { aimLine = null; drawAreas(); } return; }
+  const tid = tokEl.dataset.tok, d = distFt(from, T), r = aim.atk.rng;
+  // Укрытие и видимость на линии: стены, двери, мебель, существа; невидимость, тьма, туман
+  const cov = coverOf(from, T, aim.from, tid), uT = unseen(aim.from, tid), uA = unseen(tid, aim.from);
+  const covTxt = cov.total ? 'полное укрытие — атаковать нельзя' : cov.bonus >= 5 ? '¾ укрытие (+5 КД)' : cov.bonus >= 2 ? '½ укрытие (+2 КД)' : '';
+  const UN = { 'ослеплён': 'вы ослеплены', 'невидим': 'цель невидима', 'тьма': 'цель во тьме', 'туман': 'цель в тумане' };
+  const parts = [r.reach && d <= r.reach ? `${d} фт — ближний бой` : r.near && d <= r.far ? `${d} фт${d > r.near ? ' — большая дистанция (помеха)' : ''}` : `${d} фт — не достать`,
+    covTxt, uT ? `${UN[uT]} (помеха)` : '', uA && uA !== 'ослеплён' ? 'цель вас не видит (преимущество)' : '', cov.wind && !aim.atk.spell ? 'Стена ветров — снаряд отклонится' : ''].filter(Boolean);
+  hint(parts.join(' · '), e);
+  // Линия прицела: зелёная — чисто, жёлтая — ½, оранжевая — ¾, красная — полное укрытие
+  const as = from.size || 1, ts = T.size || 1;
+  const L = { x0: from.x + as / 2, y0: from.y + as / 2, x1: T.x + ts / 2, y1: T.y + ts / 2, col: cov.total ? '#d9534f' : cov.bonus >= 5 ? '#e8833a' : cov.bonus >= 2 ? '#e8c547' : '#6fbf5a', dash: !!uT };
+  if (!aimLine || JSON.stringify(aimLine) !== JSON.stringify(L)) { aimLine = L; drawAreas(); }
 }
+let aimLine = null;
 // Токен тащат к краю окна — поле подъезжает (без полос прокрутки иначе дальше края не дотянуться)
 function edgePan(e) {
   const r = $('#tblWrap').getBoundingClientRect(), E = 36, sp = 14;
@@ -2685,6 +2696,13 @@ function drawAreas() {
   const cv = $('#tblAreas'), g = cv.getContext('2d');
   g.clearRect(0, 0, cv.width, cv.height);
   if (!game) return;
+  // Линия прицела (атака): от атакующего к цели под курсором, цвет — укрытие, пунктир — цель не видна
+  if (!aim) aimLine = null;
+  if (aimLine) {
+    g.save(); g.strokeStyle = aimLine.col; g.lineWidth = 3; g.globalAlpha = 0.85; if (aimLine.dash) g.setLineDash([8, 6]);
+    g.beginPath(); g.moveTo(aimLine.x0 * CELL, aimLine.y0 * CELL); g.lineTo(aimLine.x1 * CELL, aimLine.y1 * CELL); g.stroke();
+    g.fillStyle = aimLine.col; g.beginPath(); g.arc(aimLine.x1 * CELL, aimLine.y1 * CELL, 5, 0, Math.PI * 2); g.fill(); g.restore();
+  }
   // Глиф оберегания виден только поставившему и мастеру
   const list = Object.values(game.areas || {}).filter((A) => !A.glyph || A.by === user.uid || isDM());
   if (cast && cast.area && cast.area.ox != null) list.push({ ...cast.area, preview: true });
