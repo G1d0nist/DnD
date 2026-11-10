@@ -1733,7 +1733,8 @@ function renderSpells() {
       : t === 'none' ? 'Выберите тип заклинателя — ячейки рассчитаются по уровню автоматически.'
         : 'Ячейки рассчитываются по уровню автоматически. Кликните по кружку, чтобы потратить/вернуть.';
 
-  const q = $('#spellFilter').value.trim().toLowerCase();
+  const q = $('#spellFilter').value.trim().toLowerCase(), sch = $('#spellSchool').value;
+  if ($('#spellSchool').options.length < 2) $('#spellSchool').insertAdjacentHTML('beforeend', schoolOpts(''));
   const onlyPrep = $('#spellOnlyPrep').checked;
   const lim = spellLimits(c), cnt = spellCounts(c);
   const over = (n, m) => (m != null && n > m ? ' over' : '');
@@ -1744,14 +1745,14 @@ function renderSpells() {
        ${cnt.prep > (lim.prep ?? 99) || cnt.cantrips > (lim.cantrips ?? 99) ? '<span class="small gen-warn">больше, чем позволяют правила</span>' : ''}`;
   let html = '';
   for (let l = 0; l <= 9; l++) {
-    const list = c.spells.filter((s) => +s.l === l && (!q || (s.n + ' ' + (s.e || '')).toLowerCase().includes(q)) && (!onlyPrep || l === 0 || s.prep || s.always))
+    const list = c.spells.filter((s) => +s.l === l && (!q || (s.n + ' ' + (s.e || '') + ' ' + (s.s || '')).toLowerCase().includes(q)) && (!sch || s.s === sch) && (!onlyPrep || l === 0 || s.prep || s.always))
       .sort((a, b) => a.n.localeCompare(b.n, 'ru'));
     if (!list.length) continue;
     const slot = l ? c.slots[l - 1] : null;
     html += `<div class="spell-lvl"><h3>${l ? l + ' уровень' : 'Заговоры'}${slot && slot.max ? pipsHtml(slot.max, slot.used, 'slotPip', `data-l="${l - 1}"`) : ''}</h3><div class="list">`;
     html += list.map((s) => `<div class="li ${l && !s.prep && !s.always ? 'dim' : ''}"><div class="li-head">
         ${s.always ? `<span class="tag g" title="Всегда подготовлено${s.auto || s.autoAlways ? ` — ${esc(s.auto || s.autoAlways)}` : ''}; не входит в лимит">${esc(s.auto || s.autoAlways || 'всегда')}</span>` : l ? `<input type="checkbox" class="prep" data-act="togglePrep" data-id="${s.id}" ${s.prep ? 'checked' : ''} title="Подготовлено">` : ''}
-        <span class="li-title" data-act="toggleOpen" data-id="${s.id}">${esc(s.n)}</span>
+        <span class="li-title" data-act="toggleOpen" data-id="${s.id}">${esc(s.n)}</span>${s.s ? `<span class="sch-ic" title="Школа: ${esc(s.s)}">${(SPELL_SCHOOLS.find(([n]) => n === s.s) || [, ''])[1]}</span>` : ''}
         ${s.cn ? '<span class="tag c" title="Концентрация">К</span>' : ''}${s.rt ? '<span class="tag r" title="Ритуал">Р</span>' : ''}
         <span class="li-sub">${esc(s.t || '')}${s.r ? ' · ' + esc(s.r) : ''}</span>
         <span class="btns"><button data-act="castSpell" data-id="${s.id}">✨ Сотворить</button>
@@ -3379,21 +3380,25 @@ const FEAT_FIELDS = () => [
   { k: 'x', label: 'Описание', type: 'textarea', rows: 8 },
 ];
 
+// Школы магии: фильтр в списке заклинаний и в справочнике (поиск по названию школы тоже работает)
+const SPELL_SCHOOLS = [['Воплощение', '🔥'], ['Вызов', '🌀'], ['Иллюзия', '🎭'], ['Некромантия', '💀'], ['Ограждение', '🛡'], ['Очарование', '💗'], ['Преобразование', '🔄'], ['Прорицание', '👁']];
+const schoolOpts = (cur) => SPELL_SCHOOLS.map(([n, ic]) => `<option value="${n}" ${cur === n ? 'selected' : ''}>${ic} ${n}</option>`).join('');
 function showSpellDb() {
   openModal(`<h2>Справочник заклинаний</h2>
-    <div class="row gap wrap"><input id="dbQ" placeholder="Поиск по названию…" style="flex:1"><select id="dbL" style="width:auto"><option value="">Все уровни</option>${[0, 1, 2, 3, 4, 5, 6, 7, 8, 9].map((l) => `<option value="${l}">${l ? l + ' уровень' : 'Заговоры'}</option>`).join('')}</select>
+    <div class="row gap wrap"><input id="dbQ" placeholder="Поиск: название или школа…" style="flex:1">
+    <select id="dbS" style="width:auto"><option value="">Все школы</option>${schoolOpts('')}</select><select id="dbL" style="width:auto"><option value="">Все уровни</option>${[0, 1, 2, 3, 4, 5, 6, 7, 8, 9].map((l) => `<option value="${l}">${l ? l + ' уровень' : 'Заговоры'}</option>`).join('')}</select>
     <select id="dbC" style="width:auto"><option value="">Все классы</option>${SPELL_CLASSES.map((k) => `<option ${k === ch().info.cls ? 'selected' : ''}>${k}</option>`).join('')}</select></div>
     <div id="dbList" class="db-list"></div><p class="muted small">Справочник содержит популярные заклинания (SRD 5.2). Недостающие можно добавить через «＋ Своё».</p>`);
   modalRefresh = () => {
-    const q = $('#dbQ').value.trim().toLowerCase(), l = $('#dbL').value, cl = $('#dbC').value;
+    const q = $('#dbQ').value.trim().toLowerCase(), l = $('#dbL').value, cl = $('#dbC').value, sch = $('#dbS').value;
     const have = new Set(ch().spells.map((s) => s.n));
-    $('#dbList').innerHTML = SPELLS.map((s, i) => [s, i]).filter(([s]) => (!q || (s.n + ' ' + s.e).toLowerCase().includes(q)) && (l === '' || s.l === +l) && (!cl || s.k.includes(cl) || (cl === 'Бард' && clsLvl(ch(), 'Бард') >= 10 && /Жрец|Друид|Волшебник/.test(s.k))))
+    $('#dbList').innerHTML = SPELLS.map((s, i) => [s, i]).filter(([s]) => (!q || (s.n + ' ' + s.e + ' ' + (s.s || '')).toLowerCase().includes(q)) && (!sch || s.s === sch) && (l === '' || s.l === +l) && (!cl || s.k.includes(cl) || (cl === 'Бард' && clsLvl(ch(), 'Бард') >= 10 && /Жрец|Друид|Волшебник/.test(s.k))))
       .map(([s, i]) => `<div><div class="db-row"><span class="li-title" data-act="toggleOpen" data-id="db${i}">${esc(s.n)} <span class="muted small">${s.l ? s.l + ' ур.' : 'заговор'} · ${esc(s.s)}</span></span>
         ${s.cn ? '<span class="tag c">К</span>' : ''}${s.rt ? '<span class="tag r">Р</span>' : ''}
         <button data-act="addSpellFromDb" data-i="${i}" ${have.has(s.n) ? 'disabled' : ''}>${have.has(s.n) ? '✓' : '＋'}</button></div>
         ${openSet.has('db' + i) ? `<div class="li-desc">${spellMetaHtml(s)}<p>${esc(s.x)}</p></div>` : ''}</div>`).join('') || '<p class="muted">Ничего не найдено</p>';
   };
-  ['#dbQ', '#dbL', '#dbC'].forEach((s) => $(s).addEventListener('input', modalRefresh));
+  ['#dbQ', '#dbL', '#dbC', '#dbS'].forEach((s) => $(s).addEventListener('input', modalRefresh));
   modalRefresh();
   setTimeout(() => $('#dbQ')?.focus(), 30);
 }
@@ -4001,7 +4006,7 @@ function bindEvents() {
     } catch (err) { toast('Не удалось прочитать файл персонажа'); }
   });
   $('#diceForm').addEventListener('submit', (e) => { e.preventDefault(); const v = $('#diceExpr').value.trim(); if (v) rollDice(v, v); });
-  ['#spellFilter', '#spellOnlyPrep'].forEach((s) => $(s).addEventListener('input', renderSpells));
+  ['#spellFilter', '#spellOnlyPrep', '#spellSchool'].forEach((s) => $(s).addEventListener('input', renderSpells));
   ['#itemFilter', '#itemCat'].forEach((s) => $(s).addEventListener('input', renderInventory));
   ['#refFilter', '#refLevel', '#refClass'].forEach((s) => $(s).addEventListener('input', renderRef));
   new ResizeObserver(syncStickyOffset).observe($('.quickbar'));

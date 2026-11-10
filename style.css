@@ -769,3 +769,4 @@ body.tbl-full-on .toasts { z-index: 95; top: 64px; bottom: auto; }
   .modal .check input[type="checkbox"], .modal .check input[type="radio"] { width: 20px; height: 20px; }
   .tok-fx { font-size: 13px; }
 }
+.sch-ic { font-size: 12px; opacity: .8; cursor: help; margin-left: -4px; }
