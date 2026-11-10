@@ -180,10 +180,91 @@ function save(touch = true) {
 }
 const ch = () => state.chars[state.current];
 
+/* ---------- Облако: версии персонажей и корзина ---------- */
+// Документ users/{uid}/chars/{id}: json — текущий лист; hist — до 5 прошлых версий [{ at, json }], новая — не чаще раза в час
+// (histAt), всего не больше ~700 КБ; trash — содержимое удалённого персонажа (deleted: true) — его можно вернуть
+const HIST_MAX = 5, HIST_GAP = 3600e3, HIST_BYTES = 700e3;
+function cloudPushDoc(c, prev, force) {
+  const json = JSON.stringify(c), doc = { json, updatedAt: c.updatedAt || Date.now(), deleted: false, trash: null };
+  const hist = prev && Array.isArray(prev.hist) ? prev.hist : [];
+  // Прошлая версия в облаке (или содержимое из корзины) уходит в историю — раз в час или принудительно (перед восстановлением)
+  const before = prev && (prev.json || prev.trash);
+  if (before && before !== json && (force || Date.now() - (+prev.histAt || 0) > HIST_GAP)) {
+    const h = [{ at: +prev.updatedAt || Date.now(), json: before }, ...hist].slice(0, HIST_MAX);
+    while (h.length > 1 && h.reduce((s, v) => s + v.json.length, 0) + json.length > HIST_BYTES) h.pop();
+    Object.assign(doc, { hist: h, histAt: Date.now() });
+  }
+  return doc;
+}
+// Что за версия: имя, класс и уровень — из JSON листа
+function verLabel(json) {
+  try { const d = JSON.parse(json), I = d.info || {}; return `${I.name || 'Без имени'}${I.cls ? ` — ${I.cls}` : ''}${I.level ? `, ${I.level} ур.` : ''}`; } catch (e) { return 'повреждённая запись'; }
+}
+const fmtWhen = (t) => (t ? new Date(t).toLocaleString('ru', { day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit' }) : '—');
+// Вернуть персонажа из версии или корзины: лист заменяется (текущий перед этим сохраняется в историю), становится выбранным
+function restoreChar(json, label) {
+  let d;
+  try { d = JSON.parse(json); } catch (e) { toast('Запись повреждена — восстановить нельзя'); return; }
+  const cur = state.chars[d.id];
+  if (cur && window.dndSync) window.dndSync.push(cur, { force: true });
+  d.updatedAt = Date.now();
+  state.chars[d.id] = migrate(d);
+  delete undoStacks[d.id];
+  state.current = d.id;
+  save(); render();
+  closeModal();
+  toast(`☁ Восстановлено: ${esc(label)}`, 'crit');
+}
+// raw: [[id, данные документа]] из облака
+function openCloudHistory(raw, signedIn) {
+  if (!signedIn) { toast('Войдите через Google — версии и корзина хранятся в облаке'); return; }
+  const live = raw.filter(([, x]) => !x.deleted && (x.hist || []).length), bin = raw.filter(([, x]) => x.deleted && x.trash);
+  const rows = [];
+  live.forEach(([id, x]) => {
+    rows.push(`<div class="li"><div class="li-head"><span class="li-title">${esc(verLabel(x.json))}</span><span class="muted small">сейчас: ${fmtWhen(x.updatedAt)}</span></div>
+      <div class="list">${x.hist.map((v, i) => `<div class="row between"><span class="small">🕘 ${fmtWhen(v.at)} · ${esc(verLabel(v.json))}</span>
+        <button data-cv="${esc(id)}" data-i="${i}">Вернуть эту версию</button></div>`).join('')}</div></div>`);
+  });
+  const binHtml = bin.map(([id, x]) => `<div class="row between"><span class="small">🗑 ${esc(verLabel(x.trash))} · удалён ${fmtWhen(x.deletedAt || x.updatedAt)}</span>
+    <button class="primary" data-cb="${esc(id)}">Восстановить</button></div>`).join('');
+  openModal(`<h2>☁ Версии и корзина</h2>
+    <p class="muted small">Облако хранит до ${HIST_MAX} прошлых версий каждого персонажа (новая — не чаще раза в час) и удалённых персонажей.
+    Вернуть версию — текущий лист заменится ею, а сам текущий сохранится в историю.</p>
+    ${rows.join('') || '<p class="muted">Прошлых версий пока нет — они появятся после изменений (не чаще раза в час).</p>'}
+    <h3 class="mt">🗑 Удалённые</h3>${binHtml || '<p class="muted small">Корзина пуста.</p>'}
+    <div class="modal-actions"><button data-act="closeModal">Закрыть</button></div>`);
+  const byId = new Map(raw);
+  $$('[data-cv]').forEach((b) => b.addEventListener('click', () => {
+    const x = byId.get(b.dataset.cv), v = x && x.hist[+b.dataset.i];
+    if (v && confirmBox(`Вернуть версию от ${fmtWhen(v.at)}? Текущий лист сохранится в истории.`)) restoreChar(v.json, verLabel(v.json));
+  }));
+  $$('[data-cb]').forEach((b) => b.addEventListener('click', () => { const x = byId.get(b.dataset.cb); if (x) restoreChar(x.trash, verLabel(x.trash)); }));
+}
+// Не вошли — персонажи только в этом браузере: напомнить (не чаще раза в 3 дня, можно отключить)
+function cloudRemind(signIn) {
+  const named = Object.values(state.chars).filter((c) => (c.info.name || '').trim());
+  let last = 0;
+  try { last = +localStorage.getItem('dnd55-remind') || 0; } catch (e) { return; }
+  if (!named.length || last < 0 || Date.now() - last < 3 * 864e5) return;
+  const mark = (v) => { try { localStorage.setItem('dnd55-remind', String(v)); } catch (e) { /* без хранилища */ } };
+  openModal(`<h2>☁ Сохраните персонажей в облаке</h2>
+    <p>Сейчас ${named.length === 1 ? `«${esc(named[0].info.name)}» хранится` : `ваши персонажи (${named.length}) хранятся`} только в этом браузере.
+    Очистка данных браузера, другой телефон или компьютер — и лист потерян.</p>
+    <p class="muted small">Войдите через Google: персонажи сохранятся в облаке, появятся на всех ваших устройствах, а прошлые версии и удалённых можно будет вернуть.</p>
+    <div class="modal-actions"><button id="rmNever">Не напоминать</button><button id="rmLater">Позже</button><button class="primary" id="rmIn">☁ Войти через Google</button></div>`);
+  $('#rmNever').onclick = () => { mark(-1); closeModal(); };
+  $('#rmLater').onclick = () => { mark(Date.now()); closeModal(); };
+  $('#rmIn').onclick = () => { mark(Date.now()); closeModal(); signIn(); };
+}
+
 // Мост для sync.js (облачная синхронизация)
 window.dndApp = {
   chars: () => state.chars,
   // docs: [{ id, deleted, updatedAt, data }] — побеждает более позднее изменение
+  // Облако: документ для отправки (с версиями), окно «Версии и корзина», напоминание войти
+  cloudPushDoc: (c, prev, force) => cloudPushDoc(c, prev, force),
+  openCloudHistory: (raw, signedIn) => openCloudHistory(raw, signedIn),
+  cloudRemind: (signIn) => cloudRemind(signIn),
   applyRemote(docs) {
     let changed = false;
     docs.forEach((d) => {
@@ -3335,9 +3416,10 @@ const ACT = {
   dupChar() { const c = JSON.parse(JSON.stringify(ch())); c.id = uid(); c.info.name += ' (копия)'; state.chars[c.id] = c; state.current = c.id; toast('Создана копия'); },
   deleteChar() {
     const c = ch();
-    if (!confirmBox(`Удалить персонажа «${c.info.name}»? Это действие нельзя отменить. Рекомендуем сначала сделать экспорт.`)) return;
+    if (!confirmBox(`Удалить персонажа «${c.info.name}»?${window.dndSync && window.dndSync.signedIn() ? ' Его можно будет вернуть из облачной корзины (☁ → «Версии и корзина»).' : ' Это действие нельзя отменить. Рекомендуем сначала сделать экспорт.'}`)) return;
     delete state.chars[c.id];
-    if (window.dndSync) window.dndSync.remove(c.id);
+    // В облаке содержимое уходит в корзину — персонажа можно восстановить
+    if (window.dndSync) window.dndSync.remove(c.id, JSON.stringify(c));
     if (!Object.keys(state.chars).length) { const n = blankChar(); state.chars[n.id] = n; }
     state.current = Object.keys(state.chars)[0];
   },

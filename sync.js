@@ -51,30 +51,39 @@ async function start() {
 
   let unsub = null;
   const charDoc = (id) => F.doc(db, 'users', user.uid, 'chars', id);
+  // Последнее известное содержимое документов облака: из него берутся прошлые версии (hist) и корзина (trash)
+  const raw = new Map();
 
+  // merge: поля, которых нет в записи (история версий), в облаке сохраняются
   function write(id, data) {
     if (!user) return;
     pending++;
     setStatus(navigator.onLine ? 'sync' : 'offline');
-    F.setDoc(charDoc(id), data)
+    raw.set(id, { ...(raw.get(id) || {}), ...data });
+    F.setDoc(charDoc(id), data, { merge: true })
       .then(() => { pending--; if (!pending) setStatus('ok'); })
       .catch((e) => { pending--; setStatus('err', e.code || e.message); });
   }
   window.dndSync = {
-    push: (c) => write(c.id, { json: JSON.stringify(c), updatedAt: c.updatedAt || Date.now(), deleted: false }),
-    remove: (id) => write(id, { json: '', updatedAt: Date.now(), deleted: true }),
+    push: (c, o) => write(c.id, app.cloudPushDoc(c, raw.get(c.id), o && o.force)),
+    // Удаление: лист уходит в корзину облака — его можно вернуть в «Версии и корзина»
+    remove: (id, json) => write(id, { json: '', updatedAt: Date.now(), deleted: true, trash: json || (raw.get(id) || {}).json || null, deletedAt: Date.now() }),
+    signedIn: () => !!user,
   };
 
   A.onAuthStateChanged(auth, (u) => {
     if (unsub) { unsub(); unsub = null; }
     user = u;
     authListeners.forEach((fn) => fn(u));
-    if (!u) { setStatus('out'); return; }
+    raw.clear();
+    // Не вошли — напомнить, что персонажи живут только в этом браузере
+    if (!u) { setStatus('out'); setTimeout(() => { if (!user) app.cloudRemind(signIn); }, 4000); return; }
     setStatus('sync');
     let first = true;
     unsub = F.onSnapshot(F.collection(db, 'users', u.uid, 'chars'), (snap) => {
       const docs = snap.docs.map((d) => {
         const x = d.data();
+        raw.set(d.id, x);
         let data = null;
         if (!x.deleted) { try { data = JSON.parse(x.json); } catch (e) { return null; } }
         return { id: d.id, deleted: !!x.deleted, updatedAt: x.updatedAt || 0, data };
@@ -112,8 +121,9 @@ async function start() {
     const [, title] = STATUS[status];
     app.openModal(`<h2>☁ Синхронизация</h2>
       <p>Аккаунт: <b>${esc(user.email)}</b><br><span class="muted">${esc(title)}</span></p>
-      <p class="muted small">Персонажи автоматически сохраняются в облаке и появляются на всех устройствах, где вы вошли этим аккаунтом. При одновременных изменениях побеждает более позднее.</p>
-      <div class="modal-actions"><button id="syncOut" class="danger">Выйти</button><button data-act="closeModal">Закрыть</button></div>`);
+      <p class="muted small">Персонажи автоматически сохраняются в облаке и появляются на всех устройствах, где вы вошли этим аккаунтом. При одновременных изменениях побеждает более позднее — прошлые версии и удалённые персонажи хранятся, их можно вернуть.</p>
+      <div class="modal-actions"><button id="syncOut" class="danger">Выйти</button><button id="syncHist">🕘 Версии и корзина</button><button data-act="closeModal">Закрыть</button></div>`);
+    document.getElementById('syncHist').onclick = () => app.openCloudHistory([...raw.entries()], !!user);
     document.getElementById('syncOut').onclick = async () => {
       app.closeModal();
       await A.signOut(auth);
