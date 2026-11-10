@@ -1724,9 +1724,40 @@ async function econAct(a, id, k) {
     if (m && m.charId) app.setCond(m.charId, 'prone', false);
   }
   await R.update(ref(gpath(`econ/${id}`)), upd);
+  // Шаг стихий (монах «Путь стихий» 11+): Шаг ветра даёт скорость полёта и плавания до конца хода
+  if (a === 'dashB' && t.kind === 'pc' && !t.comp) {
+    const m = me(), MK = m && m.charId ? (app.classActs(m.charId) || {}).monk : null;
+    if (MK && MK.elem && MK.lvl >= 11) {
+      addEffect(id, { n: 'Шаг стихий', ic: '🌬', fly: speedOf(t), by: user.uid, from: id, ...(inFight() ? { until: game.init.round || 1 } : {}) });
+      addLog({ kind: 'act', who: t.name, txt: '🌬 Шаг стихий: летает и плавает до конца хода' });
+    }
+  }
   const ACT_LOG = { dash: 'Рывок', dashB: 'Рывок (бонусное действие)', dis: 'Отход', disB: 'Отход (бонусное действие)', dodge: 'Уклонение', stand: 'встаёт' };
   if (ACT_LOG[a]) addLog({ kind: 'act', who: t.name, txt: ACT_LOG[a] });
 }
+// Самовосстановление (монах 10+): в конце своего хода снять с себя очарование, испуг или отравление
+function selfRestore() {
+  const m = me(), id = user && `pc_${user.uid}`, t = id && game.tokens[id];
+  if (!t || !m || !m.charId) return;
+  const MK = (app.classActs(m.charId) || {}).monk;
+  if (!MK || MK.lvl < 10) return;
+  const gone = ['charmed', 'frightened', 'poisoned'].filter((c) => (t.cond || []).includes(c));
+  if (!gone.length) return;
+  gone.forEach((c) => app.setCond(m.charId, c, false));
+  // Эффекты, которые держат эти состояния, тоже снимаются
+  const ks = fxOf(id).filter(([, e]) => gone.includes(e.cond)).map(([k]) => k);
+  if (ks.length) R.update(ref(gpath('effects')), Object.fromEntries(ks.map((k) => [k, null]))).catch(() => {});
+  addLog({ kind: 'act', who: t.name, txt: `🧘 Самовосстановление: ${gone.map((c) => condName(c).toLowerCase()).join(', ')} — снято` });
+}
+// Стихии монаха (Путь стихий): вид урона, значок, ключ сопротивления
+const ELEMS = [['кислотой', '🧪', 'кислота', 'acid'], ['холодом', '❄', 'холод', 'cold'], ['огнём', '🔥', 'огонь', 'fire'], ['электричеством', '⚡', 'молния', 'lightning'], ['звуком', '🔊', 'гром', 'thunder']];
+// Активная Стихийная настройка на токене: { dtype, ic, name, k — ключ эффекта }
+const elemOf = (id) => { const f = fxOf(id).find(([, e]) => e.elemAtt); return f ? { k: f[0], dtype: f[1].elemAtt, ic: f[1].ic, name: (ELEMS.find((x) => x[0] === f[1].elemAtt) || [])[2] || '' } : null; };
+const elemPick = (title, sub, go) => {
+  app.openModal(`<h2>${title}</h2><p class="muted small">${sub}</p><div class="list">${ELEMS.map(([dt, ic, n], i) => `<button class="atk-pick" data-el="${i}"><b>${ic} ${n}</b><span class="muted small">урон ${dt}</span></button>`).join('')}</div>
+    <div class="modal-actions"><button data-act="closeModal">Отмена</button></div>`);
+  $$('[data-el]').forEach((x) => x.addEventListener('click', () => { app.closeModal(); go(ELEMS[+x.dataset.el]); }));
+};
 // Умения воинских классов (кнопки хода): ресурс тратится в листе, на поле — эффект, флаг хода или атака
 function classAction(a, id, k) {
   const t = game.tokens[id], m = me(), e = econ(id), fight = inFight();
@@ -1776,6 +1807,24 @@ function classAction(a, id, k) {
     aim = { from: id, charId: m.charId, atk: A, way: 'flurry', left: K.flurry.n, man: '', smite: '' };
     renderAll();
     app.toast(`👊 Шквал ударов: выберите цель (${K.flurry.n} удара)`);
+  } else if (a === 'cElem') {
+    elemPick('🌪 Стихийная настройка', 'На 10 минут: досягаемость безоружных ударов +10 фт, урон выбранной стихией, попадание может оттолкнуть цель на 10 фт (спасбросок Силы).', ([dt, ic, n, key]) => {
+      if (!app.spendFocus(m.charId, 1)) { app.toast('Нет очков сосредоточенности'); return; }
+      const M = (K.monk || {}).lvl || 3;
+      // Стихийный эпицентр (17): ещё и сопротивление своей стихии
+      addEffect(id, { n: `Стихийная настройка: ${n}`, ic, elemAtt: dt, ...(M >= 17 ? { resist: [key] } : {}), by: user.uid, from: id, ...(fight ? { until: (game.init.round || 1) + 100 } : {}) });
+      addLog({ kind: 'act', who: t.name, txt: `${ic} Стихийная настройка: удары — ${dt}, досягаемость +10 фт${M >= 17 ? `, сопротивление (${n})` : ''}` });
+    });
+  } else if (a === 'cElemOff') {
+    const att = elemOf(id);
+    if (att) R.remove(ref(gpath(`effects/${att.k}`))).catch(() => {});
+  } else if (a === 'cBurst') {
+    const MK = K.monk || {};
+    elemPick('💥 Стихийный взрыв', `Сфера 20 фт в пределах 120 фт: спасбросок Ловкости СЛ ${MK.dc}, урон 3${(MK.die || '1d6').slice(1)} выбранной стихией.`, ([dt]) => {
+      if (!app.spendFocus(m.charId, 2)) { app.toast('Нужно 2 очка сосредоточенности'); return; }
+      if (fight) eu({ a: 1 });
+      startCast({ caster: id, info: { n: 'Стихийный взрыв', shape: 'sphere', size: 20, range: 120, save: 'dex', dc: MK.dc, half: true, f: `3${(MK.die || '1d6').slice(1)}`, dtype: dt, l: 0, dur: 'Мгновенная', act: 'action' } });
+    });
   } else if (a === 'cPatient') {
     if (!app.spendFocus(m.charId, 1)) { app.toast('Нет очков сосредоточенности'); return; }
     eu({ b: 1, dis: 1, dodge: 1 });
@@ -2087,6 +2136,7 @@ function openAttack(id) {
   const opts = `${O.maneuvers && O.maneuvers.length && O.supLeft ? `<label>Приём превосходства (к${O.supDie}, осталось ${O.supLeft})<select id="atkMan"><option value="">— не тратить кость —</option>${O.maneuvers.map((n) => `<option>${esc(n)}</option>`).join('')}</select></label>` : ''}
     ${O.smiteSlots && O.smiteSlots.length && (!inFight() || !e.b) ? `<label>Божественная кара при попадании<select id="atkSmite"><option value="">— нет —</option>${O.smiteSlots.map((s) => `<option value="${s.key}">${esc(s.label)}</option>`).join('')}</select></label>` : ''}
     ${K.brutal && e.reck && !e.brut ? `<label>Жестокий удар (без преимущества, +${K.brutal.dice})<select id="atkBrutal"><option value="">— нет —</option><option value="push">Мощный удар: толчок на 15 фт</option><option value="slow">Подсекающий удар: скорость −15 фт</option></select></label>` : ''}
+    ${elemOf(id) ? `<label class="check" title="Стихийная настройка: попадание безоружным ударом — цель проходит спасбросок Силы или отлетает на 10 фт"><input type="checkbox" id="atkElemPush" checked> ${elemOf(id).ic} Безоружные удары толкают цель на 10 фт</label>` : ''}
     ${K.cunning ? `<label>Хитрый удар (−1к6 Скрытой атаки, СЛ ${K.cunning.dc})<select id="atkCunning"><option value="">— нет —</option><option value="trip">Подножка: Ловкость или сбит с ног</option><option value="poison">Яд: Телосложение или отравлен</option></select></label>` : ''}
     ${K.stun && K.stun.focus > 0 && !e.stun ? `<label class="check" title="Раз в ход: попадание в ближнем бою — цель проходит спасбросок Телосложения или ошеломлена до начала вашего следующего хода"><input type="checkbox" id="atkStun"> 💫 Ошеломляющий удар при попадании (1 очко, СЛ ${K.stun.dc})</label>` : ''}
     ${O.sneak ? `<p class="muted small">Скрытая атака ${O.sneak}к6 добавится сама — раз в ход, фехтовальным или дальнобойным оружием при преимуществе или если рядом с целью ваш союзник.${e.sa ? ' <b>В этом ходу уже была.</b>' : ''}</p>` : ''}`;
@@ -2108,10 +2158,10 @@ function openAttack(id) {
       way = 'magic';
     }
     const left = way === 'action' ? (e.atk > 0 ? e.atk : per) : way === 'magic' ? A.beams || 1 : 1, stunOn = !!($('#atkStun') || {}).checked;
-    const brutal = ($('#atkBrutal') || {}).value || '', cunning = ($('#atkCunning') || {}).value || '';
+    const brutal = ($('#atkBrutal') || {}).value || '', cunning = ($('#atkCunning') || {}).value || '', elemPush = $('#atkElemPush') ? $('#atkElemPush').checked : true;
     app.closeModal();
     aim = { from: id, charId: m.charId, atk: A, way, left, man, smite, ...(stunOn ? { stun: true, stunDc: K.stun.dc } : {}),
-      ...(brutal ? { brutal, brutalDice: K.brutal.dice } : {}), ...(cunning ? { cunning, cunDc: K.cunning.dc } : {}) };
+      ...(brutal ? { brutal, brutalDice: K.brutal.dice } : {}), ...(cunning ? { cunning, cunDc: K.cunning.dc } : {}), elemPush };
     renderAll();
   }));
 }
@@ -2286,7 +2336,9 @@ function coverOf(A, T, aid, tid) {
   return { total: false, bonus: c, wind };
 }
 function attackTarget(tid) {
-  const a = aim, me_ = game.tokens[a.from], T = game.tokens[tid], A = a.atk, r = A.rng;
+  const a = aim, me_ = game.tokens[a.from], T = game.tokens[tid], A = a.atk;
+  // Стихийная настройка монаха: безоружные удары достают на 10 фт дальше и бьют стихией
+  const elem = A.ma && !a.npc ? elemOf(a.from) : null, r = elem ? { ...A.rng, reach: (A.rng.reach || 5) + 10 } : A.rng;
   if (!me_ || !T) return;
   if (isDead(T)) { app.toast('Это труп — атаковать некого'); return; }
   // Иллюзия: удар проходит насквозь — атакующий её раскрыл, атака потрачена
@@ -2371,7 +2423,10 @@ function attackTarget(tid) {
       ...(!A.spell ? fxOf(a.from).filter(([, e]) => e.dmgDie).map(([, e]) => ({ e: e.dmgDie, n: e.n })) : []),
       ...(!A.spell && bA.dmgDie ? [{ e: bA.dmgDie, n: 'Мантия крестоносца' }] : []),
       ...(brutal ? [{ e: a.brutalDice || '1d10', n: 'Жестокий удар' }] : [])],
-    cunning: !!a.cunning };
+    cunning: !!a.cunning, ...(elem ? { dtype: elem.dtype } : {}) };
+  // Стихийный эпицентр (монах 17): раз в ход попавший безоружный удар — ещё кость Боевых искусств стихией
+  const MKe = elem ? (app.classActs(a.charId) || {}).monk : null, epi = MKe && MKe.lvl >= 17 && !econ(a.from).epi;
+  if (epi) ro.dmgDice.push({ e: MKe.die, n: 'Стихийный эпицентр' });
   let res = a.npc ? npcAttackRoll(me_, A, ro)
     : A.lvlSpell ? app.mute(() => app.spellRoll(a.charId, { ...ro, n: A.n, bonus: A.bonus, dmg: A.dmg, type: A.type, miss: A.miss, emp: A.emp || 0 }))
     : app.mute(() => app.attack(a.charId, A.id, ro));
@@ -2414,6 +2469,13 @@ function attackTarget(tid) {
       saveRequest(tid, { n: `${me_.name}: Хитрый удар`, who: me_.name, abil: trip ? 'dex' : 'con', dc: a.cunDc || 13, from: a.from,
         fail: trip ? { n: 'Подножка', cond: 'prone', once: true } : { n: 'Отравление', ic: '🤢', cond: 'poisoned', rounds: 10 } });
     a.cunning = '';
+  }
+  // Стихийная настройка: попадание безоружным ударом — цель (Большая и меньше) проходит спасбросок Силы или отлетает на 10 фт
+  if (elem && res.hit) {
+    if (epi) R.update(ref(gpath(`econ/${a.from}`)), { epi: 1 }).catch(() => {});
+    const dc = (MKe || (app.classActs(a.charId) || {}).monk || {}).dc || 13;
+    if (a.elemPush !== false && (T.size || 1) <= 2)
+      saveRequest(tid, { n: `${me_.name}: стихийный удар`, who: me_.name, abil: 'str', dc, fail: { n: 'Стихийный толчок', push: 2, once: true }, from: a.from });
   }
   // Ошеломляющий удар (монах 5+): попадание в ближнем бою — 1 очко сосредоточенности, раз в ход; Телосложение или ошеломлён до начала хода монаха
   if (res.hit && !ranged && a.stun && !econ(a.from).stun && app.spendFocus(a.charId, 1)) {
@@ -3777,18 +3839,28 @@ function saveMine(k, tid) {
   if (!r) return;
   useInsp(tid);
   if (portentOn(tid)) usePortentFx(tid);
-  // Упорный (воин 9+): провал — можно перебросить с бонусом уровня воина
+  // Провал — переброс: Упорный (воин 9+, бонус уровня воина) или Дисциплинированный выживший (монах 14+, 1 очко сосредоточенности)
   const K = !t.comp ? app.classActs(m.charId) || {} : {};
-  if (!r.ok && K.indom && K.indom.left > 0) {
-    app.openModal(`<h2>🛡 Упорный</h2><p>${esc(A.n)}: спасбросок ${AB_N[A.abil]} — <b>${r.total}</b> против СЛ ${A.dc}, провал.</p>
-      <p class="muted small">Перебросить с бонусом +${K.indom.bonus}? Осталось использований: ${K.indom.left}.</p>
-      <div class="modal-actions"><button id="indNo">Оставить провал</button><button class="primary" id="indYes">🎲 Перебросить</button></div>`);
+  const indom = K.indom && K.indom.left > 0, disc = K.monk && K.monk.lvl >= 14 && K.monk.focus > 0;
+  if (!r.ok && (indom || disc)) {
+    app.openModal(`<h2>🎲 Перебросить спасбросок?</h2><p>${esc(A.n)}: спасбросок ${AB_N[A.abil]} — <b>${r.total}</b> против СЛ ${A.dc}, провал.</p>
+      <div class="list">${indom ? `<button class="atk-pick" id="indYes"><b>🛡 Упорный</b><span class="muted small">переброс с бонусом +${K.indom.bonus} · осталось ${K.indom.left}</span></button>` : ''}
+        ${disc ? `<button class="atk-pick" id="discYes"><b>🧘 Дисциплинированный выживший</b><span class="muted small">переброс за 1 очко сосредоточенности · осталось ${K.monk.focus}</span></button>` : ''}</div>
+      <div class="modal-actions"><button id="indNo">Оставить провал</button></div>`);
+    const reroll = (label, extra) => {
+      const r2 = app.mute(() => app.rollSave(m.charId, A.abil, A.dc, { label: `${A.n} (${label})`, dice: [...saveDice(tid), ...extra] }));
+      saveFinish(k, tid, r2 ? { ...r2, detail: `${label}: переброс ${r.total} → ${r2.total} · ${r2.detail}` } : r);
+    };
     $('#indNo').onclick = () => { app.closeModal(); saveFinish(k, tid, r); };
-    $('#indYes').onclick = () => {
+    if ($('#indYes')) $('#indYes').onclick = () => {
       app.closeModal();
       if (!app.useRes(m.charId, 'indomitable', 'Упорный')) { saveFinish(k, tid, r); return; }
-      const r2 = app.mute(() => app.rollSave(m.charId, A.abil, A.dc, { label: `${A.n} (Упорный)`, dice: [...saveDice(tid), { e: String(K.indom.bonus), n: 'Упорный' }] }));
-      saveFinish(k, tid, r2 ? { ...r2, detail: `Упорный: переброс ${r.total} → ${r2.total} · ${r2.detail}` } : r);
+      reroll('Упорный', [{ e: String(K.indom.bonus), n: 'Упорный' }]);
+    };
+    if ($('#discYes')) $('#discYes').onclick = () => {
+      app.closeModal();
+      if (!app.spendFocus(m.charId, 1)) { saveFinish(k, tid, r); return; }
+      reroll('Дисциплинированный выживший', []);
     };
     return;
   }
@@ -4472,6 +4544,14 @@ function syncEffects() {
       }
       const n = Math.min(20, Math.floor(alt / 10)), r = n ? app.mute(() => app.rollFormula(`${n}d6`, 'Падение')) : null;
       R.update(ref(gpath(`tokens/${id}`)), { alt: null }).catch(() => {});
+      // Медленное падение (монах 4+): реакцией урон от падения уменьшается на 5 × уровень монаха
+      const pm = t.kind === 'pc' && !t.comp && !t.sum && t.owner === user.uid && me() && me().charId ? (app.classActs(me().charId) || {}).monk : null;
+      if (r && r.total && pm && pm.lvl >= 4 && !econ(id).r) {
+        const cut = Math.min(r.total, 5 * pm.lvl);
+        r.total -= cut;
+        if (inFight()) R.update(ref(gpath(`econ/${id}`)), { r: 1 }).catch(() => {});
+        addLog({ kind: 'act', who: t.name, txt: `🍃 Медленное падение: урон от падения −${cut}${r.total ? '' : ' — приземляется невредимым'}` });
+      }
       if (r && r.total) { addLog({ kind: 'dmg', who: '', txt: `падает с ${alt} фт`, tgt: id, tgtName: t.name, dmg: r.total, dtype: 'дробящим', detail: r.detail }); setTokCond(id, 'prone', true); }
     }
   });
@@ -6754,6 +6834,13 @@ function classActsHtml(id, e) {
   if (K.secondWind) out.push(b('cWind', `💚 Второе дыхание (${K.secondWind.left})`, 'Бонусное действие: восстановить 1к10 + уровень воина хитов', !e.b && K.secondWind.left > 0));
   if (K.surge && !e.surge) out.push(b('cSurge', `⚡ Всплеск действий (${K.surge.left})`, 'Ещё одно действие в этом ходу (кроме «Магии»)', K.surge.left > 0 && !!e.a));
   if (K.flurry) out.push(b('cFlurry', `👊 Шквал ударов (${K.flurry.n})`, `Бонусное действие и 1 очко сосредоточенности (осталось ${K.flurry.focus}): ${K.flurry.n} безоружных удара`, !e.b && K.flurry.focus > 0));
+  // Путь стихий: настройка (1 ци, 10 минут) и взрыв (2 ци, действие)
+  if (K.monk && K.monk.elem) {
+    const att = elemOf(id);
+    out.push(att ? b('cElemOff', `${att.ic} Настройка: ${att.name} — снять`, 'Закончить Стихийную настройку', true)
+      : b('cElem', '🌪 Стихийная настройка (1 ци)', 'На 10 минут: безоружные удары достают на 10 фт дальше, бьют стихией по выбору и могут толкнуть цель на 10 фт', K.monk.focus > 0));
+    if (K.monk.lvl >= 6) out.push(b('cBurst', '💥 Стихийный взрыв (2 ци)', `Действие: сфера 20 фт в пределах 120 фт — спасбросок Ловкости СЛ ${K.monk.dc}, 3${K.monk.die.slice(1)} урона стихией, половина при успехе`, !e.a && !(e.atk > 0) && K.monk.focus >= 2));
+  }
   if (K.patient && !(e.dis && e.dodge)) out.push(b('cPatient', '🛡 Терпеливая оборона (1 ци)', `Бонусное действие и 1 очко сосредоточенности (осталось ${K.patient.focus}): Отход и Уклонение`, !e.b && K.patient.focus > 0));
   if (K.steady && !e.steady) out.push(b('cSteady', '🎯 Верный прицел', 'Бонусное действие, если вы ещё не перемещались: преимущество на следующую атаку в этом ходу, скорость 0 до конца хода', !e.b && !(e.move > 0)));
   // Заклинатели: Изгнание нежити (жрец), Вдохновение барда, Врождённое колдовство (чародей)
@@ -7322,7 +7409,7 @@ async function onClick(e) {
       const t = game.tokens[selId];
       await R.set(ref(gpath(`init/list/${selId}`)), { name: t.name, roll: die(20) + (+t.init || 0), owner: user.uid, kind: 'npc', tokenId: selId });
     } else if (a === 'startFight') { await R.update(ref(gpath()), { 'init/active': true, 'init/round': 1, 'init/turn': 0, econ: null, fstats: { start: Date.now(), last: 0, by: {} } }); addLog({ kind: 'sys', txt: '⚔ Бой начался · раунд 1' }); }
-    else if (a === 'next' || a === 'endTurn') nextTurn();
+    else if (a === 'next' || a === 'endTurn') { if (a === 'endTurn') selfRestore(); nextTurn(); }
     else if (a === 'endFight') { if (app.confirm('Закончить бой и очистить инициативу?')) { fightTally(); const rounds = (game.init && game.init.round) || 1; await R.update(ref(gpath()), { init: null, econ: null }); setTimeout(() => fightSummary(rounds), 300); addLog({ kind: 'sys', txt: 'Бой окончен' });
       if (Object.keys((game.xp || {}).kills || {}).length) xpDialog(true); } }
     else if (a === 'xpGive') xpDialog(false);
@@ -7440,7 +7527,7 @@ async function onClick(e) {
     else if (a === 'areaDel') await R.remove(ref(gpath(`areas/${b.dataset.k}`)));
     else if (a === 'logClear') { if (app.confirm('Очистить журнал для всех?')) await R.remove(ref(gpath('log'))); }
     else if (['eco', 'dash', 'dashB', 'dis', 'disB', 'dodge', 'stand'].includes(a)) await econAct(a, b.dataset.id, b.dataset.k);
-    else if (/^c(Rage|Reck|Wind|Surge|Flurry|Steady|Turn|Insp|Innate|Spark|Loh|Wild|WildEnd|Patient|Portent)$/.test(a)) classAction(a, b.dataset.id, b.dataset.k);
+    else if (/^c(Rage|Reck|Wind|Surge|Flurry|Steady|Turn|Insp|Innate|Spark|Loh|Wild|WildEnd|Patient|Portent|Elem|ElemOff|Burst)$/.test(a)) classAction(a, b.dataset.id, b.dataset.k);
     else if (a === 'initDel') await removeFromInit(b.dataset.id);
     else if (a === 'unsel') { selId = null; renderSide(); renderTokens(); }
     else if (a === 'tokDel') { if (app.confirm('Убрать токен с поля?')) { await R.remove(ref(gpath(`tokens/${selId}`))); selId = null; } }

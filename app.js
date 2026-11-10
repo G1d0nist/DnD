@@ -444,6 +444,10 @@ window.dndApp = {
       stun: M >= 5 ? { focus: left('focus'), dc: 8 + am(c, 'wis') + pb(c) } : null, steady: Rg >= 3,
       // Терпеливая оборона (монах 2+): 1 очко — Отход и Уклонение бонусным действием
       patient: M >= 2 ? { focus: left('focus') } : null,
+      // Монах: Медленное падение (4), Самовосстановление (10), Дисциплинированный выживший (14 — переброс спасброска за 1 очко);
+      // Путь стихий (2024): Стихийная настройка (3), Стихийный взрыв (6), Шаг стихий (11), Стихийный эпицентр (17)
+      monk: M ? { lvl: M, focus: left('focus'), die: martialDie(M), dc: 8 + am(c, 'wis') + pb(c),
+        elem: classList(c).some((e) => e.cls === 'Монах' && e.sub === 'Путь стихий') && M >= 3 } : null,
       // Жестокий удар (варвар 9+, при Безрассудной атаке): отказ от преимущества — +1к10 (17+: 2к10) и толчок или подсечка
       brutal: B >= 9 ? { dice: B >= 17 ? '2d10' : '1d10' } : null,
       // Хитрый удар (плут 5+): СЛ = 8 + Лов + мастерство
@@ -800,11 +804,11 @@ window.dndApp = {
       // Метка охотника, Сглаз, Увеличение: дополнительные кости урона при попадании
       (o.dmgDice || []).forEach((x) => { if (hit) { expr += `+${X(x.e)}`; extra.push(x.n); } });
       let d = null;
-      if (hit && expr) d = rollDice(`${crit ? 'КРИТ ' : ''}Урон: ${A.n}${A.type ? ` (${A.type})` : ''}${extra.length ? ` + ${extra.join(', ')}` : ''}`, expr);
+      if (hit && expr) d = rollDice(`${crit ? 'КРИТ ' : ''}Урон: ${A.n}${o.dtype || A.type ? ` (${o.dtype || A.type})` : ''}${extra.length ? ` + ${extra.join(', ')}` : ''}`, expr);
       ammoWarn(c, a);
       // Приём оружия: ключ, СЛ спасброска (8 + модификатор атаки + БМ) и модификатор (урон «Задевания»)
       const mk = a && masteryActive(c, a) ? a.mastery : '';
-      res = { total: r.total, nat: r.nat, detail: r.detail, hit, crit, dmg: d ? Math.max(0, d.total) : 0, dmgDetail: d ? d.detail : '', type: A.type,
+      res = { total: r.total, nat: r.nat, detail: r.detail, hit, crit, dmg: d ? Math.max(0, d.total) : 0, dmgDetail: d ? d.detail : '', type: o.dtype || A.type,
         mastery: mk, mdc: a ? 8 + abilFor(c, a) + pb(c) : 0, mmod: a ? abilFor(c, a) : 0, extra,
         sneak: extra.includes('Скрытая атака'), smite, man: sup ? o.maneuver : '', manDC: 8 + pb(c) + Math.max(am(c, 'str'), am(c, 'dex')), repel: !!A.repel && hit };
     });
@@ -3000,7 +3004,7 @@ function tableAttacks(c) {
   if (c.shape) return c.shape.atk.map((a) => ({ id: a.id, n: `${a.n} (${c.shape.n})`, bonus: a.hit, dmg: a.dmg, type: a.type, rng: atkRange(a.range, false), beast: true }));
   return [
     ...c.attacks.map((a) => ({ id: a.id, n: a.n, bonus: attackBonus(c, a), dmg: dmgExpr(c, a), type: a.type || '', rng: atkRange(a.range, a.ability === 'spell'), fin: a.ability === 'fin' || isRangedWeapon(a),
-      spell: a.ability === 'spell', ammo: a.ammo ? ammoLeft(c, a) : null, ammoName: a.ammo || '', mastery: masteryActive(c, a) && MASTERY[a.mastery] ? MASTERY[a.mastery].n : '' })),
+      spell: a.ability === 'spell', ma: !!a.ma || /безоруж/i.test(a.n), ammo: a.ammo ? ammoLeft(c, a) : null, ammoName: a.ammo || '', mastery: masteryActive(c, a) && MASTERY[a.mastery] ? MASTERY[a.mastery].n : '' })),
     ...c.spells.filter(tableCantrip).map((s) => {
       // «Мучительный взрыв» (воззвание): +мод. Харизмы к урону Мистического заряда; «Отталкивающий взрыв» — толчок на 10 фт
       const EB = s.e === 'Eldritch Blast', inv = (c.cpicks || {}).inv || [];
