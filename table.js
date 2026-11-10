@@ -175,7 +175,8 @@ function subscribe(gid, code) {
   on('init', (v) => { game.init = v; checkMyTurn(); checkNpcTurn(); cleanupInit(); syncEffects(); zoneTurn(); });
   on('econ', (v) => { game.econ = v || {}; undoTrack(); });
   on('cs', (v) => { game.cs = v || {}; csCheck(); notifyCs(); });
-  on('log', (v) => { game.log = v || {}; applyLog(); notifyLog(); fxLog(); });
+  on('log', (v) => { game.log = v || {}; applyLog(); notifyLog(); fxLog(); fightTally(); });
+  on('fstats', (v) => { game.fstats = v || null; });
   on('areas', (v) => { game.areas = v || {}; rebuildWalls(); wallEject(); drawAreas(); notifyAreas(); autoNpcSaves(); zoneTick(); syncEffects(); undoTrack(); });
   // Присутствие: онлайн, пока открыта вкладка
   unsubs.push(R.onValue(ref('.info/connected'), (s) => {
@@ -2577,6 +2578,44 @@ function promptOpportunity(e) {
     reactModal(`${esc(o.name)}: атака по возможности?`, items);
   });
 }
+/* ---------- Сводка боя ---------- */
+// games/{id}/fstats: { start, last — время последней учтённой записи журнала, by: { имя: { dealt, taken, hit, miss, crit, kills, healed } } }
+// Считает браузер мастера по мере боя (журнал хранит только последние записи); в конце боя — окно и запись в журнал
+function fightTally() {
+  if (!game || !isDM() || !inFight()) return;
+  const F = game.fstats || { start: Date.now(), last: 0, by: {} }, by = JSON.parse(JSON.stringify(F.by || {}));
+  const row = (n) => (by[n || '—'] = by[n || '—'] || { dealt: 0, taken: 0, hit: 0, miss: 0, crit: 0, kills: 0, healed: 0 });
+  let last = +F.last || 0, changed = false;
+  logList().filter((e) => (e.t || 0) > last && (e.t || 0) >= (+F.start || 0)).sort((a, b) => a.t - b.t).forEach((e) => {
+    last = Math.max(last, e.t || 0); changed = true;
+    const tgtN = e.tgtName || (game.tokens[e.tgt] || {}).name;
+    if (e.kind === 'atk') {
+      const r = row(e.who); if (e.hit) r.hit++; else r.miss++; if (e.crit) r.crit++;
+      if (e.hit && +e.dmg) { r.dealt += +e.dmg; if (tgtN) row(tgtN).taken += +e.dmg; }
+      if (e.down) r.kills++;
+    } else if (e.kind === 'dmg' && +e.dmg) { if (e.who) row(e.who).dealt += +e.dmg; if (tgtN) row(tgtN).taken += +e.dmg; }
+    else if (e.kind === 'heal' && +e.heal) row(e.who).healed += +e.heal;
+    else if (e.kind === 'save') (e.res || []).forEach((x) => {
+      const n = (game.tokens[x.id] || {}).name || e.who;
+      if (+x.dmg) { if (e.src) row(e.src).dealt += +x.dmg; if (n) row(n).taken += +x.dmg; }
+      if (x.down && e.src) row(e.src).kills++;
+    });
+  });
+  if (!changed) return;
+  game.fstats = { start: +F.start || Date.now(), last, by }; // сразу у себя — следующий подсчёт не посчитает те же записи
+  R.update(ref(gpath('fstats')), game.fstats).catch(() => {});
+}
+function fightSummary(rounds) {
+  const by = (game.fstats || {}).by || {}, rows = Object.entries(by).filter(([n]) => n && n !== '—').sort((a, b) => b[1].dealt - a[1].dealt);
+  if (!rows.length) return;
+  const mvp = rows[0];
+  const txt = `🏁 Итоги боя (${rounds} р.): ${rows.map(([n, s]) => `${n} — нанёс ${s.dealt}, получил ${s.taken}${s.crit ? `, критов ${s.crit}` : ''}${s.kills ? `, добил ${s.kills}` : ''}${s.healed ? `, вылечил ${s.healed}` : ''}`).join('; ')}`;
+  app.openModal(`<h2>🏁 Итоги боя</h2><p class="muted small">Раундов: ${rounds}. Больше всех урона: <b>${esc(mvp[0])}</b> (${mvp[1].dealt}).</p>
+    <div class="fight-sum"><table><tr><th></th><th title="Нанесено урона">⚔</th><th title="Получено урона">🩸</th><th title="Попаданий / промахов">🎯</th><th title="Критов">💥</th><th title="Добил">☠</th><th title="Вылечил">💚</th></tr>
+    ${rows.map(([n, s]) => `<tr><td>${esc(n)}</td><td>${s.dealt}</td><td>${s.taken}</td><td>${s.hit}/${s.miss}</td><td>${s.crit || ''}</td><td>${s.kills || ''}</td><td>${s.healed || ''}</td></tr>`).join('')}</table></div>
+    <div class="modal-actions"><button data-act="closeModal">Закрыть</button><button class="primary" id="fsLog">📜 В журнал</button></div>`);
+  $('#fsLog').onclick = () => { addLog({ kind: 'sys', txt }); app.closeModal(); };
+}
 /* ---------- Мастер: подсказки на ход существа и авто-ход ---------- */
 // Враги существа, которых оно видит (живые, не спрятанные), ближние — первыми
 function npcFoes(id) {
@@ -3595,7 +3634,7 @@ function saveFinish(k, tid, r) {
   R.update(ref(gpath(`areas/${k}/tg/${tid}`)), { done: true, ok: r.ok, roll: r.total, dmg }).catch(() => {});
   if (dmg) { if (t.comp) app.compHp(m.charId, t.comp, -dmg); else app.takeDamage(m.charId, dmg); }
   saveOutcome(A, tid, r.ok);
-  addLog({ kind: 'save', who: t.name, txt: `${A.n}: спасбросок ${AB_N[A.abil]} ${r.total} — ${r.ok ? 'успех' : 'провал'}${dmg ? `, ${dmg} ${A.dtype || 'урона'}` : ', без урона'}`, detail: r.detail,
+  addLog({ kind: 'save', who: t.name, src: A.who || '', txt: `${A.n}: спасбросок ${AB_N[A.abil]} ${r.total} — ${r.ok ? 'успех' : 'провал'}${dmg ? `, ${dmg} ${A.dtype || 'урона'}` : ', без урона'}`, detail: r.detail,
     res: [{ id: tid, dmg, ok: r.ok }] });
   finishArea(k, [tid]);
 }
@@ -3654,7 +3693,7 @@ function saveNpcs(k) {
     parts.push(`${t.name} ${total}${note} ${ok ? '✔' : '✘'}${dmg ? ` −${dmg}` : ''}${died ? ' ☠' : dmg && isDown(after) ? ' (без сознания)' : ''}`);
   });
   R.update(ref(gpath()), upd).catch((err) => app.toast(`Ошибка: ${esc(err.code || err.message)}`));
-  addLog({ kind: 'save', who: '', txt: `${A.n} — спасброски ${AB_N[A.abil]} (СЛ ${A.dc}): ${parts.join('; ')}`, res });
+  addLog({ kind: 'save', who: '', src: A.who || '', txt: `${A.n} — спасброски ${AB_N[A.abil]} (СЛ ${A.dc}): ${parts.join('; ')}`, res });
   finishArea(k, ids);
 }
 // Повторное срабатывание (Духовные стражи, Лунный луч…): новый бросок урона и спасброски для тех, кто сейчас в области
@@ -7072,9 +7111,9 @@ async function onClick(e) {
     } else if (a === 'npcInit') {
       const t = game.tokens[selId];
       await R.set(ref(gpath(`init/list/${selId}`)), { name: t.name, roll: die(20) + (+t.init || 0), owner: user.uid, kind: 'npc', tokenId: selId });
-    } else if (a === 'startFight') { await R.update(ref(gpath()), { 'init/active': true, 'init/round': 1, 'init/turn': 0, econ: null }); addLog({ kind: 'sys', txt: '⚔ Бой начался · раунд 1' }); }
+    } else if (a === 'startFight') { await R.update(ref(gpath()), { 'init/active': true, 'init/round': 1, 'init/turn': 0, econ: null, fstats: { start: Date.now(), last: 0, by: {} } }); addLog({ kind: 'sys', txt: '⚔ Бой начался · раунд 1' }); }
     else if (a === 'next' || a === 'endTurn') nextTurn();
-    else if (a === 'endFight') { if (app.confirm('Закончить бой и очистить инициативу?')) { await R.update(ref(gpath()), { init: null, econ: null }); addLog({ kind: 'sys', txt: 'Бой окончен' });
+    else if (a === 'endFight') { if (app.confirm('Закончить бой и очистить инициативу?')) { fightTally(); const rounds = (game.init && game.init.round) || 1; await R.update(ref(gpath()), { init: null, econ: null }); setTimeout(() => fightSummary(rounds), 300); addLog({ kind: 'sys', txt: 'Бой окончен' });
       if (Object.keys((game.xp || {}).kills || {}).length) xpDialog(true); } }
     else if (a === 'xpGive') xpDialog(false);
     else if (a === 'enc') encDialog();

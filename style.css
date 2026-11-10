@@ -770,3 +770,8 @@ body.tbl-full-on .toasts { z-index: 95; top: 64px; bottom: auto; }
   .tok-fx { font-size: 13px; }
 }
 .sch-ic { font-size: 12px; opacity: .8; cursor: help; margin-left: -4px; }
+/* Итоги боя */
+.fight-sum { overflow-x: auto; }
+.fight-sum table { width: 100%; border-collapse: collapse; font-size: 13px; }
+.fight-sum th, .fight-sum td { padding: 4px 6px; border-bottom: 1px solid var(--line); text-align: center; }
+.fight-sum td:first-child, .fight-sum th:first-child { text-align: left; }
