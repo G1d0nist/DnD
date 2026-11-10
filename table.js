@@ -699,7 +699,36 @@ function mapDialog() {
 // meta.fog: { mode: off | vision | manual, sight — дальность обзора, фт }. games/{id}/reveal — клетки, открытые мастером;
 // games/{id}/seen — клетки, которые персонажи уже видели (приглушены, существа там скрыты)
 
-const fogSet = () => ({ mode: 'off', sight: 60, ...((game && game.meta && game.meta.fog) || {}) });
+// Освещение по времени суток (мастер включает): общий свет поля задаёт час кампании
+const fogSet = () => {
+  const f = { mode: 'off', sight: 60, ...((game && game.meta && game.meta.fog) || {}) };
+  if (game && game.meta && game.meta.timeLight) f.amb = dayPart().amb;
+  return f;
+};
+// Час кампании (часы путешествия): день 1, 08:00 + время в пути + добавленное мастером и отдыхом
+const gameHour = () => TRAVEL_START + travelHours((game && game.travel) || {});
+function dayPart() {
+  const h = gameHour() % 24;
+  return h >= 7 && h < 19 ? { ic: '☀', n: 'день', amb: 'bright' } : h >= 5 && h < 7 ? { ic: '🌅', n: 'рассвет', amb: 'dim' }
+    : h >= 19 && h < 21 ? { ic: '🌇', n: 'сумерки', amb: 'dim' } : { ic: '🌙', n: 'ночь', amb: 'dark' };
+}
+// Окно времени (мастер): сдвинуть часы, освещение по времени суток
+function timeDialog() {
+  const T = game.travel || {}, dp = dayPart(), on = !!(game.meta || {}).timeLight;
+  app.openModal(`<h2>🕰 Время кампании</h2><p><b>${esc(travelClock(T))}</b> · ${dp.ic} ${dp.n}</p>
+    <div class="row gap wrap">${[['10м', 1 / 6], ['+1 ч', 1], ['+4 ч', 4], ['+8 ч', 8]].map(([n, h]) => `<button data-tm="${h}">${n.replace(/^(\d)/, '+$1')}</button>`).join('')}<button data-tm="morning">🌅 До утра</button></div>
+    <label class="check mt"><input type="checkbox" id="tmLight" ${on ? 'checked' : ''}> Освещение по времени суток (день — светло, сумерки — тускло, ночь — темно)</label>
+    <p class="muted small">Короткий отдых сдвигает часы на час, долгий — на 8 часов. Путешествие по карте мира тоже идёт по этим часам.</p>
+    <div class="modal-actions"><button class="primary" data-act="closeModal">Готово</button></div>`);
+  $$('[data-tm]').forEach((b) => b.addEventListener('click', async () => {
+    const h = gameHour(), add = b.dataset.tm === 'morning' ? (Math.floor((h - 6) / 24) + 1) * 24 + 6 - h : +b.dataset.tm;
+    await R.update(ref(gpath('travel')), { extra: (+(game.travel || {}).extra || 0) + add }).catch(() => {});
+    game.travel = { ...(game.travel || {}), extra: (+(game.travel || {}).extra || 0) + add };
+    addLog({ kind: 'sys', txt: `🕰 Проходит время: ${travelClock(game.travel)} · ${dayPart().ic} ${dayPart().n}` });
+    timeDialog(); drawFog(); drawTerrain();
+  }));
+  $('#tmLight').addEventListener('change', () => { R.update(ref(gpath('meta')), { timeLight: $('#tmLight').checked || null }).catch(() => {}); });
+}
 const fogOn = () => fogSet().mode !== 'off';
 // Видимость клетки из точки: луч не должен проходить через стену (сама стена видна)
 // sight — для обзора: ещё и облака, туман, магическая тьма (свет сквозь туман проходит, сквозь тьму — нет)
@@ -778,6 +807,15 @@ function drawFog() {
   const cv = $('#tblFog'), g = cv.getContext('2d');
   g.clearRect(0, 0, cv.width, cv.height);
   fogVis = fogOn() ? computeVision() : null;
+  // Без тумана войны, но со временем суток: ночью и в сумерки поле чуть темнее (с учётом источников света)
+  if (!fogVis && (game.meta || {}).timeLight && dayPart().amb !== 'bright') {
+    const L = lightMap(), dark = dayPart().amb === 'dark';
+    for (let x = 0; x < W(); x++) for (let y = 0; y < H(); y++) {
+      const lv = L.at(`${x}_${y}`);
+      if (lv >= 2) continue;
+      g.fillStyle = lv === 1 || !dark ? 'rgba(10,12,30,.22)' : 'rgba(6,8,24,.45)'; g.fillRect(x * CELL, y * CELL, CELL, CELL);
+    }
+  }
   if (!fogVis) return;
   const player = !isDM() || fogPreview, seen = game.seen || {};
   for (let x = 0; x < W(); x++) for (let y = 0; y < H(); y++) {
@@ -6161,7 +6199,9 @@ function restDialog() {
     <label class="check"><input type="checkbox" id="rNpc"> Существам на поле тоже восстановить хиты (при долгом отдыхе)</label>
     <div class="modal-actions"><button data-act="closeModal">Отмена</button><button data-rest="short">☕ Короткий отдых</button><button class="primary" data-rest="long">🌙 Долгий отдых</button></div>`);
   $$('[data-rest]').forEach((b) => b.addEventListener('click', async () => {
-    const kind = b.dataset.rest, healNpc = $('#rNpc').checked, upd = { rest: { kind, id: R.push(ref(gpath('rest'))).key, t: Date.now() } };
+    const kind = b.dataset.rest, healNpc = $('#rNpc').checked, upd = { rest: { kind, id: R.push(ref(gpath('rest'))).key, t: Date.now() },
+      // Время кампании: короткий отдых — час, долгий — 8 часов
+      'travel/extra': (+(game.travel || {}).extra || 0) + (kind === 'long' ? 8 : 1) };
     if (kind === 'long') {
       Object.assign(upd, { init: null, econ: null, effects: null });
       if (healNpc) Object.entries(game.tokens).forEach(([id, t]) => { if (t.kind === 'npc' && !isDead(t)) Object.assign(upd, { [`tokens/${id}/hp`]: t.hpMax, [`tokens/${id}/dsS`]: null, [`tokens/${id}/dsF`]: null }); });
@@ -6486,7 +6526,8 @@ function renderTools() {
   const base = t('move', '✋ Двигать', 'Перетаскивайте токены; шаг — WASD или стрелки') + t('ruler', '📏 Линейка', 'Протяните, чтобы измерить расстояние')
     + b('keys', '⌨', 'Клавиши: шаг WASD, атака Q, заклинание E, спасбросок Alt… — посмотреть и переназначить (K)')
     + b('sound', sndOn ? '🔊' : '🔇', sndOn ? 'Звуки стола включены — выключить' : 'Звуки стола выключены — включить')
-    + b('journal', '📓', 'Журнал кампании: квесты, персонажи (NPC), заметки — общий для всех');
+    + b('journal', '📓', 'Журнал кампании: квесты, персонажи (NPC), заметки — общий для всех')
+    + (!(game.meta || {}).world ? b('clock', `🕰 ${travelClock(game.travel || {})} ${dayPart().ic}`, isDM() ? 'Время кампании: сдвинуть часы, освещение по времени суток' : 'Время кампании') : '');
   if (!isDM()) {
     $('#tblTools').innerHTML = `<div class="seg">${base}${!(hasMine && inFight()) ? t('place', hasMine ? '📍 Переставить меня' : '📍 Поставить персонажа', 'Нажмите на клетку') : ''}
       ${me() && me().charId && app.companions(me().charId).length ? b('compPick', '🐾 Спутник', 'Поставить спутника из листа на поле', tool === 'placeComp') : ''}
@@ -7293,6 +7334,7 @@ async function onClick(e) {
     else if (a === 'undo') undoLast();
     else if (a === 'npcAuto') npcAutoTurn(b.dataset.id);
     else if (a === 'journal') journalDialog();
+    else if (a === 'clock') { if (isDM()) timeDialog(); else app.toast(`🕰 ${esc(travelClock(game.travel || {}))} · ${dayPart().ic} ${dayPart().n}`); }
     else if (a === 'sound') { sndOn = !sndOn; try { localStorage.setItem('dnd55-snd', sndOn ? '1' : '0'); } catch (err) { /* без хранилища */ } if (sndOn) snd('turn'); renderTools(); }
     else if (a === 'areaAgain') areaAgain(b.dataset.k);
     else if (a === 'zoneMove') zoneMoveStart(b.dataset.k);
