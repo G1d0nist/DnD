@@ -1896,19 +1896,23 @@ function notifyLog() {
     if ((e.t || 0) < openedAt || e.by === user.uid || notified.has(e.k)) return;
     notified.add(e.k);
     const t = e.tgt && game.tokens[e.tgt];
-    if (e.kind === 'atk' && e.hit && !e.graze && t && t.owner === user.uid && t.kind === 'pc' && !t.comp)
+    if (e.kind === 'atk' && e.hit && !e.graze && t && t.owner === user.uid && t.kind === 'pc' && !t.comp) {
       lastHit = { k: e.k, tgt: e.tgt, total: e.total, dmg: e.dmg, from: e.from, dtype: e.dtype || '', t: Date.now() };
+      setTimeout(promptReactions, 400);
+    }
     // Попадание по союзнику рядом с моим персонажем — для боевого стиля «Защита»
     const mine = user && game.tokens[`pc_${user.uid}`];
     if (e.kind === 'atk' && e.hit && !e.graze && e.nat && t && mine && e.tgt !== `pc_${user.uid}` && team(t) === team(mine) && distFt(mine, t) <= 5) {
       lastAllyHit = { k: e.k, tgt: e.tgt, from: e.from, total: e.total, nat: e.nat, ac: e.ac, dmg: e.dmg, crit: e.crit, t: Date.now() };
       const O = me() && me().charId ? app.combatOpts(me().charId) : {};
-      if (O.protection && !econ(`pc_${user.uid}`).r) app.toast(`🛡 По ${esc(t.name)} попали — можно «Защиту» реакцией (панель хода)`, 'crit');
+      if (O.protection && !econ(`pc_${user.uid}`).r) setTimeout(promptReactions, 400);
     }
     if (e.kind === 'atk' && t && t.owner === user.uid && t.kind === 'pc')
       app.toast(`🗡 ${esc(e.who)} атакует вас: ${e.hit ? `${e.crit ? 'КРИТ! ' : ''}попадание, <b>${e.dmg}</b> урона` : 'промах'}`, e.hit ? 'fumble' : '');
-    if (e.kind === 'oa' && (e.foes || []).some((id) => game.tokens[id] && canMove(game.tokens[id])))
+    if (e.kind === 'oa' && (e.foes || []).some((id) => game.tokens[id] && canMove(game.tokens[id]))) {
       app.toast(`⚠ ${esc(e.txt)}`, 'crit');
+      setTimeout(() => promptOpportunity(e), 300);
+    }
     if (e.kind === 'chat') app.toast(`💬 <b>${esc(e.who)}</b>: ${esc(e.txt)}`);
   });
 }
@@ -2233,7 +2237,9 @@ function attackTarget(tid) {
   if (A.distinct && (a.hitIds || []).includes(tid)) { app.toast('Эту цель уже атаковали — выберите другую'); return; }
   const d = distFt(me_, T);
   let ranged;
-  if (r.reach && d <= r.reach) ranged = false;
+  // Атака по возможности: цель уже вышла из досягаемости — удар случился в момент ухода
+  if (a.oa) ranged = false;
+  else if (r.reach && d <= r.reach) ranged = false;
   else if (r.near) { if (d > r.far) { app.toast(`Слишком далеко: ${d} фт, предел ${r.far} фт`); return; } ranged = true; }
   else { app.toast(`Цель вне досягаемости: ${d} фт, досягаемость ${r.reach} фт`); return; }
   if (fxOf(tid).some(([, e]) => e.banish)) { app.toast('Цель изгнана — её нет на поле'); return; }
@@ -2416,7 +2422,7 @@ function checkOpportunity(id, t, fromX, fromY) {
   const before = { ...t, x: fromX, y: fromY };
   const foes = foesNear(before, id).filter(([k, o]) => distFt(t, o) > 5 && !econ(k).r).map(([k]) => k);
   if (!foes.length) return;
-  addLog({ kind: 'oa', who: '', foes, txt: `${t.name} покидает досягаемость: ${foes.map((k) => game.tokens[k].name).join(', ')} — можно атаку по возможности (реакция)` });
+  addLog({ kind: 'oa', who: '', foes, mover: id, txt: `${t.name} покидает досягаемость: ${foes.map((k) => game.tokens[k].name).join(', ')} — можно атаку по возможности (реакция)` });
 }
 
 /* ---------- Реакции ---------- */
@@ -2492,10 +2498,15 @@ function csUse(k, id) {
 // Реакции персонажа на попадание по нему (lastHit) и по союзнику рядом (lastAllyHit): возврат урона идёт как лечение
 const PHYS = /колющ|рубящ|дробящ/i;
 function reactionsHtml(id, t, e, incap) {
+  const out = reactOptions(id, t, e, incap).map(([a, label, title]) => `<button class="primary" data-tbl="${a}" data-id="${id}" title="${title}">${label}</button>`);
+  return out.length ? `<div class="react-box mt"><div class="muted small">Реакция:</div>${out.join('')}</div>` : '';
+}
+// Доступные реакции на попадание по мне или по союзнику рядом: [[действие, надпись, пояснение]]
+function reactOptions(id, t, e, incap) {
   const m = me();
-  if (isDM() || !m || !m.charId || e.r || incap) return '';
+  if (isDM() || !m || !m.charId || e.r || incap) return [];
   const O = app.combatOpts(m.charId), fresh = (h) => h && Date.now() - h.t < 90000, out = [];
-  const btn = (a, label, title, extra = '') => `<button class="primary" data-tbl="${a}" data-id="${id}" title="${title}" ${extra}>${label}</button>`;
+  const btn = (a, label, title) => [a, label, title];
   if (fresh(lastHit) && lastHit.tgt === id) {
     const H = lastHit, src = game.tokens[H.from];
     if ((O.shieldSlots || []).length && H.total < acOf(t, id) + 5) out.push(btn('shield', `🛡 «Щит»: отменить попадание (${H.total} против КД ${acOf(t, id) + 5})`, 'Реакция: +5 КД до начала вашего хода, тратит ячейку'));
@@ -2505,7 +2516,55 @@ function reactionsHtml(id, t, e, incap) {
   }
   if (fresh(lastAllyHit) && O.protection && game.tokens[lastAllyHit.tgt] && distFt(t, game.tokens[lastAllyHit.tgt]) <= 5)
     out.push(btn('protect', `🛡 «Защита»: помеха на атаку по ${esc(game.tokens[lastAllyHit.tgt].name)}`, 'Боевой стиль: реакцией со щитом — атака перебрасывается с помехой, и до начала вашего хода атаки по союзнику с помехой'));
-  return out.length ? `<div class="react-box mt"><div class="muted small">Реакция:</div>${out.join('')}</div>` : '';
+  return out;
+}
+// «Щит» реакцией на попадание: +5 КД до начала моего хода; попадание с новым КД — промах, урон возвращается
+async function doShield(id) {
+  const t = game.tokens[id], m = me(), O = m && m.charId ? app.combatOpts(m.charId) : {};
+  if (!t || !(O.shieldSlots || []).length || !lastHit) return;
+  app.castShield(m.charId, O.shieldSlots[0].key);
+  if (inFight()) await R.update(ref(gpath(`econ/${id}`)), { r: 1 });
+  await addEffect(id, { n: 'Щит', ic: '🛡', ac: 5, untilTurn: id, by: user.uid, from: id });
+  if (lastHit.dmg) app.heal(m.charId, lastHit.dmg);
+  addLog({ kind: 'act', who: t.name, txt: `🛡 «Щит» реакцией: +5 КД — попадание (${lastHit.total}) отменено${lastHit.dmg ? `, ${lastHit.dmg} урона не получено` : ''}` });
+  lastHit = null;
+}
+// Окно «⚡ Реакция?» — стол сам спрашивает, когда она возможна: items [{ label, sub, go }]. Окно уже открыто — не перебиваем
+// (кнопки остаются в панели хода); через 20 с без ответа окно закрывается само
+let reactOpen = null;
+function reactModal(title, items) {
+  if (!items.length || !$('#modal').hidden) return;
+  clearTimeout(reactOpen);
+  app.openModal(`<h2>⚡ ${title}</h2><div class="list">${items.map((x, i) => `<button class="atk-pick" data-rx="${i}"><b>${x.label}</b>${x.sub ? `<span class="muted small">${x.sub}</span>` : ''}</button>`).join('')}</div>
+    <div class="modal-actions"><button data-act="closeModal">Не реагировать</button></div>`);
+  snd('turn');
+  $$('[data-rx]').forEach((b) => b.addEventListener('click', () => { clearTimeout(reactOpen); app.closeModal(); items[+b.dataset.rx].go(); }));
+  reactOpen = setTimeout(() => { if ($('[data-rx]')) app.closeModal(); }, 20000);
+}
+// По мне (или союзнику рядом) попали — предложить реакцию, если она есть
+function promptReactions() {
+  const id = `pc_${user.uid}`, t = game.tokens[id];
+  if (!t || isDM()) return;
+  const opts = reactOptions(id, t, econ(id), incapTok(t));
+  reactModal('Реакция?', opts.map(([a, label, title]) => ({ label, sub: esc(title), go: () => (a === 'shield' ? doShield(id) : doReaction(a, id)) })));
+}
+// Враг уходит из досягаемости без Отхода — атака по возможности: моему персонажу (или существам мастера) — окно с рукопашными атаками
+function promptOpportunity(e) {
+  const mover = e.mover && game.tokens[e.mover];
+  if (!mover || !inFight()) return;
+  (e.foes || []).filter((k) => game.tokens[k] && canMove(game.tokens[k]) && !econ(k).r && !incapTok(game.tokens[k])).slice(0, 1).forEach((k) => {
+    const o = game.tokens[k], items = [];
+    if (o.kind === 'npc') {
+      npcAttacks(o).filter((A) => A.rng.reach > 0).forEach((A) => items.push({ label: `${esc(A.n)} → ${esc(mover.name)}`, sub: `${fmtMod(A.bonus)} к попаданию · ${esc(A.dmg)} ${esc(A.type)}`,
+        go: () => { aim = { from: k, npc: true, atk: A, way: 'reaction', left: 1, oa: true }; attackTarget(e.mover); } }));
+    } else {
+      const m = me();
+      if (!m || !m.charId || o.owner !== user.uid) return;
+      app.attacks(m.charId).filter((A) => A.rng.reach > 0 && !A.cantrip && A.ammo !== 0).forEach((A) => items.push({ label: `${esc(A.n)} → ${esc(mover.name)}`, sub: `${fmtMod(A.bonus)} к попаданию · ${esc(A.dmg)} ${esc(A.type)}`,
+        go: () => { aim = { from: k, charId: m.charId, atk: A, way: 'reaction', left: 1, man: '', smite: '', oa: true }; attackTarget(e.mover); } }));
+    }
+    reactModal(`${esc(o.name)}: атака по возможности?`, items);
+  });
 }
 // Вернуть часть урона цели (отменённое попадание, уменьшение урона): лечение применяет владелец цели
 function refund(tid, n, who, txt) {
@@ -7015,17 +7074,7 @@ async function onClick(e) {
       if (inFight()) await R.update(ref(gpath(`econ/${id}`)), { a: 1 });
       addLog({ kind: 'act', who: t.name, txt: `вырваться из захвата (СЛ ${g[1].gdc}): ${txt} — ${ok ? 'свободен' : 'не вышло'}` });
     }
-    else if (a === 'shield') {
-      const id = b.dataset.id, t = game.tokens[id], m = me(), O = app.combatOpts(m.charId);
-      if (!O.shieldSlots.length || !lastHit) return;
-      app.castShield(m.charId, O.shieldSlots[0].key);
-      if (inFight()) await R.update(ref(gpath(`econ/${id}`)), { r: 1 });
-      await addEffect(id, { n: 'Щит', ic: '🛡', ac: 5, untilTurn: id, by: user.uid, from: id });
-      // Попадание с новым КД — промах: урон возвращается
-      if (lastHit.dmg) app.heal(m.charId, lastHit.dmg);
-      addLog({ kind: 'act', who: t.name, txt: `🛡 «Щит» реакцией: +5 КД — попадание (${lastHit.total}) отменено${lastHit.dmg ? `, ${lastHit.dmg} урона не получено` : ''}` });
-      lastHit = null;
-    }
+    else if (a === 'shield') await doShield(b.dataset.id);
     else if (a === 'compPick') {
       const list = app.companions(me().charId), pick = (id) => { compPlace = id; tool = 'placeComp'; renderTools(); app.toast('🐾 Нажмите на клетку, куда поставить спутника'); };
       if (list.length === 1) pick(list[0].id);
