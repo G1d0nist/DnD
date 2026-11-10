@@ -5853,8 +5853,9 @@ function saveScene() {
   return R.update(ref(gpath()), { [`sceneData/${sid}`]: sceneSnap(), [`scenes/${sid}`]: { n: name, t: Date.now() }, 'meta/scene': sid }).then(() => sid);
 }
 // Перейти в сцену: текущая сохраняется, поле заменяется снимком; бой заканчивается, персонажи встают на свои места в той сцене
-async function loadScene(sid, empty, name) {
-  await saveScene();
+// saved — текущее поле уже сохранено (новая сцена), второй раз не сохраняем: иначе возможен дубль сцены
+async function loadScene(sid, empty, name, saved) {
+  if (!saved) await saveScene();
   const snap = empty ? { w: 30, h: 20 } : (await R.get(ref(gpath(`sceneData/${sid}`)))).val() || {};
   const upd = { map: snap.map || null, doors: snap.doors || null, lights: snap.lights || null, notes: snap.notes || null, reveal: snap.reveal || null, seen: snap.seen || null,
     bgimg: snap.bgimg || null, 'meta/w': snap.w || 30, 'meta/h': snap.h || 20, 'meta/bg': snap.bg || null, 'meta/fog': snap.fog || null, 'meta/scene': sid,
@@ -5886,10 +5887,13 @@ function sceneDialog() {
         if (inFight() && !app.confirm('Идёт бой. Перейти в другую сцену и закончить бой?')) return;
         app.closeModal(); await loadScene(id);
       } else if (k === 'new') {
-        const n = $('#scnName').value.trim() || `Сцена ${Object.keys(game.scenes || {}).length + 2}`, nid = R.push(ref(gpath('scenes'))).key;
+        const typed = $('#scnName').value.trim();
         app.closeModal();
+        // Сначала сохранить текущее поле (получит свой номер «Сцена N»), потом заводить новую — иначе обе получали одно имя
+        const cur = await saveScene(), cnt = new Set([...Object.keys(game.scenes || {}), cur]).size;
+        const n = typed || `Сцена ${cnt + 1}`, nid = R.push(ref(gpath('scenes'))).key;
         await R.set(ref(gpath(`scenes/${nid}`)), { n, t: Date.now() });
-        await loadScene(nid, true, n);
+        await loadScene(nid, true, n, true);
       } else if (k === 'ren') {
         const n = prompt('Название сцены', (game.scenes[id] || {}).n || '');
         if (n && n.trim()) { await R.update(ref(gpath(`scenes/${id}`)), { n: n.trim() }); app.closeModal(); sceneDialog(); }
