@@ -935,8 +935,25 @@ const CAPSTONE = { 'Варвар': ['Первобытный чемпион', ['s
 const exhPen = (c) => 2 * (c.combat.exhaustion || 0);
 const skillBonus = (c, s) => {
   const p = c.skills[s.k] || 0;
-  return am(c, s.a) + (p === 2 ? 2 * pb(c) : p === 1 ? pb(c) : c.combat.jack ? Math.floor(pb(c) / 2) : 0);
+  return am(c, s.a) + (p === 2 ? 2 * pb(c) : p === 1 ? pb(c) : c.combat.jack ? Math.floor(pb(c) / 2) : 0) + orderBonus(c, s.k);
 };
+// Божественный и Первобытный порядок: Чудотворец — Магия и Религия, Чародей природы — Магия и Природа: + мод. Мудрости (мин. +1)
+const orderPicks = (c) => [...((c.cpicks || {}).dorder || []), ...((c.cpicks || {}).porder || [])];
+function orderBonus(c, k) {
+  const P = orderPicks(c);
+  if ((P.includes('Чудотворец') && (k === 'arcana' || k === 'religion')) || (P.includes('Чародей природы') && (k === 'arcana' || k === 'nature'))) return Math.max(1, am(c, 'wis'));
+  return 0;
+}
+// Защитник и Хранитель — владения доспехами и оружием; лист добавляет их сам и убирает, если выбор сменили
+const ORDER_PROFS = { 'Защитник': [['armor', 'Тяжёлые доспехи'], ['weapons', 'Воинское оружие']], 'Хранитель': [['armor', 'Средние доспехи'], ['weapons', 'Воинское оружие']] };
+function syncOrders(c) {
+  const want = orderPicks(c).flatMap((p) => ORDER_PROFS[p] || []), added = c.orderProfs || [];
+  const isWanted = ([k, v]) => want.some(([k2, v2]) => k2 === k && v2 === v);
+  added.filter((x) => !isWanted(x)).forEach(([k, v]) => { c.profs[k] = (c.profs[k] || []).filter((y) => y !== v); });
+  const keep = added.filter(isWanted);
+  want.forEach(([k, v]) => { if (!(c.profs[k] || []).includes(v)) { (c.profs[k] = c.profs[k] || []).push(v); keep.push([k, v]); } });
+  c.orderProfs = keep;
+}
 // Аура защиты паладина (6+ ур. паладина): +Хар (мин. +1) ко всем спасброскам, пока паладин в сознании
 const auraBonus = (c) => (clsLvl(c, 'Паладин') >= 6 && (+c.combat.hp || 0) > 0 ? Math.max(1, am(c, 'cha')) : 0);
 // Владение спасброском: отмечено в листе или дано чертой «Устойчивый»
@@ -1713,6 +1730,8 @@ function spellLimits(c) {
     if (p) { prep = (prep || 0) + p[e.lvl - 1]; parts.push(`${e.cls}: ${p[e.lvl - 1]}`); }
     if (k) cantrips = (cantrips || 0) + k[e.lvl >= 10 ? 2 : e.lvl >= 4 ? 1 : 0];
   });
+  // Чудотворец / Чародей природы — ещё один заговор
+  if (cantrips != null && orderPicks(c).some((p) => p === 'Чудотворец' || p === 'Чародей природы')) cantrips += 1;
   return { prep, cantrips, note: parts.length ? `Подготовленных заклинаний — ${parts.join(', ')}. «Всегда подготовленные» не считаются.` : '' };
 }
 // После долгого отдыха жрец, друид, паладин и волшебник (PHB 2024) могут сменить подготовленные заклинания — окно с галочками
@@ -2650,16 +2669,28 @@ function featuresAt(cls, subclass, L) {
       return [s === 'SUB' ? sub : s];
     });
 }
-// Заклинания «всегда подготовлено» от подкласса, расы (и её происхождения) и черт
+// Заклинания от умений самого класса (PHB 2024): всегда подготовлены с указанного уровня класса
+const CLASS_SPELLS = {
+  'Паладин': [[2, 'Divine Smite', 'Кара паладина'], [5, 'Find Steed', 'Верный скакун']],
+  'Следопыт': [[1, "Hunter's Mark", 'Избранный враг']],
+  'Друид': [[1, 'Speak with Animals', 'Друидический язык']],
+};
+// Воззвания колдуна, дающие заклинание (творится без ячейки — в листе оно «всегда подготовлено»)
+const INV_SPELLS = { 'Договор цепи': 'Find Familiar', 'Доспех теней': 'Mage Armor', 'Дьявольская живучесть': 'False Life', 'Маска многих лиц': 'Disguise Self',
+  'Туманные видения': 'Silent Image', 'Потусторонний прыжок': 'Jump', 'Восходящий шаг': 'Levitate', 'Дар глубин': 'Water Breathing',
+  'Мастер бесчисленных обличий': 'Alter Self', 'Единение с тенями': 'Invisibility', 'Шёпот могилы': 'Speak with Dead', 'Видения далёких миров': 'Arcane Eye' };
+// Заклинания «всегда подготовлено» от класса, подкласса, воззваний, расы (и её происхождения) и черт
 function wantedSpells(c) {
   const out = [];
   classList(c).forEach((e) => {
+    (CLASS_SPELLS[e.cls] || []).forEach(([L, n, src]) => { if (e.lvl >= L) out.push({ e: n, src }); });
     const sc = subclassOf(e.cls, e.sub);
     if (sc) Object.entries(sc.sp).forEach(([L, list]) => { if (e.lvl >= +L) list.forEach((n) => out.push({ e: n, src: sc.n })); });
     // Круг земли: заклинания выбранной местности
     if (e.cls === 'Друид' && e.sub === 'Круг земли' && LAND_SPELLS[c.info.land])
       Object.entries(LAND_SPELLS[c.info.land]).forEach(([L, list]) => { if (e.lvl >= +L) list.forEach((n) => out.push({ e: n, src: `Круг земли: ${c.info.land}` })); });
   });
+  if (clsLvl(c, 'Колдун')) ((c.cpicks || {}).inv || []).forEach((n) => { if (INV_SPELLS[n]) out.push({ e: INV_SPELLS[n], src: `воззвание «${n}»` }); });
   const sp = speciesOf(c), lin = c.info.lineage || '';
   if (sp) {
     Object.entries(RACE_SPELLS).forEach(([k, list]) => {
@@ -2674,6 +2705,7 @@ function wantedSpells(c) {
   return out;
 }
 function autoSpells(c) {
+  syncOrders(c);
   const want = wantedSpells(c), keep = new Set();
   want.forEach((w) => {
     const d = spellByE(w.e), name = d ? d.n : w.e;
