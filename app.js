@@ -380,7 +380,7 @@ window.dndApp = {
     if (!c) return [];
     const plain = (s) => ({ shape: 'target', size: 0, width: 5, save: '', half: false, self: false, range: /касан/i.test(s.r || '') ? 5 : parseInt(s.r) || 0,
       dtype: dmgWord(s.x), act: /бонусн/i.test(s.t || '') ? 'bonus' : /реакц/i.test(s.t || '') ? 'reaction' : 'action', pick: false });
-    return c.spells.filter((s) => +s.l === 0 || s.prep || s.always).map((s) => ({ s, a: spellArea(s) || (extra.includes(s.e) ? plain(s) : null) })).filter((x) => x.a)
+    return c.spells.filter((s) => (+s.l === 0 || s.prep || s.always) && !SMITES[s.e]).map((s) => ({ s, a: spellArea(s) || (extra.includes(s.e) ? plain(s) : null) })).filter((x) => x.a)
       .map(({ s, a }) => ({ id: s.id, e: s.e || '', n: s.n, l: +s.l, f: s.f || '', u: s.u || '', addMod: !!s.addMod, cn: !!s.cn, dur: s.d || '', comp: s.c || '', sch: s.s || '', rt: !!s.rt, ct: s.t || '', dc: spellDCFor(c, s), slots: slotOptions(c, s), ...a }));
   },
   // Портрет персонажа (маленький JPEG) — хранится в листе, стол показывает его на токене
@@ -399,12 +399,14 @@ window.dndApp = {
     const c = state.chars[id];
     if (!c) return {};
     const sup = c.resources.find((x) => x.auto === 'superiority');
-    const smite = c.spells.find((s) => s.e === 'Divine Smite' && (s.prep || s.always));
+    // Кары (2024): бонусным действием сразу после попадания — выбор заклинания и ячейки в окне атаки
+    const smites = c.spells.filter((s) => SMITES[s.e] && (s.prep || s.always));
     const shield = c.spells.find((s) => s.e === 'Shield' && (s.prep || s.always));
     const M = clsLvl(c, 'Монах'), focus = c.resources.find((x) => x.auto === 'focus');
     return {
       maneuvers: sup ? ((c.cpicks || {}).man || []) : [], supLeft: sup ? sup.max - sup.used : 0, supDie: supDie(c),
-      smiteSlots: smite ? slotOptions(c, smite).filter((s) => s.left > 0 && s.key !== 'free' && s.key !== 'ritual') : [],
+      smiteSlots: smites.flatMap((sp) => slotOptions(c, sp).filter((s) => s.left > 0 && s.key !== 'ritual' && (s.key !== 'free' || sp.always))
+        .map((s) => ({ key: `${sp.e}|${s.key}`, label: `${sp.n}: ${s.label}` }))),
       sneak: Math.ceil(clsLvl(c, 'Плут') / 2),
       shieldSlots: shield ? slotOptions(c, shield).filter((s) => s.left > 0 && s.key !== 'free' && s.key !== 'ritual') : [], shieldId: shield ? shield.id : '',
       grapDC: 8 + am(c, 'str') + pb(c), svStr: saveBonus(c, 'str'), svDex: saveBonus(c, 'dex'),
@@ -826,10 +828,17 @@ window.dndApp = {
         extra.push(+o.sneakPlus ? 'Скрытая атака + Убийство' : 'Скрытая атака');
         if (cutD) extra.push('хитрый удар (−1к6)');
       }
-      // Божественная кара: ячейка тратится только при попадании, 2к8 + 1к8 за уровень выше 1
-      let smite = 0;
-      const smSpell = o.smite && c.spells.find((s) => s.e === 'Divine Smite');
-      if (hit && smSpell && !A.spell) { smite = spendSlot(c, smSpell, o.smite).castLvl || 1; expr += `+${X(`${1 + smite}d8`)}`; extra.push(`Божественная кара (${smite} ур.)`); }
+      // Кара: ячейка тратится только при попадании; урон кары растёт с уровнем ячейки; концентрация — как у заклинания
+      let smite = 0, smiteE = '', smiteDc = 0;
+      const [smE, smKey] = String(o.smite || '').includes('|') ? String(o.smite).split('|') : ['Divine Smite', o.smite];
+      const smSpell = o.smite && c.spells.find((s) => s.e === smE), SM = SMITES[smE];
+      if (hit && smSpell && SM && !A.spell) {
+        smite = spendSlot(c, smSpell, smKey).castLvl || +smSpell.l || 1; smiteE = smE; smiteDc = spellDCFor(c, smSpell);
+        const k = Math.max(0, smite - (+smSpell.l || 1)), dice = SM.f ? scaleUp(SM.f, SM.up, k) : '';
+        if (dice) expr += `+${X(dice)}`;
+        extra.push(`${smSpell.n} (${smite} ур.)`);
+        if (smSpell.cn) { endConc(c); c.combat.conc = smSpell.n; pendingConc = 0; }
+      }
       if (hit && sup && o.maneuver !== 'Точная атака') { sup.used += 1; expr += `+${X(sd)}`; extra.push(o.maneuver); }
       // Метка охотника, Сглаз, Увеличение: дополнительные кости урона при попадании
       (o.dmgDice || []).forEach((x) => { if (hit) { expr += `+${X(x.e)}`; extra.push(x.n); } });
@@ -840,7 +849,7 @@ window.dndApp = {
       const mk = a && masteryActive(c, a) ? a.mastery : '';
       res = { total: r.total, nat: r.nat, detail: r.detail, hit, crit, dmg: d ? Math.max(0, d.total) : 0, dmgDetail: d ? d.detail : '', type: o.dtype || A.type,
         mastery: mk, mdc: a ? 8 + abilFor(c, a) + pb(c) : 0, mmod: a ? abilFor(c, a) : 0, extra,
-        sneak: extra.some((x) => x.startsWith('Скрытая атака')), smite, man: sup ? o.maneuver : '', manDC: 8 + pb(c) + Math.max(am(c, 'str'), am(c, 'dex')), repel: !!A.repel && hit };
+        sneak: extra.some((x) => x.startsWith('Скрытая атака')), smite, smiteE, smiteDc, smiteCn: !!(smSpell && smSpell.cn && smiteE), man: sup ? o.maneuver : '', manDC: 8 + pb(c) + Math.max(am(c, 'str'), am(c, 'dex')), repel: !!A.repel && hit };
     });
     save(); render();
     return res;
@@ -3086,6 +3095,24 @@ const dmgWord = (x) => (String(x || '').match(/урона\s+([а-яё]+(?:\s+п�
 // Сколько атак даёт действие «Атака» (Дополнительная атака)
 const attacksPerAction = (c) => Math.max(1, ...classList(c).map((e) => (e.cls === 'Воин' ? (e.lvl >= 20 ? 4 : e.lvl >= 11 ? 3 : e.lvl >= 5 ? 2 : 1)
   : ['Варвар', 'Монах', 'Паладин', 'Следопыт'].includes(e.cls) && e.lvl >= 5 ? 2 : 1)));
+// Кары (PHB 2024): урон при попадании (f + up за уровень ячейки выше базового); эффект на цель накладывает стол
+const SMITES = {
+  'Divine Smite': { f: '2d8', up: '1d8' },
+  'Searing Smite': { f: '1d6', up: '1d6' },
+  'Wrathful Smite': { f: '1d6', up: '1d6' },
+  'Thunderous Smite': { f: '2d6', up: '1d6' },
+  'Ensnaring Strike': { f: '', up: '' },
+  'Shining Smite': { f: '2d6', up: '1d6' },
+  'Blinding Smite': { f: '3d8', up: '1d8' },
+  'Staggering Smite': { f: '4d6', up: '1d6' },
+  'Banishing Smite': { f: '5d10', up: '' },
+};
+// Кости с прибавкой за уровни: 2d8 + 1d8 × k → 4d8 (одинаковые кости складываются)
+function scaleUp(f, u, k) {
+  if (!u || !(k > 0)) return f;
+  const a = String(f).match(/^(\d+)d(\d+)$/), b = String(u).match(/^(\d+)d(\d+)$/);
+  return a && b && a[2] === b[2] ? `${+a[1] + +b[1] * k}d${a[2]}` : `${f}+${Array.from({ length: k }, () => u).join('+')}`;
+}
 function tableAttacks(c) {
   // В диком облике атакуют только атаками зверя
   if (c.shape) return c.shape.atk.map((a) => ({ id: a.id, n: `${a.n} (${c.shape.n})`, bonus: a.hit, dmg: a.dmg, type: a.type, rng: atkRange(a.range, false), beast: true }));
@@ -3105,6 +3132,13 @@ function tableAttacks(c) {
       const m = Math.max(am(c, 'dex'), am(c, 'str'));
       return { id, n, bonus: m + pb(c), dmg: withMod(d, m), type: 'психической энергией', rng: { reach: 5, near: 60, far: 120, thrown: true }, fin: true, fixed: true };
     }) : []),
+    // Клинки из заклинаний, пока держится концентрация: Пылающий клинок (рукопашная атака заклинанием, 3к6 + мод. огнём),
+    // Теневой клинок (оружие: фехтовальное, метательное 20/60 фт, 2к8 психической энергией)
+    ...c.spells.filter((s) => (s.e === 'Flame Blade' || s.e === 'Shadow Blade') && c.combat.conc === s.n).map((s) => {
+      if (s.e === 'Flame Blade') { const m = spellModFor(c, s); return { id: 'flameBlade', n: '🔥 Пылающий клинок', bonus: spellAtkFor(c, s), dmg: withMod('3d6', m), type: 'огнём', rng: { reach: 5 }, fixed: true }; }
+      const m = Math.max(am(c, 'str'), am(c, 'dex'));
+      return { id: 'shadowBlade', n: '🌑 Теневой клинок', bonus: m + pb(c), dmg: withMod('2d8', m), type: 'психической энергией', rng: { reach: 5, near: 20, far: 60, thrown: true }, fin: true, fixed: true };
+    }),
     // Звёздная форма «Лучник» (Круг звёзд): бонусным действием дальнобойная атака заклинанием 60 фт, 1к8 + Мдр излучением (с 10 ур. — 2к8)
     ...(c.combat.starForm === 'archer' && clsLvl(c, 'Друид') >= 2 ? [{ id: 'starArcher', n: '✨ Звёздный лучник', bonus: am(c, 'wis') + pb(c),
       dmg: withMod(clsLvl(c, 'Друид') >= 10 ? '2d8' : '1d8', am(c, 'wis')), type: 'излучением', rng: { reach: 0, near: 60, far: 60 }, fixed: true, star: true }] : []),

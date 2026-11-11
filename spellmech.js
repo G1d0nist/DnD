@@ -44,6 +44,10 @@ const SPELL_MECH = {
   "Melf's Acid Arrow": { shape: 'atk', dmg: '4d4', up: '1d4', dtype: 'кислотой', miss: 'half' },
   'Vampiric Touch': { shape: 'atk', melee: true, dmg: '3d6', up: '1d6', dtype: 'некротической энергией', drain: 'half' },
   'Steel Wind Strike': { shape: 'atk', melee: true, rays: 5, distinct: true, dmg: '6d10', dtype: 'силовым полем', range: 30 },
+  // Области, которые описание не задаёт явно: волна вокруг себя, сфера 60 фт, конус 60 фт (тип луча — по броску, урон стихией)
+  'Destructive Wave': { shape: 'aura', size: 30, save: 'con', half: true, pick: true, dtype: 'звуком и излучением' },
+  'Sunburst': { shape: 'sphere', size: 60, range: 150, save: 'con', half: true, dtype: 'излучением' },
+  'Prismatic Spray': { shape: 'cone', size: 60, range: 0, save: 'dex', half: true, dtype: 'стихией (по цвету луча)' },
   'Magic Missile': { shape: 'target', darts: 3, dmg: '1d4+1', dtype: 'силовым полем', range: 120 },
   'Chain Lightning': { shape: 'target', save: 'dex', half: true, chain: { n: 3, ft: 30 }, dtype: 'электричеством', range: 150 },
   'Misty Step': { shape: 'tp', range: 30, act: 'bonus' },

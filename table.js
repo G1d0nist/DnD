@@ -1873,6 +1873,28 @@ function seaStrike(t, id, C, fight, eu) {
     addLog({ kind: 'act', who: t.name, txt: `🌊 Гнев моря → ${T.name}: спасбросок Телосложения СЛ ${D.dc}, иначе ${f.total} холодом и толчок`, detail: f.detail });
   });
 }
+// Кары: эффект на цель после попадания (урон уже в атаке). Концентрация — эффект пропадёт вместе с ней
+function smiteRider(res, from, tid, src) {
+  const T = game.tokens[tid], dc = res.smiteDc || 13, n = `${src.name}: `, conc = res.smiteCn ? { conc: from } : {};
+  if (!T) return;
+  const R1 = inFight() ? (game.init.round || 1) + 1 : null;
+  switch (res.smiteE) {
+    case 'Wrathful Smite': saveRequest(tid, { n: n + 'Гневная кара', who: src.name, abil: 'wis', dc, from, ...conc, fail: { n: 'Гневная кара', ic: '😱', cond: 'frightened' }, rep: { abil: 'wis', dc } }); break;
+    case 'Thunderous Smite': if ((T.size || 1) <= 2) saveRequest(tid, { n: n + 'Громовая кара', who: src.name, abil: 'str', dc, from, fail: { n: 'Громовая кара', push: 2, cond: 'prone', once: true } }); break;
+    case 'Blinding Smite': saveRequest(tid, { n: n + 'Ослепляющая кара', who: src.name, abil: 'con', dc, from, ...conc, fail: { n: 'Ослепляющая кара', ic: '🙈', cond: 'blinded' }, rep: { abil: 'con', dc } }); break;
+    case 'Staggering Smite': saveRequest(tid, { n: n + 'Оглушающая кара', who: src.name, abil: 'wis', dc, from, fail: { n: 'Оглушающая кара', ic: '💫', cond: 'stunned', rounds: 1 } }); break;
+    case 'Ensnaring Strike':
+      if ((T.size || 1) <= 3) saveRequest(tid, { n: n + 'Опутывающий удар', who: src.name, abil: 'str', dc, from, ...conc, fail: { n: 'Опутывающий удар', ic: '🌿', cond: 'restrained' }, rep: { abil: 'str', dc } });
+      addLog({ kind: 'sys', txt: `🌿 Опутанная цель получает 1к6 колющего урона в начале каждого своего хода — мастер наносит его вручную` });
+      break;
+    case 'Shining Smite': addEffect(tid, { n: 'Сияющая кара', ic: '🔆', lit: true, glow: { b: 5, d: 0 }, by: user.uid, from, ...conc, ...(R1 ? { until: R1 + 9 } : {}) }); break;
+    case 'Searing Smite': addLog({ kind: 'sys', txt: `🔥 ${T.name} горит: 1к6 огнём в начале каждого своего хода, потом спасбросок Телосложения СЛ ${dc} — успех гасит пламя (мастер ведёт вручную)` }); break;
+    case 'Banishing Smite':
+      if ((+T.hp || 0) - (res.dmg || 0) <= 50) addEffect(tid, { n: 'Изгоняющая кара', ic: '🌀', banish: true, by: user.uid, from, ...conc });
+      break;
+    default:
+  }
+}
 // Техника открытой ладони: выбор эффекта после попадания Шквалом ударов
 function openHand(from, tid, dc) {
   const me_ = game.tokens[from], T = game.tokens[tid];
@@ -2426,7 +2448,7 @@ function openAttack(id) {
   // Классовые возможности: приём превосходства, Божественная кара (бонусное действие), Скрытая атака — считается сама
   const O = app.combatOpts(m.charId), K = app.classActs(m.charId) || {};
   const opts = `${O.maneuvers && O.maneuvers.length && O.supLeft ? `<label>Приём превосходства (к${O.supDie}, осталось ${O.supLeft})<select id="atkMan"><option value="">— не тратить кость —</option>${O.maneuvers.map((n) => `<option>${esc(n)}</option>`).join('')}</select></label>` : ''}
-    ${O.smiteSlots && O.smiteSlots.length && (!inFight() || !e.b) ? `<label>Божественная кара при попадании<select id="atkSmite"><option value="">— нет —</option>${O.smiteSlots.map((s) => `<option value="${s.key}">${esc(s.label)}</option>`).join('')}</select></label>` : ''}
+    ${O.smiteSlots && O.smiteSlots.length && (!inFight() || !e.b) ? `<label>Кара при попадании (бонусное действие)<select id="atkSmite"><option value="">— нет —</option>${O.smiteSlots.map((s) => `<option value="${s.key}">${esc(s.label)}</option>`).join('')}</select></label>` : ''}
     ${K.brutal && e.reck && !e.brut ? `<label>Жестокий удар (без преимущества, +${K.brutal.dice})<select id="atkBrutal"><option value="">— нет —</option><option value="push">Мощный удар: толчок на 15 фт</option><option value="slow">Подсекающий удар: скорость −15 фт</option></select></label>` : ''}
     ${elemOf(id) ? `<label class="check" title="Стихийная настройка: попадание безоружным ударом — цель проходит спасбросок Силы или отлетает на 10 фт"><input type="checkbox" id="atkElemPush" checked> ${elemOf(id).ic} Безоружные удары толкают цель на 10 фт</label>` : ''}
     ${K.cunning ? `<label>Хитрый удар (−1к6 Скрытой атаки, СЛ ${K.cunning.dc})<select id="atkCunning"><option value="">— нет —</option><option value="trip">Подножка: Ловкость или сбит с ног</option><option value="poison">Яд: Телосложение или отравлен</option></select></label>` : ''}
@@ -2878,7 +2900,7 @@ function attackTarget(tid) {
   if (res.man) a.man = '';
   // «Отталкивающий взрыв»: цель Большая или меньше отлетает на 10 фт
   if (res.repel && small) addEffect(tid, { n: 'Отталкивающий взрыв', push: 2, once: true, from: a.from, by: user.uid });
-  if (res.smite) a.smite = '';
+  if (res.smite) { a.smite = ''; smiteRider(res, a.from, tid, me_); }
   // Приёмы оружия (2024) и эффекты атак чудовищ
   const mk = res.mastery, round = inFight() ? game.init.round || 1 : 0;
   if (res.hit && mk === 'topple') saveRequest(tid, { n: 'Опрокидывание', who: me_.name, abil: 'con', dc: res.mdc, fail: { n: 'Опрокидывание', cond: 'prone', once: true } });
@@ -4713,6 +4735,10 @@ const SPELL_FX = {
   'Hideous Laughter': { n: 1, fail: { n: 'Жуткий смех', ic: '😂', cond: 'incapacitated', cond2: 'prone' }, rep: true },
   "Tasha's Hideous Laughter": { n: 1, fail: { n: 'Жуткий смех', ic: '😂', cond: 'incapacitated', cond2: 'prone' }, rep: true },
   'Thunderwave': { fail: { n: 'Волна грома', push: 2, once: true } },
+  'Destructive Wave': { fail: { n: 'Разрушительная волна', cond: 'prone', once: true } },
+  'Sunburst': { fail: { n: 'Солнечный ожог', ic: '☀', cond: 'blinded' }, rep: true },
+  'Friends': { n: 1, fail: { n: 'Дружба', ic: '💗', cond: 'charmed' } },
+  'Animal Friendship': { n: 1, up: 1, fail: { n: 'Дружба с животными', ic: '🐾', cond: 'charmed' } },
   'Entangle': { fail: { n: 'Опутывание', ic: '🌿', cond: 'restrained' } },
   'Web': { fail: { n: 'Паутина', ic: '🕸', cond: 'restrained' } },
   'Grease': { fail: { n: 'Скольжение', cond: 'prone', once: true } },
@@ -5065,7 +5091,7 @@ function saveRequest(tid, spec) {
   const A = { shape: 'target', tgt: tid, size: 0, by: user.uid, who: spec.who || '', n: spec.n, abil: spec.abil, dc: spec.dc, half: !!spec.half, dmg: +spec.dmg || 0, keep: false,
     dmgDetail: spec.dmgDetail || '', dtype: spec.dtype || '',
     color: '#9b6fd1', t: Date.now(), tg: { [tid]: { done: false } }, ...(spec.fail ? { fail: spec.fail } : {}), ...(spec.rem ? { rem: spec.rem } : {}),
-    ...(spec.rep ? { rep: spec.rep } : {}), ...(spec.from ? { from: spec.from } : {}) };
+    ...(spec.rep ? { rep: spec.rep } : {}), ...(spec.from ? { from: spec.from } : {}), ...(spec.conc ? { conc: spec.conc } : {}) };
   R.set(ref(gpath(`areas/${k}`)), A).catch(() => {});
 }
 // Конец хода: у кого «повторяет спасбросок в конце каждого своего хода» — запрос спасброска, успех снимает эффект
