@@ -3013,7 +3013,7 @@ function reactOptions(id, t, e, incap) {
     out.push(btn('protect', `🛡 «Защита»: помеха на атаку по ${esc(game.tokens[lastAllyHit.tgt].name)}`, 'Боевой стиль: реакцией со щитом — атака перебрасывается с помехой, и до начала вашего хода атаки по союзнику с помехой'));
   if (fresh(lastBardHit) && game.tokens[lastBardHit.tgt]) {
     const C = app.casterActs(m.charId) || {};
-    if (C.insp && C.insp.left > 0) out.push(btn('cutting', `✂ Острое слово: −к${C.insp.die} урона по ${esc(game.tokens[lastBardHit.tgt].name)}`, 'Реакция и Вдохновение барда: насмешка сбивает удар — урон уменьшается на бросок кости'));
+    if (C.insp && C.insp.left > 0) out.push(btn('cutting', `✂ Острое слово: −к${C.insp.die} урона (цель: ${esc(game.tokens[lastBardHit.tgt].name)})`, 'Реакция и Вдохновение барда: насмешка сбивает удар — урон уменьшается на бросок кости'));
   }
   return out;
 }
@@ -3038,7 +3038,7 @@ function reactModal(title, items) {
     <div class="modal-actions"><button data-act="closeModal">Не реагировать</button></div>`);
   snd('turn');
   $$('[data-rx]').forEach((b) => b.addEventListener('click', () => { clearTimeout(reactOpen); app.closeModal(); items[+b.dataset.rx].go(); }));
-  reactOpen = setTimeout(() => { if ($('[data-rx]')) app.closeModal(); }, 20000);
+  reactOpen = setTimeout(() => { if ($('[data-rx]')) app.closeModal(); }, 45000);
 }
 // По мне (или союзнику рядом) попали — предложить реакцию, если она есть
 function promptReactions() {
@@ -7894,7 +7894,7 @@ async function onClick(e) {
     else if (a === 'npcAttack') openNpcAttack(b.dataset.id);
     else if (a === 'legend') openNpcAttack(b.dataset.id, true);
     else if (a === 'compAttack') openCompAttack(b.dataset.id);
-    else if (['uncanny', 'deflect', 'rebuke', 'protect'].includes(a)) doReaction(a, b.dataset.id);
+    else if (['uncanny', 'deflect', 'rebuke', 'protect', 'cutting', 'valorAC'].includes(a)) doReaction(a, b.dataset.id);
     else if (a === 'csUse') csUse(b.dataset.k, b.dataset.id);
     else if (a === 'csNo') await R.update(ref(gpath(`cs/${b.dataset.k}/no`)), { [b.dataset.id]: 1 });
     else if (a === 'items') itemsDialog();

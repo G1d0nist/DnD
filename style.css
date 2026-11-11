@@ -529,7 +529,7 @@ button.stat:hover { border-color: var(--gold); }
 /* Реакции, легендарные действия, логово */
 .init-row.lair span { color: #c9b27a; font-style: italic; }
 .react-box, .legend-box { display: flex; flex-direction: column; gap: 6px; padding: 8px; border-radius: 8px; border: 1px dashed var(--gold); background: var(--bg2); }
-.react-box button { text-align: left; }
+.react-box button { text-align: left; white-space: normal; overflow-wrap: anywhere; }
 .legend-box .row { gap: 8px; }
 .leg-pips { display: inline-flex; gap: 3px; vertical-align: middle; margin-left: 4px; }
 .cs-ask { border-color: #9b6fd1; }
