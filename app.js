@@ -549,7 +549,7 @@ window.dndApp = {
     const c = state.chars[id];
     if (!c) return null;
     const left = (k) => { const r = c.resources.find((x) => x.auto === k); return r ? r.max - r.used : 0; };
-    const Cl = clsLvl(c, 'Жрец'), Bd = clsLvl(c, 'Бард'), So = clsLvl(c, 'Чародей'), Pa = clsLvl(c, 'Паладин'), Dr = clsLvl(c, 'Друид');
+    const Cl = clsLvl(c, 'Жрец'), Bd = clsLvl(c, 'Бард'), So = clsLvl(c, 'Чародей'), Pa = clsLvl(c, 'Паладин'), Dr = clsLvl(c, 'Друид'), Wl = clsLvl(c, 'Колдун');
     return {
       turn: Cl >= 2 ? { left: left('channelCleric'), dc: 8 + am(c, 'wis') + pb(c) } : null,
       // Божественная искра (жрец 2+, Божественный канал): 1к8 + Мдр (2к8 с 7, 3к8 с 13, 4к8 с 18) — лечение или урон излучением/некротикой
@@ -565,6 +565,9 @@ window.dndApp = {
       // Бард: коллегия (Острое слово, Боевое вдохновение, Мантия вдохновения), Харизма
       bard: Bd ? { lvl: Bd, sub: subOf(c, 'Бард'), cha: Math.max(1, am(c, 'cha')) } : null,
       // Друид: круг, Мудрость, СЛ, использования Дикого облика (Помощь земли, Гнев моря, Звёздная форма)
+      // Колдун: покровитель (Шаги феи, Исцеляющий свет, Благословение тёмного), СЛ; чародей: подкласс (Всплеск дикой магии)
+      warlock: Wl ? { lvl: Wl, sub: subOf(c, 'Колдун'), cha: Math.max(1, am(c, 'cha')), dc: 8 + am(c, 'cha') + pb(c), fey: left('feySteps'), light: left('healingLight') } : null,
+      sorc: So ? { lvl: So, sub: subOf(c, 'Чародей') } : null,
       druid: Dr ? { lvl: Dr, sub: subOf(c, 'Друид'), wis: Math.max(1, am(c, 'wis')), dc: 8 + am(c, 'wis') + pb(c), atk: am(c, 'wis') + pb(c), ws: left('wildShape'), star: c.combat.starForm || '' } : null,
     };
   },
@@ -1174,7 +1177,9 @@ function syncHpMax(c) {
   cb.hp = clamp((+cb.hp || 0) + Math.max(0, d), 0, want);
 }
 const isLucky = (c) => /полурослик|halfling/i.test(c.info.species);
-const hpPerLevelBonus = (c) => (/дварф|dwarf/i.test(c.info.species) ? 1 : 0) + (hasFeat(c, 'tough') || c.features.some((f) => /крепкий|tough/i.test(f.n)) ? 2 : 0);
+// Доп. хиты за уровень: дварф +1, черта «Крепкий» +2, Драконье колдовство (Драконья устойчивость) +1
+const hpPerLevelBonus = (c) => (/дварф|dwarf/i.test(c.info.species) ? 1 : 0) + (hasFeat(c, 'tough') || c.features.some((f) => /крепкий|tough/i.test(f.n)) ? 2 : 0)
+  + (classList(c).some((e) => e.cls === 'Чародей' && e.sub === 'Драконье колдовство') ? 1 : 0);
 // Дальнобойное оружие — дистанция вида «80/320 фт» (метательное записано как «5 фт · бросок …»)
 const isRangedWeapon = (a) => a.ability !== 'spell' && /^\d+\/\d+/.test(a.range || '');
 // ability: характеристика, 'spell' — заклинательная, 'fin' — лучшая из Силы и Ловкости (фехтовальное оружие)
@@ -1266,6 +1271,10 @@ function resLevels(c) {
   const gs = classList(c).find((e) => e.cls === 'Следопыт' && e.sub === 'Сумрачный охотник'), sk = classList(c).find((e) => e.cls === 'Плут' && e.sub === 'Клинок души');
   if (gs) map.dreadStrike = gs.lvl;
   if (sk) map.psiDice = sk.lvl;
+  // Колдун: Архифея — Шаги феи, Небожитель — Исцеляющий свет
+  const wl = classList(c).find((e) => e.cls === 'Колдун');
+  if (wl && wl.sub === 'Покровитель Архифея') map.feySteps = wl.lvl;
+  if (wl && wl.sub === 'Покровитель Небожитель') map.healingLight = wl.lvl;
   (speciesOf(c)?.res || []).forEach((k) => { map[k] = lvl(c); });
   return map;
 }
@@ -2070,7 +2079,7 @@ function classPanelItems(c) {
   }
   speedBonuses(c).forEach(([n, v]) => items.push({ n, v: `+${v} фт`, sub: 'уже учтено в скорости' }));
   if (isLucky(c)) items.push({ n: 'Удача полурослика', v: '1 на к20 → переброс', sub: 'учитывается при бросках' });
-  if (hpPerLevelBonus(c)) items.push({ n: 'Доп. хиты за уровень', v: `+${hpPerLevelBonus(c)}`, sub: 'дварф / черта «Крепкий» — в расчёте хитов' });
+  if (hpPerLevelBonus(c)) items.push({ n: 'Доп. хиты за уровень', v: `+${hpPerLevelBonus(c)}`, sub: 'дварф / черта «Крепкий» / Драконья устойчивость — в расчёте хитов' });
   return items;
 }
 function renderClassPanel() {

@@ -1969,6 +1969,55 @@ Object.assign(CD_ACTS, {
     });
   },
 });
+// Всплеск дикой магии (чародей «Дикая магия»): после заклинания с ячейкой — к20, на 20 — бросок по таблице Дикой магии
+function wildSurge(charId, who) {
+  const S = (app.casterActs(charId) || {}).sorc;
+  if (!S || S.sub !== 'Дикая магия' || S.lvl < 3) return;
+  const d = die(20);
+  if (d === 20) { const t = die(100); addLog({ kind: 'act', who, txt: `🌀 Всплеск дикой магии! к100: ${t} — эффект по таблице Дикой магии (Книга игрока), применяет мастер` }); app.toast(`🌀 Всплеск дикой магии! к100: ${t}`, 'crit'); }
+  else addLog({ kind: 'sys', txt: `${who}: проверка дикой магии — к20 [${d}], всплеска нет` });
+}
+Object.assign(CD_ACTS, {
+  // Шаги феи (Архифея): «Туманный шаг» без ячейки бонусным действием; Освежающий (1к10 врем. хитов) или Дразнящий шаг (Мудрость — помеха на атаки не по колдуну)
+  cFeyStep({ t, id, m, C, fight, eu }) {
+    const W = C.warlock, from = { x: t.x, y: t.y, size: t.size || 1 };
+    if (!app.useRes(m.charId, 'feySteps', 'Шаги феи')) return;
+    if (fight) eu({ b: 1 });
+    startCast({ caster: id, info: { n: 'Шаги феи', shape: 'tp', range: 30, l: 0, act: 'bonus', after: () => setTimeout(() => {
+      app.openModal(`<h2>🧚 Шаги феи</h2><div class="list">
+        <button class="atk-pick" data-fs="fresh"><b>🌿 Освежающий шаг</b><span class="muted small">Вы или существо в 10 фт: 1к10 временных хитов</span></button>
+        <button class="atk-pick" data-fs="taunt"><b>😤 Дразнящий шаг</b><span class="muted small">Существа в 5 фт от места, откуда вы ушли: спасбросок Мудрости СЛ ${W.dc} или помеха на атаки не по вам до начала вашего хода</span></button></div>
+        <div class="modal-actions"><button data-act="closeModal">Без эффекта</button></div>`);
+      $$('[data-fs]').forEach((x) => x.addEventListener('click', () => {
+        app.closeModal();
+        if (x.dataset.fs === 'fresh') pickTok('🌿 Освежающий шаг', '1к10 временных хитов', seenNear(id, 10, (k, o) => team(o) === team(t)), (tid) => {
+          const v = die(10);
+          addEffect(tid, { n: 'Освежающий шаг', thp: v, once: true, by: user.uid, from: id });
+          addLog({ kind: 'act', who: t.name, txt: `🌿 Освежающий шаг: ${game.tokens[tid].name} — ${v} временных хитов` });
+        });
+        else Object.entries(game.tokens).filter(([k, o]) => k !== id && hostile(t, o) && !isDead(o) && distFt(from, o) <= 5)
+          .forEach(([k]) => saveRequest(k, { n: `${t.name}: Дразнящий шаг`, who: t.name, abil: 'wis', dc: W.dc, from: id, fail: { n: 'Дразнящий шаг', ic: '😤', taunt: id, untilTurn: id } }));
+      }));
+    }, 300) } });
+  },
+  // Исцеляющий свет (Небожитель): бонусным действием существо в 60 фт — до мод. Харизмы к6 из запаса
+  cHealLight({ t, id, m, C, fight, eu }) {
+    const W = C.warlock, max = Math.min(W.cha, W.light);
+    const list = seenNear(id, 60, (k, o) => team(o) === team(t));
+    app.openModal(`<h2>☀ Исцеляющий свет</h2><p class="muted small">В запасе ${W.light}к6, за раз — не больше ${W.cha}.</p>
+      <div class="form-grid"><label>Кого<select id="hlT">${list.map(([k, o]) => `<option value="${k}">${esc(o.name)}${o.hpMax ? ` (${+o.hp || 0}/${o.hpMax})` : ''}</option>`).join('')}</select></label>
+      <label>Сколько к6<input id="hlN" type="number" min="1" max="${max}" value="${max}"></label></div>
+      <div class="modal-actions"><button data-act="closeModal">Отмена</button><button class="primary" id="hlOk">☀ Исцелить</button></div>`);
+    $('#hlOk').onclick = () => {
+      const tid = $('#hlT').value, n = Math.max(1, Math.min(max, +$('#hlN').value || 1));
+      if (!tid || !app.useRes(m.charId, 'healingLight', 'Исцеляющий свет', n)) return;
+      app.closeModal();
+      if (fight) eu({ b: 1 });
+      const h = rollExpr(`${n}d6`), T = game.tokens[tid];
+      addLog({ kind: 'heal', who: t.name, txt: 'Исцеляющий свет', tgt: tid, tgtName: T.name, heal: h.total, from: id, detail: h.detail });
+    };
+  },
+});
 // Умения воинских классов (кнопки хода): ресурс тратится в листе, на поле — эффект, флаг хода или атака
 function classAction(a, id, k) {
   const t = game.tokens[id], m = me(), e = econ(id), fight = inFight();
@@ -2655,6 +2704,8 @@ function attackTarget(tid) {
   if (hdefT === 'Уход от орды' && a.oa) dis.push('уход от орды');
   // Варвар в ярости (облик волка) рядом с целью — союзники атакуют её с преимуществом
   if (Object.entries(game.tokens).some(([k, o]) => k !== a.from && k !== tid && team(o) === team(me_) && !incapTok(o) && distFt(o, T) <= 5 && fxOf(k).some(([, f]) => f.wildAsp === 'wolf'))) adv.push('стая (волк)');
+  // Дразнящий шаг (Архифея): атаки не по колдуну — с помехой
+  if (fxOf(a.from).some(([, f]) => f.taunt && f.taunt !== tid)) dis.push('дразнящий шаг');
   if (ea.shadowAdv && !ranged) { adv.push('шаг тени'); R.update(ref(gpath(`econ/${a.from}`)), { shadowAdv: null }).catch(() => {}); }
   if (ea.steady) { adv.push('верный прицел'); R.update(ref(gpath(`econ/${a.from}`)), { steady: null }).catch(() => {}); }
   fxOf(a.from).forEach(([k, e]) => {
@@ -2741,6 +2792,13 @@ function attackTarget(tid) {
   });
   if (bonusHit && res.hit) R.update(ref(gpath(`econ/${a.from}`)), { fury: 1 }).catch(() => {});
   if (dStrike && res.hit) R.update(ref(gpath(`econ/${a.from}`)), { dstrike: 1 }).catch(() => {});
+  // Благословение тёмного (колдун-исчадие): свалил врага до 0 хитов — временные хиты = Хар + уровень колдуна
+  if (res.hit && !a.npc && +T.hpMax && res.dmg >= (+T.hp || 0) + (+T.temp || 0) && hostile(me_, T)) {
+    const W = (app.casterActs(a.charId) || {}).warlock;
+    if (W && W.sub === 'Покровитель Исчадие' && W.lvl >= 3) { app.setTemp(a.charId, W.cha + W.lvl); addLog({ kind: 'act', who: me_.name, txt: `🔥 Благословение тёмного: ${W.cha + W.lvl} временных хитов` }); }
+  }
+  // Заклинание с ячейкой атакой — проверка дикой магии (один раз за сотворение)
+  if (A.lvlSpell && !a.npc && !a.surged) { a.surged = true; wildSurge(a.charId, me_.name); }
   if (res.hit && harm && app.spendFocus(a.charId, 1)) {
     R.update(ref(gpath(`econ/${a.from}`)), { harm: 1 }).catch(() => {}); a.harm = false;
     // Касание лекаря (6+): цель ещё и отравлена до конца следующего хода монаха
@@ -4049,6 +4107,7 @@ function doCastArea(chosen, gated) {
   const src = c.caster && game.tokens[c.caster], F = I.fxDef || null, names = chosen.map((id) => game.tokens[id].name).join(', ');
   const lvlTxt = roll && roll.castLvl > I.l ? ` (${roll.castLvl} ур.)` : '', who = src ? src.name : 'Мастер';
   const spend = () => castSpend(c);
+  if (c.charId && roll && +roll.castLvl > 0) wildSurge(c.charId, who);
   const until = inFight() && !I.persist ? (game.init.round || 1) + durR(c) : null, conc = I.cn ? c.caster : null;
   const metaTxt = (mm.keys || []).length ? ` · ${mm.keys.map((k) => (META.find((x) => x[0] === k) || [])[1].replace(' заклинание', '')).join(', ')}` : '';
   // Глиф оберегания: скрытый глиф в клетке (видят поставивший и мастер); взрыв — когда враг войдёт в клетку (zoneTick)
@@ -7253,6 +7312,10 @@ function classActsHtml(id, e) {
     if (Dr.sub === 'Круг звёзд') out.push(Dr.star ? b('cStarOff', `✨ Звёздная форма: ${(STAR_FORMS.find((f) => f[0] === Dr.star) || [])[2] || ''} — снять`, 'Закончить Звёздную форму', true)
       : b('cStar', `✨ Звёздная форма (${Dr.ws})`, 'Бонусное действие, Дикий облик: Лучник, Чаша или Дракон на 10 минут', !e.b && Dr.ws > 0));
   }
+  // Колдун: Шаги феи (Архифея), Исцеляющий свет (Небожитель)
+  const W = C.warlock;
+  if (W && W.sub === 'Покровитель Архифея' && W.lvl >= 3) out.push(b('cFeyStep', `🧚 Шаги феи (${W.fey})`, 'Бонусное действие: «Туманный шаг» без ячейки (30 фт) + Освежающий или Дразнящий шаг', !e.b && W.fey > 0));
+  if (W && W.sub === 'Покровитель Небожитель' && W.lvl >= 3) out.push(b('cHealLight', `☀ Исцеляющий свет (${W.light}к6)`, `Бонусное действие: существо в 60 фт восстанавливает до ${W.cha}к6 хитов из запаса`, !e.b && W.light > 0));
   if (K.monk && K.monk.sub === 'Путь тени' && K.monk.lvl >= 6) out.push(b('cShadowStep', '🌑 Шаг тени', 'Бонусное действие: телепорт на 60 фт из тусклого света или тьмы в тусклый свет или тьму; следующая рукопашная атака в ходу — с преимуществом', !e.b));
   if (K.monk && K.monk.sub === 'Путь милосердия' && K.monk.lvl >= 3) out.push(b('cHealHand', '🤲 Рука исцеления (1 ци)', `Действие и 1 очко: касание — ${K.monk.die}+Мдр хитов`, act && K.monk.focus > 0));
   return out.length ? `<div class="row gap wrap mt">${out.join('')}</div>` : '';
@@ -7929,7 +7992,7 @@ async function onClick(e) {
     else if (a === 'areaDel') await R.remove(ref(gpath(`areas/${b.dataset.k}`)));
     else if (a === 'logClear') { if (app.confirm('Очистить журнал для всех?')) await R.remove(ref(gpath('log'))); }
     else if (['eco', 'dash', 'dashB', 'dis', 'disB', 'dodge', 'stand'].includes(a)) await econAct(a, b.dataset.id, b.dataset.k);
-    else if (/^c(Rage|Reck|Wind|Surge|Flurry|Steady|Turn|Insp|Innate|Spark|Loh|Wild|WildEnd|Patient|Portent|Elem|ElemOff|Burst|Sense|Sacred|Vow|Wrath|Abjure|InspSmite|Preserve|Dawn|Guided|Mantle|LandAid|Sea|SeaHit|Star|StarOff|ShadowStep|HealHand)$/.test(a)) classAction(a, b.dataset.id, b.dataset.k);
+    else if (/^c(Rage|Reck|Wind|Surge|Flurry|Steady|Turn|Insp|Innate|Spark|Loh|Wild|WildEnd|Patient|Portent|Elem|ElemOff|Burst|Sense|Sacred|Vow|Wrath|Abjure|InspSmite|Preserve|Dawn|Guided|Mantle|LandAid|Sea|SeaHit|Star|StarOff|ShadowStep|HealHand|FeyStep|HealLight)$/.test(a)) classAction(a, b.dataset.id, b.dataset.k);
     else if (a === 'initDel') await removeFromInit(b.dataset.id);
     else if (a === 'unsel') { selId = null; renderSide(); renderTokens(); }
     else if (a === 'tokDel') { if (app.confirm('Убрать токен с поля?')) { await R.remove(ref(gpath(`tokens/${selId}`))); selId = null; } }
