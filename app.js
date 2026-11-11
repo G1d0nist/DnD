@@ -304,7 +304,8 @@ window.dndApp = {
       // «Контрзаклинание» наготове (подготовлено и есть ячейка 3+ уровня) и спасбросок Телосложения — против чужого
       cs: reactSlots(c, 'Counterspell').length > 0, svc: saveBonus(c, 'con'), lvl: lvl(c), aid: +cb.aid || 0, sense: senseOf(c), rage: raging(c),
       // Аура защиты паладина (6+): союзники в 10 фт (с 18 — 30 фт) добавляют мод. Харизмы к спасброскам; Дикий облик друида
-      aura: clsLvl(c, 'Паладин') >= 6 ? { r: clsLvl(c, 'Паладин') >= 18 ? 30 : 10, b: Math.max(1, am(c, 'cha')) } : null,
+      aura: clsLvl(c, 'Паладин') >= 6 ? { r: clsLvl(c, 'Паладин') >= 18 ? 30 : 10, b: Math.max(1, am(c, 'cha')), courage: clsLvl(c, 'Паладин') >= 10,
+        oath: clsLvl(c, 'Паладин') >= 7 ? (classList(c).find((e) => e.cls === 'Паладин') || {}).sub || '' : '' } : null,
       wild: !!(c.shape && !c.shape.poly), ward: +cb.ward || 0, wardMax: wardMax(c),
       // Базовые характеристики — мастер видит и меняет их со стола
       abil: Object.fromEntries(ABILITIES.map((a) => [a.k, +c.abil[a.k] || 10])) };
@@ -548,6 +549,10 @@ window.dndApp = {
       spark: Cl >= 2 ? { left: left('channelCleric'), dc: 8 + am(c, 'wis') + pb(c), f: `${Cl >= 18 ? 4 : Cl >= 13 ? 3 : Cl >= 7 ? 2 : 1}d8${am(c, 'wis') > 0 ? `+${am(c, 'wis')}` : ''}` } : null,
       // Наложение рук: запас хитов (5 × уровень паладина)
       loh: Pa ? { left: left('layOnHands') } : null,
+      // Паладин: клятва и Божественный канал паладина; жрец: домен, Мудрость, Благословенные удары (выбор на 7 ур.)
+      pal: Pa ? { lvl: Pa, sub: (classList(c).find((e) => e.cls === 'Паладин') || {}).sub || '', cha: Math.max(1, am(c, 'cha')), cd: left('channelPaladin'), dc: 8 + am(c, 'cha') + pb(c) } : null,
+      cleric: Cl ? { lvl: Cl, sub: (classList(c).find((e) => e.cls === 'Жрец') || {}).sub || '', wis: Math.max(1, am(c, 'wis')), cd: left('channelCleric'), dc: 8 + am(c, 'wis') + pb(c),
+        strike: Cl >= 7 && ((c.cpicks || {}).bstrike || []).includes('Божественный удар') ? (Cl >= 14 ? '2d8' : '1d8') : '' } : null,
       insp: Bd ? { left: left('bardic'), die: Bd >= 15 ? 12 : Bd >= 10 ? 10 : Bd >= 5 ? 8 : 6 } : null,
       innate: So ? { left: left('innateSorcery') } : null,
     };
@@ -3049,7 +3054,9 @@ function tableAttacks(c) {
     ...c.spells.filter(tableCantrip).map((s) => {
       // «Мучительный взрыв» (воззвание): +мод. Харизмы к урону Мистического заряда; «Отталкивающий взрыв» — толчок на 10 фт
       const EB = s.e === 'Eldritch Blast', inv = (c.cpicks || {}).inv || [];
-      const beams = EB ? cantripTier(c) : 1, dice = beams > 1 ? s.f : scaleDice(s.f, cantripTier(c)), mod = (s.addMod ? spellModFor(c, s) : 0) + (EB && inv.includes('Мучительный взрыв') ? am(c, 'cha') : 0);
+      const beams = EB ? cantripTier(c) : 1, dice = beams > 1 ? s.f : scaleDice(s.f, cantripTier(c)), mod = (s.addMod ? spellModFor(c, s) : 0) + (EB && inv.includes('Мучительный взрыв') ? am(c, 'cha') : 0)
+        // Жрец 7+, «Мощные заклинания»: + мод. Мудрости к урону заговоров жреца
+        + (clsLvl(c, 'Жрец') >= 7 && ((c.cpicks || {}).bstrike || []).includes('Мощные заклинания') && /Жрец/.test(s.k || '') ? am(c, 'wis') : 0);
       return { id: 'sp:' + s.id, n: s.n, bonus: spellAtkFor(c, s), dmg: withMod(dice, mod), dice, mod, type: dmgWord(s.x), rng: atkRange(s.r, true), spell: true, cantrip: true, beams, repel: EB && inv.includes('Отталкивающий взрыв') };
     }),
   ];
@@ -3192,6 +3199,8 @@ function doCast(s, castLvl, how, o = {}) {
     if (+s.l === 0) { const L = lvl(c); expr = scaleDice(expr, 1 + (L >= 5) + (L >= 11) + (L >= 17)); }
     else if (s.u && castLvl > s.l) for (let i = 0; i < castLvl - s.l; i++) expr += '+' + s.u;
     if (s.addMod) expr = withMod(expr, spellModFor(c, s));
+    // Жрец 7+, «Мощные заклинания»: урон заговоров жреца + мод. Мудрости
+    if (+s.l === 0 && clsLvl(c, 'Жрец') >= 7 && ((c.cpicks || {}).bstrike || []).includes('Мощные заклинания') && /Жрец/.test(s.k || '')) expr = withMod(expr, am(c, 'wis'));
     const r = rollDice(`${s.n}${castLvl > s.l ? ` (${castLvl} ур.)` : ''}${o.emp ? ' · усиленное' : ''}`, expr, o.emp || 0);
     return r && { ...r, expr };
   }
