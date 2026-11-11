@@ -1862,6 +1862,113 @@ const CD_ACTS = {
     });
   },
 };
+// Гнев моря (Круг моря): существо в ауре — спасбросок Телосложения или урон холодом (к6 × мод. Мудрости) и толчок на 15 фт
+function seaStrike(t, id, C, fight, eu) {
+  const D = C.druid, r = D.lvl >= 6 ? 10 : 5;
+  pickTok('🌊 Гнев моря', `Существо в ${r} фт: спасбросок Телосложения СЛ ${D.dc} или ${D.wis}к6 урона холодом и толчок на 15 фт.`, seenNear(id, r, (k, o) => k !== id && hostile(t, o)), (tid) => {
+    if (fight) eu({ b: 1 });
+    const f = rollExpr(`${D.wis}d6`), T = game.tokens[tid];
+    saveRequest(tid, { n: `${t.name}: Гнев моря`, who: t.name, abil: 'con', dc: D.dc, dmg: f.total, dmgDetail: f.detail, dtype: 'холодом', from: id,
+      ...((T.size || 1) <= 2 ? { fail: { n: 'Гнев моря', push: 3, once: true } } : {}) });
+    addLog({ kind: 'act', who: t.name, txt: `🌊 Гнев моря → ${T.name}: спасбросок Телосложения СЛ ${D.dc}, иначе ${f.total} холодом и толчок`, detail: f.detail });
+  });
+}
+// Техника открытой ладони: выбор эффекта после попадания Шквалом ударов
+function openHand(from, tid, dc) {
+  const me_ = game.tokens[from], T = game.tokens[tid];
+  if (!me_ || !T) return;
+  const opts = [['addle', '😵 Сбить с толку', 'Цель не может совершать атаки по возможности до начала своего следующего хода'],
+    ['push', '↗ Оттолкнуть', `Спасбросок Силы СЛ ${dc} или отлетает на 15 фт`], ['topple', '⤵ Опрокинуть', `Спасбросок Ловкости СЛ ${dc} или сбита с ног`]];
+  app.openModal(`<h2>✋ Техника открытой ладони → ${esc(T.name)}</h2><div class="list">${opts.map(([k, n, d]) => `<button class="atk-pick" data-oh="${k}"><b>${n}</b><span class="muted small">${d}</span></button>`).join('')}</div>
+    <div class="modal-actions"><button data-act="closeModal">Без эффекта</button></div>`);
+  $$('[data-oh]').forEach((x) => x.addEventListener('click', () => {
+    app.closeModal();
+    const k = x.dataset.oh;
+    if (k === 'addle') { R.update(ref(gpath(`econ/${tid}`)), { r: 1 }).catch(() => {}); addLog({ kind: 'act', who: me_.name, txt: `😵 Открытая ладонь: ${T.name} без реакций до своего хода` }); }
+    if (k === 'push') saveRequest(tid, { n: `${me_.name}: Открытая ладонь`, who: me_.name, abil: 'str', dc, fail: { n: 'Открытая ладонь', push: 3, once: true }, from });
+    if (k === 'topple') saveRequest(tid, { n: `${me_.name}: Открытая ладонь`, who: me_.name, abil: 'dex', dc, fail: { n: 'Открытая ладонь', cond: 'prone', once: true }, from });
+  }));
+}
+const STAR_FORMS = [['archer', '🏹', 'Лучник', 'Бонусным действием (и сразу при входе) — дальнобойная атака светом на 60 фт, 1к8 + Мдр излучением'],
+  ['chalice', '🏆', 'Чаша', 'Лечите заклинанием с ячейкой — вы или существо в 30 фт восстанавливает ещё 1к8 + Мдр'],
+  ['dragon', '🐉', 'Дракон', 'На спасбросках концентрации к20 не ниже 10']];
+Object.assign(CD_ACTS, {
+  // Мантия вдохновения (коллегия гламура): бонусное действие и Вдохновение — до мод. Харизмы союзников в 60 фт получают 2 × кость временных хитов
+  cMantle({ t, id, m, C, fight, eu }) {
+    const list = seenNear(id, 60, (k, o) => team(o) === team(t));
+    app.openModal(`<h2>✨ Мантия вдохновения</h2><p class="muted small">Бросок к${C.insp.die} × 2 временных хитов — выбранным (не больше ${C.bard.cha}).</p>
+      <div class="list">${list.map(([k, o]) => `<label class="check"><input type="checkbox" data-mtl="${k}"> ${esc(o.name)}</label>`).join('')}</div>
+      <div class="modal-actions"><button data-act="closeModal">Отмена</button><button class="primary" id="mtlOk">✨ Вдохновить</button></div>`);
+    $('#mtlOk').onclick = () => {
+      const ids = $$('[data-mtl]').filter((x) => x.checked).map((x) => x.dataset.mtl);
+      if (!ids.length) { app.toast('Никто не выбран'); return; }
+      if (ids.length > C.bard.cha) { app.toast(`Не больше ${C.bard.cha}`); return; }
+      if (!app.useRes(m.charId, 'bardic', 'Мантия вдохновения')) return;
+      app.closeModal();
+      if (fight) eu({ b: 1 });
+      const d = die(C.insp.die), v = 2 * d;
+      ids.forEach((tid) => addEffect(tid, { n: 'Мантия вдохновения', thp: v, once: true, by: user.uid, from: id }));
+      addLog({ kind: 'act', who: t.name, txt: `✨ Мантия вдохновения: по ${v} временных хитов — ${ids.map((k) => game.tokens[k].name).join(', ')}`, detail: `к${C.insp.die} [${d}] × 2` });
+    };
+  },
+  // Помощь земли (Круг земли): Дикий облик — сфера 10 фт в 60 фт, Телосложение или 2к6 некротикой (3к6 с 10, 4к6 с 14); одно существо лечится на столько же костей
+  cLandAid({ t, id, m, C, fight, eu }) {
+    const D = C.druid, n = D.lvl >= 14 ? 4 : D.lvl >= 10 ? 3 : 2;
+    pickTok('🌿 Помощь земли', `Сначала — кого вылечить (${n}к6), затем наведите сферу 10 фт: спасбросок Телосложения СЛ ${D.dc} или ${n}к6 некротикой.`, seenNear(id, 70, (k, o) => team(o) === team(t)), (hid) => {
+      if (!app.useRes(m.charId, 'wildShape', 'Помощь земли')) return;
+      if (fight) eu({ a: 1 });
+      const h = rollExpr(`${n}d6`), H = game.tokens[hid];
+      addLog({ kind: 'heal', who: t.name, txt: 'Помощь земли', tgt: hid, tgtName: H.name, heal: h.total, from: id, detail: h.detail });
+      startCast({ caster: id, info: { n: 'Помощь земли', shape: 'sphere', size: 10, range: 60, save: 'con', dc: D.dc, half: false, pick: true, f: `${n}d6`, dtype: 'некротической энергией', l: 0, dur: 'Мгновенная', act: 'action' } });
+    });
+  },
+  // Гнев моря (Круг моря): Дикий облик — аура на 10 минут, сразу удар волной
+  cSea({ t, id, m, C, fight, eu }) {
+    if (!app.useRes(m.charId, 'wildShape', 'Гнев моря')) return;
+    addEffect(id, { n: 'Гнев моря', ic: '🌊', sea: 1, by: user.uid, from: id, ...(fight ? { until: (game.init.round || 1) + 100 } : {}) });
+    addLog({ kind: 'act', who: t.name, txt: `🌊 Гнев моря: аура ${C.druid.lvl >= 6 ? 10 : 5} фт на 10 минут` });
+    seaStrike(t, id, C, fight, eu);
+  },
+  cSeaHit({ t, id, C, fight, eu }) { seaStrike(t, id, C, fight, eu); },
+  // Звёздная форма (Круг звёзд): Дикий облик — 10 минут сияния; облик выбирается
+  cStar({ t, id, m, fight, eu }) {
+    app.openModal(`<h2>✨ Звёздная форма</h2><p class="muted small">10 минут: вы светитесь (яркий свет 10 фт, тусклый ещё 10 фт).</p>
+      <div class="list">${STAR_FORMS.map(([k, ic, n, d]) => `<button class="atk-pick" data-sf="${k}"><b>${ic} ${n}</b><span class="muted small">${d}</span></button>`).join('')}</div>
+      <div class="modal-actions"><button data-act="closeModal">Отмена</button></div>`);
+    $$('[data-sf]').forEach((x) => x.addEventListener('click', () => {
+      const [k, ic, n] = STAR_FORMS.find((f) => f[0] === x.dataset.sf);
+      app.closeModal();
+      if (!app.useRes(m.charId, 'wildShape', 'Звёздная форма')) return;
+      if (fight) eu({ b: 1 });
+      app.starForm(m.charId, k);
+      addEffect(id, { n: `Звёздная форма: ${n}`, ic, starF: k, glow: { b: 10, d: 10 }, by: user.uid, from: id, ...(fight ? { until: (game.init.round || 1) + 100 } : {}) });
+      addLog({ kind: 'act', who: t.name, txt: `${ic} Звёздная форма: ${n}${k === 'archer' ? ' — в атаках появился «Звёздный лучник»' : ''}` });
+    }));
+  },
+  cStarOff({ t, id, m }) {
+    app.starForm(m.charId, '');
+    const ks = fxOf(id).filter(([, f]) => f.starF).map(([k]) => k);
+    if (ks.length) R.update(ref(gpath('effects')), Object.fromEntries(ks.map((k) => [k, null]))).catch(() => {});
+    addLog({ kind: 'act', who: t.name, txt: '✨ Звёздная форма заканчивается' });
+  },
+  // Шаг тени (Путь тени 6+): бонусным действием телепорт на 60 фт из тусклого света или тьмы в тусклый свет или тьму; следующая рукопашная атака — с преимуществом
+  cShadowStep({ id, fight, eu }) {
+    if (fight) eu({ b: 1 });
+    startCast({ caster: id, info: { n: 'Шаг тени', shape: 'tp', range: 60, l: 0, act: 'bonus', after: () => eu({ shadowAdv: 1 }) } });
+  },
+  // Рука исцеления (Путь милосердия): действие и 1 очко — касание, кость Боевых искусств + Мдр хитов
+  cHealHand({ t, id, m, fight, eu }) {
+    const MK = (app.classActs(m.charId) || {}).monk || {};
+    pickTok('🤲 Рука исцеления', `Вы или существо рядом: ${MK.die}+${Math.max(0, MK.wis)} хитов (1 очко сосредоточенности).`, seenNear(id, 5, (k, o) => team(o) === team(t)), (tid) => {
+      if (!app.spendFocus(m.charId, 1)) { app.toast('Нет очков сосредоточенности'); return; }
+      if (fight) eu({ a: 1 });
+      const h = rollExpr(`${MK.die}+${Math.max(0, MK.wis)}`), T = game.tokens[tid];
+      addLog({ kind: 'heal', who: t.name, txt: 'Рука исцеления', tgt: tid, tgtName: T.name, heal: h.total, from: id, detail: h.detail });
+      // Касание лекаря (6+): снимает отравление
+      if (MK.lvl >= 6 && (T.cond || []).includes('poisoned')) addEffect(tid, { n: 'Касание лекаря', uncond: 'poisoned', once: true, by: user.uid, from: id });
+    });
+  },
+});
 // Умения воинских классов (кнопки хода): ресурс тратится в листе, на поле — эффект, флаг хода или атака
 function classAction(a, id, k) {
   const t = game.tokens[id], m = me(), e = econ(id), fight = inFight();
@@ -1981,7 +2088,7 @@ function classAction(a, id, k) {
       if (!app.useRes(m.charId, 'bardic', 'Вдохновение барда')) return;
       if (fight) eu({ b: 1 });
       const tid = x.dataset.insp;
-      addEffect(tid, { n: `Вдохновение барда (к${C.insp.die})`, ic: '🎵', insp: `1d${C.insp.die}`, by: user.uid, from: id });
+      addEffect(tid, { n: `Вдохновение барда (к${C.insp.die})`, ic: '🎵', insp: `1d${C.insp.die}`, ...(C.bard && C.bard.sub === 'Коллегия доблести' && C.bard.lvl >= 3 ? { valor: 1 } : {}), by: user.uid, from: id });
       floatText(tid, '🎵', 'fx-heal');
       addLog({ kind: 'act', who: t.name, txt: `🎵 вдохновляет ${game.tokens[tid].name}: к${C.insp.die} к следующей атаке или спасброску` });
     }));
@@ -2126,6 +2233,7 @@ function npcDamageUpd(id, t, dmg, crit) {
 const notified = new Set();
 let lastHit = null; // последнее попадание по моему персонажу — для реакций («Щит», уклонение, возмездие)
 let lastAllyHit = null; // последнее попадание по союзнику рядом — для «Защиты»
+let lastBardHit = null; // последнее попадание по союзнику в 60 фт — для «Острого слова» барда
 function notifyLog() {
   if (!game || !user) return;
   logList().forEach((e) => {
@@ -2142,6 +2250,12 @@ function notifyLog() {
       lastAllyHit = { k: e.k, tgt: e.tgt, from: e.from, total: e.total, nat: e.nat, ac: e.ac, dmg: e.dmg, crit: e.crit, t: Date.now() };
       const O = me() && me().charId ? app.combatOpts(me().charId) : {};
       if (O.protection && !econ(`pc_${user.uid}`).r) setTimeout(promptReactions, 400);
+    }
+    // Острое слово (коллегия знаний): попадание по союзнику (или по мне) в 60 фт, атакующий тоже в 60 фт — вычесть кость вдохновения из урона
+    const src = e.from && game.tokens[e.from];
+    if (e.kind === 'atk' && e.hit && e.dmg > 0 && t && src && mine && team(t) === team(mine) && distFt(mine, t) <= 60 && distFt(mine, src) <= 60) {
+      const B = me() && me().charId ? (app.casterActs(me().charId) || {}).bard : null;
+      if (B && B.sub === 'Коллегия знаний' && B.lvl >= 3) { lastBardHit = { k: e.k, tgt: e.tgt, from: e.from, dmg: e.dmg, t: Date.now() }; if (!econ(`pc_${user.uid}`).r) setTimeout(promptReactions, 450); }
     }
     if (e.kind === 'atk' && t && t.owner === user.uid && t.kind === 'pc')
       app.toast(`🗡 ${esc(e.who)} атакует вас: ${e.hit ? `${e.crit ? 'КРИТ! ' : ''}попадание, <b>${e.dmg}</b> урона` : 'промах'}`, e.hit ? 'fumble' : '');
@@ -2268,6 +2382,7 @@ function openAttack(id) {
     ${elemOf(id) ? `<label class="check" title="Стихийная настройка: попадание безоружным ударом — цель проходит спасбросок Силы или отлетает на 10 фт"><input type="checkbox" id="atkElemPush" checked> ${elemOf(id).ic} Безоружные удары толкают цель на 10 фт</label>` : ''}
     ${K.cunning ? `<label>Хитрый удар (−1к6 Скрытой атаки, СЛ ${K.cunning.dc})<select id="atkCunning"><option value="">— нет —</option><option value="trip">Подножка: Ловкость или сбит с ног</option><option value="poison">Яд: Телосложение или отравлен</option></select></label>` : ''}
     ${K.stun && K.stun.focus > 0 && !e.stun ? `<label class="check" title="Раз в ход: попадание в ближнем бою — цель проходит спасбросок Телосложения или ошеломлена до начала вашего следующего хода"><input type="checkbox" id="atkStun"> 💫 Ошеломляющий удар при попадании (1 очко, СЛ ${K.stun.dc})</label>` : ''}
+    ${K.monk && K.monk.sub === 'Путь милосердия' && K.monk.lvl >= 3 && K.monk.focus > 0 && !e.harm ? `<label class="check" title="Раз в ход: попадание безоружным ударом — 1 очко, +${K.monk.die}+Мдр некротикой${K.monk.lvl >= 6 ? ', цель отравлена' : ''}"><input type="checkbox" id="atkHarm"> 💀 Рука вреда при попадании (1 очко)</label>` : ''}
     ${K.ranger && K.ranger.sub === 'Сумрачный охотник' && K.ranger.lvl >= 3 && K.ranger.dread > 0 && !e.dread ? `<label class="check" title="Раз в ход при попадании оружием: +${K.ranger.dreadDie} психического урона"><input type="checkbox" id="atkDread"> 🌑 Ужасающий удар при попадании (+${K.ranger.dreadDie}, осталось ${K.ranger.dread})</label>` : ''}
     ${O.sneak ? `<p class="muted small">Скрытая атака ${O.sneak}к6 добавится сама — раз в ход, фехтовальным или дальнобойным оружием при преимуществе или если рядом с целью ваш союзник.${e.sa ? ' <b>В этом ходу уже была.</b>' : ''}</p>` : ''}`;
   app.openModal(`<h2>⚔ Атака</h2>
@@ -2289,9 +2404,9 @@ function openAttack(id) {
     }
     const left = way === 'action' ? (e.atk > 0 ? e.atk : per) : way === 'magic' ? A.beams || 1 : 1, stunOn = !!($('#atkStun') || {}).checked;
     const brutal = ($('#atkBrutal') || {}).value || '', cunning = ($('#atkCunning') || {}).value || '', elemPush = $('#atkElemPush') ? $('#atkElemPush').checked : true;
-    const dread = !!($('#atkDread') || {}).checked;
+    const dread = !!($('#atkDread') || {}).checked, harm = !!($('#atkHarm') || {}).checked;
     app.closeModal();
-    aim = { from: id, charId: m.charId, atk: A, way, left, man, smite, dread, ...(stunOn ? { stun: true, stunDc: K.stun.dc } : {}),
+    aim = { from: id, charId: m.charId, atk: A, way, left, man, smite, dread, harm, ...(stunOn ? { stun: true, stunDc: K.stun.dc } : {}),
       ...(brutal ? { brutal, brutalDice: K.brutal.dice } : {}), ...(cunning ? { cunning, cunDc: K.cunning.dc } : {}), elemPush };
     renderAll();
   }));
@@ -2540,6 +2655,7 @@ function attackTarget(tid) {
   if (hdefT === 'Уход от орды' && a.oa) dis.push('уход от орды');
   // Варвар в ярости (облик волка) рядом с целью — союзники атакуют её с преимуществом
   if (Object.entries(game.tokens).some(([k, o]) => k !== a.from && k !== tid && team(o) === team(me_) && !incapTok(o) && distFt(o, T) <= 5 && fxOf(k).some(([, f]) => f.wildAsp === 'wolf'))) adv.push('стая (волк)');
+  if (ea.shadowAdv && !ranged) { adv.push('шаг тени'); R.update(ref(gpath(`econ/${a.from}`)), { shadowAdv: null }).catch(() => {}); }
   if (ea.steady) { adv.push('верный прицел'); R.update(ref(gpath(`econ/${a.from}`)), { steady: null }).catch(() => {}); }
   fxOf(a.from).forEach(([k, e]) => {
     if (e.sap) { dis.push('ослаблен'); used.push(k); }
@@ -2593,6 +2709,9 @@ function attackTarget(tid) {
   // Стихийный эпицентр (монах 17): раз в ход попавший безоружный удар — ещё кость Боевых искусств стихией
   const MKe = elem ? (app.classActs(a.charId) || {}).monk : null, epi = MKe && MKe.lvl >= 17 && !econ(a.from).epi;
   if (epi) ro.dmgDice.push({ e: MKe.die, n: 'Стихийный эпицентр' });
+  // Рука вреда (Путь милосердия): раз в ход попадание безоружным ударом — 1 очко, ещё кость Боевых искусств + Мдр некротикой
+  const MKm = A.ma && !a.npc && a.harm && !eF.harm ? (app.classActs(a.charId) || {}).monk : null, harm = MKm && MKm.focus > 0;
+  if (harm) ro.dmgDice.push({ e: `${MKm.die}+${Math.max(0, MKm.wis)}`, n: 'Рука вреда' });
   let res = a.npc ? npcAttackRoll(me_, A, ro)
     : A.lvlSpell ? app.mute(() => app.spellRoll(a.charId, { ...ro, n: A.n, bonus: A.bonus, dmg: A.dmg, type: A.type, miss: A.miss, emp: A.emp || 0 }))
     : app.mute(() => app.attack(a.charId, A.id, ro));
@@ -2622,6 +2741,16 @@ function attackTarget(tid) {
   });
   if (bonusHit && res.hit) R.update(ref(gpath(`econ/${a.from}`)), { fury: 1 }).catch(() => {});
   if (dStrike && res.hit) R.update(ref(gpath(`econ/${a.from}`)), { dstrike: 1 }).catch(() => {});
+  if (res.hit && harm && app.spendFocus(a.charId, 1)) {
+    R.update(ref(gpath(`econ/${a.from}`)), { harm: 1 }).catch(() => {}); a.harm = false;
+    // Касание лекаря (6+): цель ещё и отравлена до конца следующего хода монаха
+    if (MKm.lvl >= 6) addEffect(tid, { n: 'Рука вреда', ic: '🤢', cond: 'poisoned', by: user.uid, from: a.from, ...(inFight() ? { until: (game.init.round || 1) + 1 } : {}) });
+  }
+  // Техника открытой ладони: попадание Шквалом ударов — сбить с толку, оттолкнуть или опрокинуть
+  if (res.hit && a.way === 'flurry' && !a.npc) {
+    const MKo = (app.classActs(a.charId) || {}).monk;
+    if (MKo && MKo.sub === 'Путь открытой ладони' && MKo.lvl >= 3) openHand(a.from, tid, MKo.dc);
+  }
   if (res.hit && coloss) R.update(ref(gpath(`econ/${a.from}`)), { coloss: 1 }).catch(() => {});
   if (res.hit && feyS) R.update(ref(gpath(`econ/${a.from}/feyT`)), { [tid]: 1 }).catch(() => {});
   if (res.hit && dreadS) { app.useRes(a.charId, 'dreadStrike', 'Ужасающий удар'); R.update(ref(gpath(`econ/${a.from}`)), { dread: 1 }).catch(() => {}); a.dread = false; }
@@ -2817,10 +2946,17 @@ function reactOptions(id, t, e, incap) {
     if ((O.shieldSlots || []).length && H.total < acOf(t, id) + 5) out.push(btn('shield', `🛡 «Щит»: отменить попадание (${H.total} против КД ${acOf(t, id) + 5})`, 'Реакция: +5 КД до начала вашего хода, тратит ячейку'));
     if (O.uncanny && H.dmg > 1) out.push(btn('uncanny', `🌀 Невероятное уклонение: урон ${H.dmg} → ${Math.floor(H.dmg / 2)}`, 'Плут: реакцией уменьшить вдвое урон от попавшей атаки'));
     if (O.deflect && H.dmg && (O.deflect.any || PHYS.test(H.dtype))) out.push(btn('deflect', `🥋 Отражение атак (−1к10+${O.deflect.dex}+ур.)`, 'Монах: урон уменьшается; если до нуля — можно перенаправить за 1 очко сосредоточенности'));
+    // Боевое вдохновение (коллегия доблести): кость вдохновения от барда-доблести — к КД против этой атаки
+    const vi = fxOf(id).find(([, f]) => f.insp && f.valor);
+    if (vi) out.push(btn('valorAC', `🎵 Боевое вдохновение: +${vi[1].insp.replace('1d', 'к')} к КД (${H.total} против КД ${acOf(t, id)})`, 'Реакция: бросьте кость вдохновения и добавьте к КД — может превратить попадание в промах'));
     if ((O.rebukeSlots || []).length && src && distFt(t, src) <= 60) out.push(btn('rebuke', `🔥 «Адское возмездие» по ${esc(src.name)}`, 'Реакция на урон: спасбросок Ловкости, 2к10 огнём (+1к10 за уровень ячейки выше 1), половина при успехе'));
   }
   if (fresh(lastAllyHit) && O.protection && game.tokens[lastAllyHit.tgt] && distFt(t, game.tokens[lastAllyHit.tgt]) <= 5)
     out.push(btn('protect', `🛡 «Защита»: помеха на атаку по ${esc(game.tokens[lastAllyHit.tgt].name)}`, 'Боевой стиль: реакцией со щитом — атака перебрасывается с помехой, и до начала вашего хода атаки по союзнику с помехой'));
+  if (fresh(lastBardHit) && game.tokens[lastBardHit.tgt]) {
+    const C = app.casterActs(m.charId) || {};
+    if (C.insp && C.insp.left > 0) out.push(btn('cutting', `✂ Острое слово: −к${C.insp.die} урона по ${esc(game.tokens[lastBardHit.tgt].name)}`, 'Реакция и Вдохновение барда: насмешка сбивает удар — урон уменьшается на бросок кости'));
+  }
   return out;
 }
 // «Щит» реакцией на попадание: +5 КД до начала моего хода; попадание с новым КД — промах, урон возвращается
@@ -3118,6 +3254,21 @@ function doReaction(a, id) {
     spendR();
     saveRequest(H.from, { n: `${t.name}: «Адское возмездие»`, who: t.name, abil: 'dex', dc: c.dc, dmg: f.total, half: true, dmgDetail: f.detail, dtype: 'огнём', from: id });
     addLog({ kind: 'act', who: t.name, txt: `🔥 «Адское возмездие» (${c.how}) → ${src.name}: спасбросок Ловкости СЛ ${c.dc}, ${f.total} огнём, половина при успехе`, detail: f.detail });
+    lastHit = null;
+  } else if (a === 'cutting' && lastBardHit) {
+    const P = lastBardHit, T = game.tokens[P.tgt], C = app.casterActs(m.charId) || {};
+    if (!T || !C.insp || !app.useRes(m.charId, 'bardic', 'Острое слово')) return;
+    const d = die(C.insp.die), back = Math.min(P.dmg, d);
+    spendR(); refund(P.tgt, back, t.name, `✂ Острое слово: урон по ${T.name} ${P.dmg} → ${P.dmg - back} (к${C.insp.die} [${d}])`);
+    lastBardHit = null;
+  } else if (a === 'valorAC' && H) {
+    const vi = fxOf(id).find(([, f]) => f.insp && f.valor);
+    if (!vi) return;
+    const d = rollExpr(vi[1].insp).total, ac = acOf(t, id) + d, miss = H.total < ac;
+    R.remove(ref(gpath(`effects/${vi[0]}`))).catch(() => {});
+    spendR();
+    if (miss && H.dmg) refund(id, H.dmg, t.name, `🎵 Боевое вдохновение: КД ${ac} (+${d}) — атака (${H.total}) промахивается`);
+    else addLog({ kind: 'act', who: t.name, txt: `🎵 Боевое вдохновение: КД ${ac} (+${d})${miss ? ' — промах' : ' — всё равно попадание'}` });
     lastHit = null;
   } else if (a === 'protect' && lastAllyHit) {
     // Помеха задним числом: второй к20, берётся меньший — то же самое, что бросок с помехой
@@ -3482,6 +3633,7 @@ function tpClick() {
       const spot = [[1, 0], [-1, 0], [0, 1], [0, -1], [1, 1], [-1, 1], [1, -1], [-1, -1]].map(([dx, dy]) => [cur[0] + dx, cur[1] + dy]).find(([x, y]) => freeCell(x, y, game.tokens[pass].size || 1, pass));
       if (spot) addEffect(pass, { n: c.info.n, once: true, tp: { x: spot[0], y: spot[1] }, by: user.uid, from: c.caster });
     }
+    if (c.info.after) c.info.after();
     addLog({ kind: 'act', who: src.name, txt: `✨ ${c.info.n}: телепортируется${pass ? ` вместе с ${game.tokens[pass].name}` : ''} (${fmtFt(distFt(src, { x: cur[0], y: cur[1], size: 1 }))})` });
     cast = null; hint(''); renderAll();
   };
@@ -3921,6 +4073,16 @@ function doCastArea(chosen, gated) {
       if (CL.lvl >= 6 && chosen.some((id) => id !== c.caster) && c.caster) addLog({ kind: 'heal', who, txt: 'Благословенный целитель', tgt: c.caster, tgtName: src.name, heal: plus, from: c.caster });
     }
     chosen.forEach((id) => addLog({ kind: 'heal', who, txt: I.n + lvlTxt, tgt: id, tgtName: game.tokens[id].name, heal: amt, from: c.caster, detail: `${roll ? roll.dmgDetail || roll.detail || '' : ''}${life}` }));
+    // Звёздная форма «Чаша»: лечение с ячейкой — самый раненый союзник в 30 фт (или сам друид) получает ещё 1к8 + Мдр (2к8 с 10 ур.)
+    const DR = c.charId && roll && +roll.castLvl > 0 && src ? (app.casterActs(c.charId) || {}).druid : null;
+    if (DR && DR.star === 'chalice') {
+      const pool = Object.entries(game.tokens).filter(([, o]) => !isDead(o) && team(o) === team(src) && +o.hpMax && distFt(src, o) <= 30)
+        .sort(([, x], [, y]) => (+x.hp || 0) / x.hpMax - (+y.hp || 0) / y.hpMax);
+      if (pool.length) {
+        const [hid, H] = pool[0], h = rollExpr(`${DR.lvl >= 10 ? 2 : 1}d8+${DR.wis}`);
+        addLog({ kind: 'heal', who, txt: '🏆 Звёздная чаша', tgt: hid, tgtName: H.name, heal: h.total, from: c.caster, detail: h.detail });
+      }
+    }
     if (A.shape !== 'target') addLog({ kind: 'area', who, txt: `✨ ${I.n}${lvlTxt}: +${amt} хитов · ${names}`, fx: fxShape({ ...A, color: '#5a9e5a' }) });
     spend(); cast = null; hint(''); renderAll();
     return;
@@ -7081,6 +7243,18 @@ function classActsHtml(id, e) {
   if (C.loh) out.push(b('cLoh', `🤲 Наложение рук (${C.loh.left})`, 'Бонусное действие, касание: восстановить хиты из запаса; 5 из запаса снимают отравление', !e.b && C.loh.left > 0));
   if (C.insp) out.push(b('cInsp', `🎵 Вдохновение (к${C.insp.die}, ${C.insp.left})`, `Бонусное действие: союзник в 60 фт получает к${C.insp.die} — добавится к его следующей атаке или спасброску`, !e.b && C.insp.left > 0));
   if (C.innate && !fxOf(id).some(([, f]) => f.innate)) out.push(b('cInnate', `🔮 Врождённое колдовство (${C.innate.left})`, 'Бонусное действие на 1 минуту: СЛ ваших заклинаний +1, атаки заклинаниями с преимуществом', !e.b && C.innate.left > 0));
+  // Бард: Мантия вдохновения (гламур); друид: Помощь земли, Гнев моря, Звёздная форма; монах: Шаг тени, Рука исцеления
+  if (C.bard && C.bard.sub === 'Коллегия гламура' && C.bard.lvl >= 3) out.push(b('cMantle', `✨ Мантия вдохновения (${C.insp.left})`, `Бонусное действие, Вдохновение: до ${C.bard.cha} союзников в 60 фт получают 2 × к${C.insp.die} временных хитов`, !e.b && C.insp.left > 0));
+  const Dr = C.druid;
+  if (Dr && Dr.lvl >= 3) {
+    if (Dr.sub === 'Круг земли') out.push(b('cLandAid', `🌿 Помощь земли (${Dr.ws})`, `Действие, Дикий облик: сфера 10 фт в 60 фт — Телосложение СЛ ${Dr.dc} или некротика; одно существо лечится`, act && Dr.ws > 0));
+    if (Dr.sub === 'Круг моря') out.push(fxOf(id).some(([, f]) => f.sea) ? b('cSeaHit', '🌊 Гнев моря: волна', `Бонусное действие: существо в ауре — Телосложение СЛ ${Dr.dc} или ${Dr.wis}к6 холодом и толчок`, !e.b)
+      : b('cSea', `🌊 Гнев моря (${Dr.ws})`, 'Бонусное действие, Дикий облик: аура на 10 минут, волна сразу и каждым бонусным действием', !e.b && Dr.ws > 0));
+    if (Dr.sub === 'Круг звёзд') out.push(Dr.star ? b('cStarOff', `✨ Звёздная форма: ${(STAR_FORMS.find((f) => f[0] === Dr.star) || [])[2] || ''} — снять`, 'Закончить Звёздную форму', true)
+      : b('cStar', `✨ Звёздная форма (${Dr.ws})`, 'Бонусное действие, Дикий облик: Лучник, Чаша или Дракон на 10 минут', !e.b && Dr.ws > 0));
+  }
+  if (K.monk && K.monk.sub === 'Путь тени' && K.monk.lvl >= 6) out.push(b('cShadowStep', '🌑 Шаг тени', 'Бонусное действие: телепорт на 60 фт из тусклого света или тьмы в тусклый свет или тьму; следующая рукопашная атака в ходу — с преимуществом', !e.b));
+  if (K.monk && K.monk.sub === 'Путь милосердия' && K.monk.lvl >= 3) out.push(b('cHealHand', '🤲 Рука исцеления (1 ци)', `Действие и 1 очко: касание — ${K.monk.die}+Мдр хитов`, act && K.monk.focus > 0));
   return out.length ? `<div class="row gap wrap mt">${out.join('')}</div>` : '';
 }
 // Предзнаменование прорицателя: брошенные после отдыха к20 — нажмите, чтобы назначить следующий бросок атаки или спасброска существа
@@ -7755,7 +7929,7 @@ async function onClick(e) {
     else if (a === 'areaDel') await R.remove(ref(gpath(`areas/${b.dataset.k}`)));
     else if (a === 'logClear') { if (app.confirm('Очистить журнал для всех?')) await R.remove(ref(gpath('log'))); }
     else if (['eco', 'dash', 'dashB', 'dis', 'disB', 'dodge', 'stand'].includes(a)) await econAct(a, b.dataset.id, b.dataset.k);
-    else if (/^c(Rage|Reck|Wind|Surge|Flurry|Steady|Turn|Insp|Innate|Spark|Loh|Wild|WildEnd|Patient|Portent|Elem|ElemOff|Burst|Sense|Sacred|Vow|Wrath|Abjure|InspSmite|Preserve|Dawn|Guided)$/.test(a)) classAction(a, b.dataset.id, b.dataset.k);
+    else if (/^c(Rage|Reck|Wind|Surge|Flurry|Steady|Turn|Insp|Innate|Spark|Loh|Wild|WildEnd|Patient|Portent|Elem|ElemOff|Burst|Sense|Sacred|Vow|Wrath|Abjure|InspSmite|Preserve|Dawn|Guided|Mantle|LandAid|Sea|SeaHit|Star|StarOff|ShadowStep|HealHand)$/.test(a)) classAction(a, b.dataset.id, b.dataset.k);
     else if (a === 'initDel') await removeFromInit(b.dataset.id);
     else if (a === 'unsel') { selId = null; renderSide(); renderTokens(); }
     else if (a === 'tokDel') { if (app.confirm('Убрать токен с поля?')) { await R.remove(ref(gpath(`tokens/${selId}`))); selId = null; } }

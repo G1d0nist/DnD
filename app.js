@@ -451,7 +451,7 @@ window.dndApp = {
       patient: M >= 2 ? { focus: left('focus') } : null,
       // Монах: Медленное падение (4), Самовосстановление (10), Дисциплинированный выживший (14 — переброс спасброска за 1 очко);
       // Путь стихий (2024): Стихийная настройка (3), Стихийный взрыв (6), Шаг стихий (11), Стихийный эпицентр (17)
-      monk: M ? { lvl: M, focus: left('focus'), die: martialDie(M), dc: 8 + am(c, 'wis') + pb(c),
+      monk: M ? { lvl: M, focus: left('focus'), die: martialDie(M), dc: 8 + am(c, 'wis') + pb(c), sub: subOf(c, 'Монах'), wis: am(c, 'wis'),
         elem: classList(c).some((e) => e.cls === 'Монах' && e.sub === 'Путь стихий') && M >= 3 } : null,
       // Жестокий удар (варвар 9+, при Безрассудной атаке): отказ от преимущества — +1к10 (17+: 2к10) и толчок или подсечка
       brutal: B >= 9 ? { dice: B >= 17 ? '2d10' : '1d10' } : null,
@@ -549,7 +549,7 @@ window.dndApp = {
     const c = state.chars[id];
     if (!c) return null;
     const left = (k) => { const r = c.resources.find((x) => x.auto === k); return r ? r.max - r.used : 0; };
-    const Cl = clsLvl(c, 'Жрец'), Bd = clsLvl(c, 'Бард'), So = clsLvl(c, 'Чародей'), Pa = clsLvl(c, 'Паладин');
+    const Cl = clsLvl(c, 'Жрец'), Bd = clsLvl(c, 'Бард'), So = clsLvl(c, 'Чародей'), Pa = clsLvl(c, 'Паладин'), Dr = clsLvl(c, 'Друид');
     return {
       turn: Cl >= 2 ? { left: left('channelCleric'), dc: 8 + am(c, 'wis') + pb(c) } : null,
       // Божественная искра (жрец 2+, Божественный канал): 1к8 + Мдр (2к8 с 7, 3к8 с 13, 4к8 с 18) — лечение или урон излучением/некротикой
@@ -562,7 +562,18 @@ window.dndApp = {
         strike: Cl >= 7 && ((c.cpicks || {}).bstrike || []).includes('Божественный удар') ? (Cl >= 14 ? '2d8' : '1d8') : '' } : null,
       insp: Bd ? { left: left('bardic'), die: Bd >= 15 ? 12 : Bd >= 10 ? 10 : Bd >= 5 ? 8 : 6 } : null,
       innate: So ? { left: left('innateSorcery') } : null,
+      // Бард: коллегия (Острое слово, Боевое вдохновение, Мантия вдохновения), Харизма
+      bard: Bd ? { lvl: Bd, sub: subOf(c, 'Бард'), cha: Math.max(1, am(c, 'cha')) } : null,
+      // Друид: круг, Мудрость, СЛ, использования Дикого облика (Помощь земли, Гнев моря, Звёздная форма)
+      druid: Dr ? { lvl: Dr, sub: subOf(c, 'Друид'), wis: Math.max(1, am(c, 'wis')), dc: 8 + am(c, 'wis') + pb(c), atk: am(c, 'wis') + pb(c), ws: left('wildShape'), star: c.combat.starForm || '' } : null,
     };
+  },
+  // Звёздная форма друида (Круг звёзд): archer | chalice | dragon | '' — снять
+  starForm(id, f) {
+    const c = state.chars[id];
+    if (!c) return;
+    c.combat.starForm = f || '';
+    save(); render();
   },
   // Потратить использование ресурса листа (Божественный канал, Вдохновение, Врождённое колдовство)
   useRes(id, auto, label, n = 1) {
@@ -880,6 +891,8 @@ function classList(c) {
     .filter((e) => { if (!e.cls) return !!e.primary; if (seen.has(e.cls)) return false; seen.add(e.cls); return true; })
     .map((e) => ({ ...e, sub: subAllowed(e) ? e.sub : '' }));
 }
+// Подкласс персонажа в классе (пусто, если класса нет)
+const subOf = (c, cls) => (classList(c).find((e) => e.cls === cls) || {}).sub || '';
 const subAllowed = (e) => !SUBCLASSES[e.cls] || (e.lvl >= subclassLevel(e.cls) && !!subclassOf(e.cls, e.sub));
 // Выпадающий список подклассов только своего класса; до уровня подкласса — недоступен
 function fillSubSelect(sel, txt, cls, L, val) {
@@ -1407,6 +1420,8 @@ function rollD20(label, bonus, opts = {}) {
   // Надёжный талант: при проверке с владением результат кубика ниже 10 считается 10
   let used = nat;
   if (opts.floor10 && nat < 10) { used = 10; notes.push(`Надёжный талант: ${nat}→10`); }
+  // Звёздная форма «Дракон» (Круг звёзд): к20 спасброска концентрации не ниже 10
+  if (opts.conc && c.combat.starForm === 'dragon' && used < 10) { used = 10; notes.push(`Звёздный дракон: ${nat}→10`); }
   // Кости от эффектов стола: +1к4 «Благословения», −1к4 «Порчи»
   let extraSum = 0;
   const diceTxt = (opts.dice || []).map((x) => {
@@ -3081,6 +3096,9 @@ function tableAttacks(c) {
       const m = Math.max(am(c, 'dex'), am(c, 'str'));
       return { id, n, bonus: m + pb(c), dmg: withMod(d, m), type: 'психической энергией', rng: { reach: 5, near: 60, far: 120, thrown: true }, fin: true, fixed: true };
     }) : []),
+    // Звёздная форма «Лучник» (Круг звёзд): бонусным действием дальнобойная атака заклинанием 60 фт, 1к8 + Мдр излучением (с 10 ур. — 2к8)
+    ...(c.combat.starForm === 'archer' && clsLvl(c, 'Друид') >= 2 ? [{ id: 'starArcher', n: '✨ Звёздный лучник', bonus: am(c, 'wis') + pb(c),
+      dmg: withMod(clsLvl(c, 'Друид') >= 10 ? '2d8' : '1d8', am(c, 'wis')), type: 'излучением', rng: { reach: 0, near: 60, far: 60 }, fixed: true, star: true }] : []),
   ];
 }
 
@@ -3154,7 +3172,7 @@ function doLongRest(c) {
   c.effects = []; endConc(c); pendingConc = 0;
   c.shape = null;
   // Магическая защита гаснет до первого заклинания ограждения; Предзнаменование — новые к20
-  cb.ward = 0; cb.wardOn = false; cb.relentless = 0;
+  cb.ward = 0; cb.wardOn = false; cb.relentless = 0; cb.starForm = '';
   cb.portent = portentN(c) ? Array.from({ length: portentN(c) }, () => die(20)) : [];
   if (cb.portent.length) toast(`🔮 Предзнаменование: ${cb.portent.join(', ')}`);
   c.slots.forEach((s) => { s.used = 0; }); c.pact.used = 0;
