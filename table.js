@@ -170,10 +170,10 @@ function subscribe(gid, code) {
   on('members', (v) => { game.members = v || {}; syncEffects(); applyXp(); applyLoot(); handleRest(); syncChests(); abilSync(); });
   on('abilSeen', (v) => { game.abilSeen = v || {}; abilSync(); });
   on(`abilEdit/${user.uid}`, (v) => { if (v && v.abil) applyAbilEdit(v); });
-  on('tokens', (v) => { game.tokens = v || {}; cleanupInit(); syncEffects(); hideWatch(); awardKills(); zoneTick(); concWatch(); undoTrack(); });
+  on('tokens', (v) => { game.tokens = v || {}; cleanupInit(); syncEffects(); hideWatch(); readyWatch(); awardKills(); zoneTick(); concWatch(); undoTrack(); });
   on('map', (v) => { game.map = v || {}; drawTerrain(); });
   on('init', (v) => { game.init = v; checkMyTurn(); checkNpcTurn(); cleanupInit(); syncEffects(); zoneTurn(); dotTurn(); });
-  on('econ', (v) => { game.econ = v || {}; undoTrack(); });
+  on('econ', (v) => { game.econ = v || {}; readyWatch(); undoTrack(); });
   on('cs', (v) => { game.cs = v || {}; csCheck(); notifyCs(); });
   on('log', (v) => { game.log = v || {}; applyLog(); notifyLog(); fxLog(); fightTally(); });
   on('fstats', (v) => { game.fstats = v || null; });
@@ -2724,6 +2724,73 @@ function seesInvis(aid, tid) {
   const s = sensesOf(aid), d = distFt(A, T);
   return s.si || (s.ts && d <= s.ts) || (s.bs && d <= s.bs) || fxOf(tid).some(([, e]) => e.lit);
 }
+/* ---------- Помощь и Подготовленное действие (2024) ---------- */
+// Помощь в проверке на союзнике: следующая его проверка (со стола) — с преимуществом; эффект тратится
+function helpCheck(id) {
+  const f = fxOf(id).find(([, e]) => e.helpChk);
+  if (!f) return undefined;
+  R.remove(ref(gpath(`effects/${f[0]}`))).catch(() => {});
+  return ['помощь'];
+}
+// Помощь (действие): в атаке — враг в 5 фт от вас, следующая атака союзника по нему с преимуществом; в проверке — союзник в 5 фт.
+// Обе действуют до начала вашего следующего хода
+function helpAct(id) {
+  const t = game.tokens[id];
+  if (!t || !canMove(t)) return;
+  const until = { untilTurn: id, by: user.uid, from: id };
+  const go = (kind) => {
+    const foe = kind === 'atk';
+    pickTok(foe ? '🤝 Помощь в атаке' : '🤝 Помощь в проверке', foe ? 'Враг в 5 фт от вас: следующая атака вашего союзника по нему — с преимуществом.' : 'Союзник в 5 фт: его следующая проверка характеристики — с преимуществом.',
+      seenNear(id, 5, (k, o) => k !== id && (foe ? hostile(t, o) : team(o) === team(t))), (tid) => {
+        if (inFight()) R.update(ref(gpath(`econ/${id}`)), { a: 1 }).catch(() => {});
+        addEffect(tid, foe ? { n: `Помощь (${t.name})`, ic: '🤝', help: id, ...until } : { n: `Помощь в проверке (${t.name})`, ic: '🤝', helpChk: true, ...until });
+        addLog({ kind: 'act', who: t.name, txt: foe ? `🤝 помогает союзникам: следующая атака по ${game.tokens[tid].name} — с преимуществом` : `🤝 помогает ${game.tokens[tid].name}: следующая проверка с преимуществом` });
+      });
+  };
+  app.openModal(`<h2>🤝 Помощь</h2><div class="list"><button class="atk-pick" data-hp="atk"><b>⚔ В атаке</b><span class="muted small">Отвлечь врага рядом с вами — союзник атакует его с преимуществом</span></button>
+    <button class="atk-pick" data-hp="chk"><b>🔧 В проверке</b><span class="muted small">Союзник рядом — преимущество на его следующую проверку</span></button></div>
+    <div class="modal-actions"><button data-act="closeModal">Отмена</button></div>`);
+  $$('[data-hp]').forEach((x) => x.addEventListener('click', () => { app.closeModal(); go(x.dataset.hp); }));
+}
+// Подготовленное действие: атака, когда враг подойдёт на N фт (тратит реакцию). Хранится в econ.ready — сбрасывается в начале вашего хода
+function readyAct(id) {
+  const t = game.tokens[id], m = me();
+  if (!t || !canMove(t)) return;
+  const atks = t.kind === 'npc' ? npcAttacks(t) : m && m.charId ? app.attacks(m.charId).filter((A) => !A.cantrip && A.ammo !== 0) : [];
+  if (!atks.length) { app.toast('Нет атак, которые можно подготовить'); return; }
+  app.openModal(`<h2>⏳ Подготовить атаку</h2><p class="muted small">Тратит действие. Когда враг окажется в пределах расстояния — стол предложит атаку реакцией. Готовность держится до начала вашего следующего хода.</p>
+    <div class="form-grid"><label>Атака<select id="rdA">${atks.map((A, i) => `<option value="${i}">${esc(A.n)} (${A.rng.reach ? `${A.rng.reach} фт` : `${A.rng.near} фт`})</option>`).join('')}</select></label>
+    <label>Когда враг ближе чем, фт<input id="rdF" type="number" min="5" step="5" value="${atks[0].rng.reach || atks[0].rng.near || 5}"></label></div>
+    <div class="modal-actions"><button data-act="closeModal">Отмена</button><button class="primary" id="rdOk">⏳ Подготовить</button></div>`);
+  $('#rdA').onchange = () => { const A = atks[+$('#rdA').value]; $('#rdF').value = A.rng.reach || A.rng.near || 5; };
+  $('#rdOk').onclick = () => {
+    const i = +$('#rdA').value, A = atks[i], ft = Math.max(5, +$('#rdF').value || 5);
+    app.closeModal();
+    R.update(ref(gpath(`econ/${id}`)), { ...(inFight() ? { a: 1 } : {}), ready: { i, id: A.id || '', n: A.n, ft } }).catch(() => {});
+    readySeen.delete(id);
+    addLog({ kind: 'act', who: t.name, txt: `⏳ готовит атаку (${A.n}): ударит, когда враг подойдёт на ${ft} фт`, ...(t.kind === 'npc' ? { dmOnly: true } : {}) });
+  };
+}
+// Сработал ли спусковой крючок: враг впервые оказался в пределах расстояния. Проверяет владелец подготовившегося (игрок / мастер)
+const readySeen = new Map();
+function readyWatch() {
+  if (!game || !user || !inFight()) return;
+  Object.entries(game.econ || {}).forEach(([id, e]) => {
+    const t = game.tokens[id];
+    if (!e || !e.ready || e.r || !t || !ownsTarget(t) || incapTok(t)) return;
+    const near = Object.entries(game.tokens).filter(([k, o]) => hostile(t, o) && !isDead(o) && !(o.hidden && !isDM()) && !hidOf(k) && distFt(t, o) <= +e.ready.ft).map(([k]) => k);
+    const was = readySeen.get(id);
+    readySeen.set(id, near);
+    if (!was) { if (!near.length) return; } // первая проверка после подготовки: враг уже рядом — тоже повод
+    const fresh = near.filter((k) => !(was || []).includes(k));
+    if (!fresh.length) return;
+    const m = me(), A = t.kind === 'npc' ? npcAttacks(t)[+e.ready.i] : m && m.charId ? app.attacks(m.charId).find((x) => x.id === e.ready.id) : null;
+    if (!A) return;
+    const k = fresh[0], foe = game.tokens[k];
+    reactModal(`${esc(t.name)}: подготовленная атака`, [{ label: `⏳ ${esc(A.n)} → ${esc(foe.name)}`, sub: `${esc(foe.name)} в ${distFt(t, foe)} фт — атака реакцией`,
+      go: () => { R.update(ref(gpath(`econ/${id}`)), { ready: null }).catch(() => {}); aim = { from: id, ...(t.kind === 'npc' ? { npc: true } : { charId: m.charId, man: '', smite: '' }), atk: A, way: 'reaction', left: 1 }; attackTarget(k); } }]);
+  });
+}
 /* ---------- Скрытность (2024): Спрятаться и Поиск ---------- */
 // Спрятавшийся носит эффект «Спрятался»: состояние «невидим», hide — итог Скрытности (СЛ для поиска).
 // Эффект пропадает при атаке или заклинании (breakAct), при Поиске врага и когда враг с ясным обзором замечает его пассивной Внимательностью
@@ -2752,7 +2819,7 @@ function stealthAct(a, id) {
   if (a === 'seek') {
     // Поиск: Внимательность против Скрытности спрятавшихся врагов, чьё место видно
     let total;
-    if (pc) { const r = m && m.charId && app.mute(() => app.check(m.charId, { skill: 'perception', dc: 0, label: 'Поиск (Внимательность)' })); if (!r) return; total = r.total; }
+    if (pc) { const r = m && m.charId && app.mute(() => app.check(m.charId, { skill: 'perception', dc: 0, label: 'Поиск (Внимательность)', adv: helpCheck(id) })); if (!r) return; total = r.total; }
     else { const d = die(20); total = d + npcSkill(t, 'p'); }
     eu({ a: 1 });
     const found = Object.entries(game.tokens).filter(([k, o]) => k !== id && hostile(t, o) && hidOf(k) && clearView(id, k) && total >= hidOf(k).v);
@@ -2768,7 +2835,7 @@ function stealthAct(a, id) {
     if (!app.confirm(`${t.name} на виду у: ${who}. Всё равно спрятать?`)) return;
   }
   let total;
-  if (pc) { const r = m && m.charId && app.mute(() => app.check(m.charId, { skill: 'stealth', dc: 15, label: 'Спрятаться (Скрытность)' })); if (!r) return; total = r.total; }
+  if (pc) { const r = m && m.charId && app.mute(() => app.check(m.charId, { skill: 'stealth', dc: 15, label: 'Спрятаться (Скрытность)', adv: helpCheck(id) })); if (!r) return; total = r.total; }
   else { const d = die(20); total = d + npcSkill(t, 's'); }
   eu(a === 'hideB' ? { b: 1 } : { a: 1 });
   if (total < 15) { addLog({ kind: 'act', who: t.name, txt: `🫥 пытается спрятаться — Скрытность ${total}, не вышло (нужно 15)`, ...(pc ? {} : { dmOnly: true }) }); return; }
@@ -2901,6 +2968,8 @@ function attackTarget(tid) {
   if (fxOf(tid).some(([, e]) => e.lit)) adv.push('цель светится');
   // Направленный снаряд: следующая атака по цели — с преимуществом, метка снимается
   fxOf(tid).forEach(([k, e]) => { if (e.vex1) { adv.push(String(e.n).toLowerCase()); used.push(k); } });
+  // Помощь: союзник помогающего атакует эту цель с преимуществом (одна атака, до начала хода помогающего)
+  fxOf(tid).forEach(([k, e]) => { if (e.help && e.help !== a.from && game.tokens[e.help] && team(game.tokens[e.help]) === team(me_)) { adv.push('помощь'); used.push(k); } });
   if (fxOf(tid).some(([, e]) => e.prot && e.from !== a.from)) dis.push('«Защита»');
   // Безрассудная атака: свои атаки Силой в ближнем бою — с преимуществом; по безрассудному — тоже. Верный прицел — одна атака с преимуществом
   const ea = econ(a.from);
@@ -5757,7 +5826,7 @@ function chestPlayer(k) {
     <div class="modal-actions"><button data-act="closeModal">Закрыть</button></div></div>`);
   const name = mine.name, upd = (o) => R.update(ref(gpath(`chests/${k}`)), o).catch((err) => app.toast(`Не удалось: ${esc(err.code || err.message)}`));
   const spend = () => { if (fight) R.update(ref(gpath(`econ/pc_${user.uid}`)), e.a && fast ? { b: 1 } : { a: 1 }).catch(() => {}); };
-  const check = (o) => app.mute(() => app.check(m.charId, o));
+  const check = (o) => app.mute(() => app.check(m.charId, { ...o, adv: helpCheck(`pc_${user.uid}`) }));
   const spring = () => {
     const T = C.trap, d = T.f ? rollExpr(T.f) : null;
     upd({ toff: true });
@@ -7512,6 +7581,9 @@ function renderTurn() {
         : `${btn('hide', '🫥 Спрятаться', 'Действие: Скрытность СЛ 15. Нужно, чтобы вас не видел ни один враг — густой туман, тьма или укрытие ¾', !e.a)}
       ${btn('hideB', '🫥 Спрятаться бонусным', 'Хитрое действие: Спрятаться бонусным действием', mv.bonus.includes('hide') && !e.b)}`}
       ${btn('seek', '🔎 Поиск', 'Действие: Внимательность против Скрытности спрятавшихся врагов, чьё место вы видите', !e.a)}
+      ${btn('help', '🤝 Помощь', 'Действие: союзник атакует врага рядом с вами с преимуществом или получает преимущество на проверку', !e.a)}
+      ${e.ready ? `<span class="small muted">⏳ Подготовлено: ${esc(e.ready.n)} (≤${e.ready.ft} фт)</span><button data-tbl="readyOff" data-id="${id}" title="Отменить подготовленную атаку">✕</button>`
+        : btn('ready', '⏳ Подготовить', 'Действие: атака реакцией, когда враг подойдёт на заданное расстояние (до начала вашего следующего хода)', !e.a)}
       ${btn('stand', `⬆ Встать (${half} фт)`, 'Тратит половину скорости и снимает «Лежит ничком»', mv.prone && !dm && mv.speed > 0 && mv.left >= half)}
     </div>` : ''}
     ${!dm && canAct && turn ? classActsHtml(id, e) : ''}
@@ -8276,6 +8348,9 @@ async function onClick(e) {
     else if (a === 'logClear') { if (app.confirm('Очистить журнал для всех?')) await R.remove(ref(gpath('log'))); }
     else if (['eco', 'dash', 'dashB', 'dis', 'disB', 'dodge', 'stand'].includes(a)) await econAct(a, b.dataset.id, b.dataset.k);
     else if (['hide', 'hideB', 'seek'].includes(a)) stealthAct(a, b.dataset.id);
+    else if (a === 'help') helpAct(b.dataset.id);
+    else if (a === 'ready') readyAct(b.dataset.id);
+    else if (a === 'readyOff') { R.update(ref(gpath(`econ/${b.dataset.id}`)), { ready: null }).catch(() => {}); }
     else if (/^c(Rage|Reck|Wind|Surge|Flurry|Steady|Turn|Insp|Innate|Spark|Loh|Wild|WildEnd|Patient|Portent|Elem|ElemOff|Burst|Sense|Sacred|Vow|Wrath|Abjure|InspSmite|Preserve|Dawn|Guided|Mantle|LandAid|Sea|SeaHit|Star|StarOff|ShadowStep|HealHand|FeyStep|HealLight|Bastion|Trance|TranceOff|Clair)$/.test(a)) classAction(a, b.dataset.id, b.dataset.k);
     else if (a === 'initDel') await removeFromInit(b.dataset.id);
     else if (a === 'unsel') { selId = null; renderSide(); renderTokens(); }

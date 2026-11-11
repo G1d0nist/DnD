@@ -637,7 +637,7 @@ window.dndApp = {
     if (state.current !== id) state.current = id;
     const c = ch(), S = o.skill && SKILLS.find((s) => s.k === o.skill), abil = S ? S.a : o.abil;
     const tool = !!o.tool && (c.profs.tools || []).some((t) => new RegExp(o.tool, 'i').test(t));
-    const r = rollD20(`${o.label}${tool ? ' (с инструментами)' : ''}`, (S ? skillBonus(c, S) : am(c, abil)) + (tool ? pb(c) : 0), { kind: 'check', abil, ...(S ? { skill: S.k } : {}), dc: o.dc });
+    const r = rollD20(`${o.label}${tool ? ' (с инструментами)' : ''}`, (S ? skillBonus(c, S) : am(c, abil)) + (tool ? pb(c) : 0), { kind: 'check', abil, ...(S ? { skill: S.k } : {}), dc: o.dc, adv: o.adv });
     save(); render();
     return { total: r.total, ok: r.total >= o.dc, tool };
   },
