@@ -310,7 +310,7 @@ window.dndApp = {
         oath: clsLvl(c, 'Паладин') >= 7 ? (classList(c).find((e) => e.cls === 'Паладин') || {}).sub || '' : '' } : null,
       wild: !!(c.shape && !c.shape.poly), ward: +cb.ward || 0, wardMax: wardMax(c),
       // Сопротивления для стола: из поля «Сопротивления…» листа и умений (Психическая защита аберрантного разума)
-      resist: charResists(c),
+      ...(({ res, imm, vuln, cimm }) => ({ resist: res, immune: imm, vuln, cimm }))(charDefenses(c)),
       // Все спасброски — союзник перебрасывает ваш спасбросок (Контрочарование барда)
       sv: Object.fromEntries(ABILITIES.map((a) => [a.k, saveBonus(c, a.k)])),
       // Рефлексы вора (плут-вор 17): два хода в первом раунде боя
@@ -417,8 +417,10 @@ window.dndApp = {
     const M = clsLvl(c, 'Монах'), focus = c.resources.find((x) => x.auto === 'focus');
     return {
       maneuvers: sup ? ((c.cpicks || {}).man || []) : [], supLeft: sup ? sup.max - sup.used : 0, supDie: supDie(c),
-      smiteSlots: smites.flatMap((sp) => slotOptions(c, sp).filter((s) => s.left > 0 && s.key !== 'ritual' && (s.key !== 'free' || sp.always))
-        .map((s) => ({ key: `${sp.e}|${s.key}`, label: `${sp.n}: ${s.label}` }))),
+      // Без ячейки — только Божественная кара паладина (Кара паладина, 2024): раз до долгого отдыха
+      smiteSlots: smites.flatMap((sp) => slotOptions(c, sp).filter((s) => s.left > 0 && s.key !== 'ritual'
+        && (s.key !== 'free' || (sp.e === 'Divine Smite' && clsLvl(c, 'Паладин') >= 2 && !c.combat.freeSmite)))
+        .map((s) => ({ key: `${sp.e}|${s.key}`, label: `${sp.n}: ${s.key === 'free' ? 'без ячейки (раз до долгого отдыха)' : s.label}` }))),
       sneak: Math.ceil(clsLvl(c, 'Плут') / 2),
       shieldSlots: shield ? slotOptions(c, shield).filter((s) => s.left > 0 && s.key !== 'free' && s.key !== 'ritual') : [], shieldId: shield ? shield.id : '',
       grapDC: 8 + am(c, 'str') + pb(c), svStr: saveBonus(c, 'str'), svDex: saveBonus(c, 'dex'),
@@ -850,6 +852,7 @@ window.dndApp = {
       const smSpell = o.smite && c.spells.find((s) => s.e === smE), SM = SMITES[smE];
       if (hit && smSpell && SM && !A.spell) {
         smite = spendSlot(c, smSpell, smKey).castLvl || +smSpell.l || 1; smiteE = smE; smiteDc = spellDCFor(c, smSpell);
+        if (smKey === 'free' && smE === 'Divine Smite') c.combat.freeSmite = true;
         const k = Math.max(0, smite - (+smSpell.l || 1)), dice = SM.f ? scaleUp(SM.f, SM.up, k) : '';
         if (dice) expr += `+${X(dice)}`;
         extra.push(`${smSpell.n} (${smite} ур.)`);
@@ -919,15 +922,12 @@ function classList(c) {
     .filter((e) => { if (!e.cls) return !!e.primary; if (seen.has(e.cls)) return false; seen.add(e.cls); return true; })
     .map((e) => ({ ...e, sub: subAllowed(e) ? e.sub : '' }));
 }
-// Сопротивления персонажа: часть поля «Сопротивления, иммунитеты, уязвимости» после слова «сопротивл…» до «иммун…»/«уязвим…»
-const RES_KEYS = [[/огн/, 'fire'], [/холод/, 'cold'], [/электр|молни/, 'lightning'], [/звук|гром/, 'thunder'], [/кисл/, 'acid'], [/яд/, 'poison'],
-  [/дробящ|колющ|рубящ|физич/, 'bps'], [/излуч/, 'radiant'], [/некрот/, 'necrotic'], [/психи/, 'psychic'], [/силов/, 'force']];
-function charResists(c) {
-  const out = new Set(), txt = String(c.combat.defenses || '').toLowerCase();
-  (txt.match(/сопротивл[^]*?(?=иммун|уязвим|$)/g) || []).forEach((seg) => RES_KEYS.forEach(([re, k]) => { if (re.test(seg)) out.add(k); }));
+// Защиты персонажа для стола: поле «Сопротивления, иммунитеты, уязвимости» (parseDefenses) и умения
+function charDefenses(c) {
+  const d = parseDefenses(c.combat.defenses);
   // Аберрантный разум 6+: Психическая защита — сопротивление психическому урону
-  if (classList(c).some((e) => e.cls === 'Чародей' && e.sub === 'Аберрантный разум' && e.lvl >= 6)) out.add('psychic');
-  return [...out];
+  if (classList(c).some((e) => e.cls === 'Чародей' && e.sub === 'Аберрантный разум' && e.lvl >= 6) && !d.res.includes('psychic')) d.res.push('psychic');
+  return d;
 }
 // Подкласс персонажа в классе (пусто, если класса нет)
 const subOf = (c, cls) => (classList(c).find((e) => e.cls === cls) || {}).sub || '';
@@ -3247,7 +3247,7 @@ function doLongRest(c) {
   c.effects = []; endConc(c); pendingConc = 0;
   c.shape = null;
   // Магическая защита гаснет до первого заклинания ограждения; Предзнаменование — новые к20
-  cb.ward = 0; cb.wardOn = false; cb.relentless = 0; cb.starForm = ''; cb.trance = false;
+  cb.ward = 0; cb.wardOn = false; cb.relentless = 0; cb.starForm = ''; cb.trance = false; cb.freeSmite = false;
   cb.portent = portentN(c) ? Array.from({ length: portentN(c) }, () => die(20)) : [];
   if (cb.portent.length) toast(`🔮 Предзнаменование: ${cb.portent.join(', ')}`);
   c.slots.forEach((s) => { s.used = 0; }); c.pact.used = 0;

@@ -172,7 +172,7 @@ function subscribe(gid, code) {
   on(`abilEdit/${user.uid}`, (v) => { if (v && v.abil) applyAbilEdit(v); });
   on('tokens', (v) => { game.tokens = v || {}; cleanupInit(); syncEffects(); hideWatch(); awardKills(); zoneTick(); concWatch(); undoTrack(); });
   on('map', (v) => { game.map = v || {}; drawTerrain(); });
-  on('init', (v) => { game.init = v; checkMyTurn(); checkNpcTurn(); cleanupInit(); syncEffects(); zoneTurn(); });
+  on('init', (v) => { game.init = v; checkMyTurn(); checkNpcTurn(); cleanupInit(); syncEffects(); zoneTurn(); dotTurn(); });
   on('econ', (v) => { game.econ = v || {}; undoTrack(); });
   on('cs', (v) => { game.cs = v || {}; csCheck(); notifyCs(); });
   on('log', (v) => { game.log = v || {}; applyLog(); notifyLog(); fxLog(); fightTally(); });
@@ -1599,6 +1599,23 @@ function npcAttackRoll(t, A, o) {
   return { total, nat, detail, hit, crit, dmg: d ? d.total : 0, dmgDetail: d ? d.detail : '', type: A.type };
 }
 // Начало хода существа (браузер мастера): перезарядка способностей — к6
+// Урон в начале хода от эффектов: dot { f — кости, dtype, save/dc — спасбросок после урона, успех снимает эффект }.
+// Бросает браузер того, чей ход: игрок — за своего персонажа, мастер — за существ
+const dotDone = new Set();
+function dotTurn() {
+  const cur = currentEntry();
+  if (!cur || !user) return;
+  const id = cur.tokenId || cur.id, t = game.tokens[id];
+  if (!t || !ownsTarget(t) || isDead(t)) return;
+  const key = `${game.id}:${game.init.round}:${game.init.turn}:${id}`;
+  if (dotDone.has(key) || ls.get('dnd55-dot') === key) return;
+  dotDone.add(key); ls.set('dnd55-dot', key);
+  fxOf(id).filter(([, e]) => e.dot && e.dot.f).forEach(([k, e]) => {
+    const r = rollExpr(e.dot.f);
+    addLog({ kind: 'dmg', who: e.n, txt: `${e.n}: урон в начале хода`, tgt: id, tgtName: t.name, dmg: r.total, dtype: e.dot.dtype || '', detail: r.detail, from: e.from || null });
+    if (e.dot.save) saveRequest(id, { n: `${e.n}: спасбросок`, who: e.n, abil: e.dot.save, dc: +e.dot.dc || 13, rem: k, from: e.from || null });
+  });
+}
 function checkNpcTurn() {
   const cur = currentEntry();
   if (!cur || !isDM()) return;
@@ -1887,11 +1904,13 @@ function smiteRider(res, from, tid, src) {
     case 'Blinding Smite': saveRequest(tid, { n: n + 'Ослепляющая кара', who: src.name, abil: 'con', dc, from, ...conc, fail: { n: 'Ослепляющая кара', ic: '🙈', cond: 'blinded' }, rep: { abil: 'con', dc } }); break;
     case 'Staggering Smite': saveRequest(tid, { n: n + 'Оглушающая кара', who: src.name, abil: 'wis', dc, from, fail: { n: 'Оглушающая кара', ic: '💫', cond: 'stunned', rounds: 1 } }); break;
     case 'Ensnaring Strike':
-      if ((T.size || 1) <= 3) saveRequest(tid, { n: n + 'Опутывающий удар', who: src.name, abil: 'str', dc, from, ...conc, fail: { n: 'Опутывающий удар', ic: '🌿', cond: 'restrained' }, rep: { abil: 'str', dc } });
-      addLog({ kind: 'sys', txt: `🌿 Опутанная цель получает 1к6 колющего урона в начале каждого своего хода — мастер наносит его вручную` });
+      // Опутанная цель получает 1к6 колющего (+1к6 за уровень ячейки выше 1) в начале каждого своего хода
+      if ((T.size || 1) <= 3) saveRequest(tid, { n: n + 'Опутывающий удар', who: src.name, abil: 'str', dc, from, ...conc,
+        fail: { n: 'Опутывающий удар', ic: '🌿', cond: 'restrained', dot: { f: `${Math.max(1, +res.smite || 1)}d6`, dtype: 'колющим' } }, rep: { abil: 'str', dc } });
       break;
     case 'Shining Smite': addEffect(tid, { n: 'Сияющая кара', ic: '🔆', lit: true, glow: { b: 5, d: 0 }, by: user.uid, from, ...conc, ...(R1 ? { until: R1 + 9 } : {}) }); break;
-    case 'Searing Smite': addLog({ kind: 'sys', txt: `🔥 ${T.name} горит: 1к6 огнём в начале каждого своего хода, потом спасбросок Телосложения СЛ ${dc} — успех гасит пламя (мастер ведёт вручную)` }); break;
+    // Палящая кара: цель горит — 1к6 огнём в начале каждого своего хода, затем спасбросок Телосложения, успех гасит пламя
+    case 'Searing Smite': addEffect(tid, { n: 'Палящая кара', ic: '🔥', dot: { f: '1d6', dtype: 'огнём', save: 'con', dc }, by: user.uid, from, ...(R1 ? { until: R1 + 9 } : {}) }); break;
     case 'Banishing Smite':
       if ((+T.hp || 0) - (res.dmg || 0) <= 50) addEffect(tid, { n: 'Изгоняющая кара', ic: '🌀', banish: true, by: user.uid, from, ...conc });
       break;
@@ -2329,8 +2348,8 @@ function applyLog() {
     const t = e.tgt && game.tokens[e.tgt];
     if (!(e.dmg || e.heal) || e.applied || !t || applying.has(e.k)) return;
     // Сопротивление (Каменная кожа, Защита от энергии): половина
-    const dmgR = e.dmg && resists(e.tgt, e.dtype || e.type) ? Math.floor(e.dmg / 2) : e.dmg;
-    if (dmgR !== e.dmg) app.toast(`🛡 ${esc(t.name)}: сопротивление — ${e.dmg} → ${dmgR}`);
+    const dmgR = e.dmg ? dmgAdj(e.tgt, e.dtype || e.type, e.dmg) : e.dmg;
+    if (dmgR !== e.dmg) app.toast(`🛡 ${esc(t.name)}: ${dmgR === 0 ? 'иммунитет' : dmgR > e.dmg ? 'уязвимость' : 'сопротивление'} — ${e.dmg} → ${dmgR}`);
     if (t.kind === 'npc' ? !isDM() : t.owner !== user.uid) return;
     applying.add(e.k);
     const upd = { [`log/${e.k}/applied`]: true };
@@ -2723,7 +2742,9 @@ function clearView(aid, tid) {
   return !cov.total && cov.bonus < 5;
 }
 // Пассивная Внимательность: персонаж — из листа, существо — 10 + мод. Мудрости
-const passivePer = (id) => { const t = game.tokens[id]; if (!t) return 10; return t.kind === 'pc' && !t.comp ? +(charOf(t) || {}).pp || 10 : +t.pp || 10 + abMod((t.ab || [])[4]); };
+// Навык существа: из бестиария (MON_SKILL) или модификатор характеристики (Скрытность — Ловкость, Внимательность — Мудрость)
+const npcSkill = (t, k) => { const v = (((typeof MON_SKILL !== 'undefined' && MON_SKILL[t.mon]) || {})[k]); return v != null ? +v : abMod((t.ab || [])[k === 's' ? 1 : 4]); };
+const passivePer = (id) => { const t = game.tokens[id]; if (!t) return 10; return t.kind === 'pc' && !t.comp ? +(charOf(t) || {}).pp || 10 : +t.pp || 10 + npcSkill(t, 'p'); };
 function stealthAct(a, id) {
   const t = game.tokens[id], m = me(), fight = inFight();
   if (!t || !canMove(t)) return;
@@ -2732,7 +2753,7 @@ function stealthAct(a, id) {
     // Поиск: Внимательность против Скрытности спрятавшихся врагов, чьё место видно
     let total;
     if (pc) { const r = m && m.charId && app.mute(() => app.check(m.charId, { skill: 'perception', dc: 0, label: 'Поиск (Внимательность)' })); if (!r) return; total = r.total; }
-    else { const d = die(20); total = d + abMod((t.ab || [])[4]); }
+    else { const d = die(20); total = d + npcSkill(t, 'p'); }
     eu({ a: 1 });
     const found = Object.entries(game.tokens).filter(([k, o]) => k !== id && hostile(t, o) && hidOf(k) && clearView(id, k) && total >= hidOf(k).v);
     found.forEach(([k]) => R.remove(ref(gpath(`effects/${hidOf(k).k}`))).catch(() => {}));
@@ -2748,7 +2769,7 @@ function stealthAct(a, id) {
   }
   let total;
   if (pc) { const r = m && m.charId && app.mute(() => app.check(m.charId, { skill: 'stealth', dc: 15, label: 'Спрятаться (Скрытность)' })); if (!r) return; total = r.total; }
-  else { const d = die(20); total = d + abMod((t.ab || [])[1]); }
+  else { const d = die(20); total = d + npcSkill(t, 's'); }
   eu(a === 'hideB' ? { b: 1 } : { a: 1 });
   if (total < 15) { addLog({ kind: 'act', who: t.name, txt: `🫥 пытается спрятаться — Скрытность ${total}, не вышло (нужно 15)`, ...(pc ? {} : { dmOnly: true }) }); return; }
   addEffect(id, { n: `Спрятался (${total})`, ic: '🫥', cond: 'invisible', hide: total, breakAct: true, by: user.uid, from: id });
@@ -4498,7 +4519,7 @@ function saveMine(k, tid) {
 function saveFinish(k, tid, r) {
   const A = game.areas[k], t = game.tokens[tid], m = me();
   if (!A || !t || !m || !(A.tg || {})[tid] || A.tg[tid].done) return;
-  const dmg0 = saveDmg(A, r.ok, !t.comp && (app.summary(m.charId) || {}).evasion), dmg = resists(tid, A.dtype) ? Math.floor(dmg0 / 2) : dmg0;
+  const dmg0 = saveDmg(A, r.ok, !t.comp && (app.summary(m.charId) || {}).evasion), dmg = dmgAdj(tid, A.dtype, dmg0);
   R.update(ref(gpath(`areas/${k}/tg/${tid}`)), { done: true, ok: r.ok, roll: r.total, dmg }).catch(() => {});
   if (dmg) { if (t.comp) app.compHp(m.charId, t.comp, -dmg); else app.takeDamage(m.charId, dmg); }
   saveOutcome(A, tid, r.ok);
@@ -4553,7 +4574,7 @@ function saveNpcs(k) {
     const lr = +t.lr || 0;
     if (!ok && A.fail && lr > 0) { ok = true; upd[`tokens/${id}/lr`] = lr - 1; note += ` → 👑 Легендарное сопротивление (осталось ${lr - 1})`; }
     saveOutcome(A, id, ok);
-    const dmg0 = saveDmg(A, ok, false), dmg = resists(id, A.dtype) ? Math.floor(dmg0 / 2) : dmg0, du = dmg ? npcDamageUpd(id, t, dmg, false) : {};
+    const dmg0 = saveDmg(A, ok, false), dmg = dmgAdj(id, A.dtype, dmg0), du = dmg ? npcDamageUpd(id, t, dmg, false) : {};
     const after = { ...t, hp: du[`tokens/${id}/hp`] ?? t.hp, dsF: du[`tokens/${id}/dsF`] ?? t.dsF }, died = !!dmg && isDead(after) && !isDead(t);
     upd[`areas/${k}/tg/${id}`] = { done: true, ok, roll: total, dmg };
     Object.assign(upd, du);
@@ -5011,12 +5032,33 @@ const SPELL_FX = {
 window.dndTableFx = SPELL_FX;
 // Виды урона для сопротивлений: слово в записи урона → ключ
 const DMG_KEY = [[/огн/, 'fire'], [/холод/, 'cold'], [/электр|молни/, 'lightning'], [/звук|гром/, 'thunder'], [/кисл/, 'acid'], [/яд/, 'poison'], [/дробящ|колющ|рубящ/, 'bps'],
+  [/дробящ/, 'bludgeoning'], [/колющ/, 'piercing'], [/рубящ/, 'slashing'],
   [/излуч/, 'radiant'], [/некрот/, 'necrotic'], [/психи/, 'psychic'], [/силов/, 'force']];
 const dmgKeys = (t) => DMG_KEY.filter(([re]) => re.test(String(t || '').toLowerCase())).map(([, k]) => k);
 // Сопротивление цели этому урону (от заклинаний): половина
-// …и сопротивления персонажа из листа (поле «Сопротивления», Психическая защита)
-const resists = (id, dtype) => { const ks = dmgKeys(dtype), t = game.tokens[id]; return ks.length > 0 && (fxOf(id).some(([, e]) => (e.resist || []).some((r) => ks.includes(r))) || (auraBuff(id).resist || []).some((r) => ks.includes(r))
-  || (t && t.kind === 'pc' && !t.comp ? (charOf(t) || {}).resist || [] : []).some((r) => ks.includes(r))); };
+// Защиты существа: персонаж — из листа (сопротивления, иммунитеты, уязвимости, иммунитеты к состояниям), существо — из текста особенностей бестиария
+const defsCache = new Map();
+function defsOf(id) {
+  const t = game.tokens[id];
+  if (!t) return { res: [], imm: [], vuln: [], cimm: [] };
+  if (t.kind === 'pc' && !t.comp) { const c = charOf(t) || {}; return { res: c.resist || [], imm: c.immune || [], vuln: c.vuln || [], cimm: c.cimm || [] }; }
+  const src = `${t.tr || ''}\n${t.defs || ''}`;
+  if (!defsCache.has(src)) defsCache.set(src, parseDefenses(src));
+  return defsCache.get(src);
+}
+// …и сопротивления из листа и бестиария
+const resists = (id, dtype) => { const ks = dmgKeys(dtype); return ks.length > 0 && (fxOf(id).some(([, e]) => (e.resist || []).some((r) => ks.includes(r))) || (auraBuff(id).resist || []).some((r) => ks.includes(r))
+  || defsOf(id).res.some((r) => ks.includes(r))); };
+// Урон с учётом защит (2024): иммунитет — 0; сопротивление — вдвое меньше, потом уязвимость — вдвое больше
+function dmgAdj(id, dtype, n) {
+  if (!(n > 0)) return n;
+  const ks = dmgKeys(dtype), D = defsOf(id);
+  if (!ks.length) return n;
+  if (D.imm.some((r) => ks.includes(r))) return 0;
+  let v = resists(id, dtype) ? Math.floor(n / 2) : n;
+  if (D.vuln.some((r) => ks.includes(r))) v *= 2;
+  return v;
+}
 // Ауры-благословения (Святая аура, Круг силы, Мантия крестоносца, Аура жизни): союзники заклинателя внутри области
 function auraBuff(id) {
   const t = game.tokens[id], out = {};
@@ -5081,6 +5123,8 @@ const ownsTarget = (t) => (t.kind === 'pc' ? user && t.owner === user.uid : isDM
 function setTokCond(id, cond, on) {
   const t = game.tokens[id];
   if (!t || !cond) return;
+  // Иммунитет к состоянию — из листа или особенностей существа (скелет не отравляется)
+  if (on && defsOf(id).cimm.includes(cond)) { if (!(t.cond || []).includes(cond)) floatText(id, `иммунитет: ${condName(cond).toLowerCase()}`, 'fx-heal'); return; }
   // Аура отваги / Аура преданности паладина: иммунитет к испугу / очарованию, пока существо в ауре
   if (on && ((cond === 'frightened' && auraBuff(id).noFear) || (cond === 'charmed' && auraBuff(id).noCharm))) {
     if (!(t.cond || []).includes(cond)) floatText(id, cond === 'frightened' ? 'не испуган' : 'не очарован', 'fx-heal');

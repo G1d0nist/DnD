@@ -413,6 +413,28 @@ BESTIARY.push(
 ['Commoner', 'Guard', 'Veteran', 'Knight', 'Noble', 'Acolyte', 'Scout', 'Priest', 'Mage', 'Spy', 'Berserker', 'Druid', 'Cult Fanatic', 'Gladiator', 'Assassin', 'Archmage'].forEach((e) => { const m = BESTIARY.find((x) => x.e === e); if (m) m.cat = 'npc'; });
 // Легендарные действия и сопротивление; заклинания среди действий (sp — уровень, их можно прервать «Контрзаклинанием»);
 // cs — сколько раз существо может само сотворить «Контрзаклинание», sdc — СЛ его заклинаний
+// Навыки существ для стола: s — Скрытность, p — Внимательность (бонусы из статблоков SRD). Нет в списке — модификатор Ловкости / Мудрости
+const MON_SKILL = {
+  Goblin: { s: 6 }, 'Goblin Boss': { s: 6 }, Bugbear: { s: 6 }, Guard: { p: 2 }, Veteran: { p: 2 }, Scout: { s: 6, p: 5 }, Spy: { s: 4, p: 6 }, Assassin: { s: 9, p: 3 },
+  Drow: { s: 4, p: 2 }, Lizardfolk: { s: 4, p: 3 }, Sahuagin: { p: 5 }, Merfolk: { p: 2 }, Druid: { p: 4 }, Centaur: { p: 3 },
+  Wolf: { s: 4, p: 5 }, 'Dire Wolf': { s: 4, p: 5 }, Worg: { p: 4 }, 'Winter Wolf': { s: 3, p: 5 }, 'Blink Dog': { s: 5, p: 3 }, 'Hell Hound': { p: 5 }, 'Death Dog': { s: 4, p: 5 },
+  Mastiff: { p: 3 }, 'Giant Hyena': { p: 3 }, Cat: { s: 4, p: 3 }, Owl: { s: 5, p: 5 }, Hawk: { p: 6 }, Raven: { p: 3 }, Frog: { s: 3, p: 1 }, 'Giant Frog': { s: 3, p: 2 },
+  Panther: { s: 7, p: 4 }, Tiger: { s: 6, p: 3 }, Lion: { s: 6, p: 3 }, 'Saber-Toothed Tiger': { s: 6, p: 5 }, 'Black Bear': { p: 5 }, 'Brown Bear': { p: 5 }, 'Polar Bear': { p: 5 },
+  Ape: { p: 3 }, 'Giant Ape': { p: 4 }, 'Giant Eagle': { p: 4 }, Crocodile: { s: 2 }, 'Giant Crocodile': { s: 5 }, 'Giant Octopus': { s: 5, p: 4 }, 'Reef Shark': { p: 2 },
+  'Hunter Shark': { p: 2 }, 'Giant Shark': { p: 3 }, 'Killer Whale': { p: 3 }, Allosaurus: { p: 5 }, 'Tyrannosaurus Rex': { p: 4 },
+  'Giant Spider': { s: 7, p: 4 }, 'Giant Wolf Spider': { s: 7, p: 3 }, 'Phase Spider': { s: 6 }, Ettercap: { s: 4, p: 3 }, Drider: { s: 9, p: 5 },
+  'Displacer Beast': { s: 6 }, Owlbear: { p: 5 }, Griffon: { p: 5 }, Hippogriff: { p: 5 }, Pegasus: { p: 6 }, Wyvern: { p: 4 }, Chimera: { p: 8 }, Hydra: { p: 6 },
+  Behir: { s: 7, p: 6 }, Bulette: { p: 6 }, Gorgon: { p: 4 }, Roc: { p: 4 }, Chuul: { p: 4 }, Roper: { s: 5, p: 6 }, Cloaker: { s: 5 }, Mimic: { s: 5 }, Darkmantle: { s: 3 },
+  'Shambling Mound': { s: 2 }, Minotaur: { p: 7 }, Troll: { p: 2 }, Ettin: { p: 4 }, 'Hill Giant': { p: 2 }, 'Stone Giant': { p: 4 }, 'Frost Giant': { p: 3 },
+  'Fire Giant': { p: 6 }, 'Cloud Giant': { p: 7 }, 'Storm Giant': { p: 9 },
+  Werewolf: { s: 3, p: 4 }, Wererat: { s: 4, p: 2 }, Weretiger: { s: 4, p: 5 }, Shadow: { s: 4 }, Wight: { s: 4, p: 3 }, 'Vampire Spawn': { s: 6, p: 3 },
+  Vampire: { s: 9, p: 7 }, Lich: { p: 9 }, Aboleth: { p: 10 }, Imp: { s: 5 }, Quasit: { s: 5 }, Succubus: { s: 7, p: 5 }, 'Night Hag': { s: 6, p: 6 },
+  'Green Hag': { s: 3, p: 3 }, Medusa: { s: 5, p: 4 }, Oni: { p: 4 }, Sprite: { s: 8, p: 3 }, Satyr: { s: 5, p: 2 }, Dryad: { s: 5, p: 4 }, 'Invisible Stalker': { s: 10, p: 8 },
+  // Драконы — по возрасту (у красных чуть выше)
+  ...Object.fromEntries(['White', 'Black', 'Green', 'Blue', 'Brass', 'Copper', 'Bronze', 'Silver', 'Gold', 'Red'].flatMap((c) => [
+    [`${c} Dragon Wyrmling`, { s: 2, p: 4 }], [`Young ${c} Dragon`, c === 'Red' ? { s: 4, p: 8 } : { s: 3, p: 6 }],
+    [`Adult ${c} Dragon`, c === 'Red' ? { s: 6, p: 13 } : { s: 5, p: 12 }], [`Ancient ${c} Dragon`, c === 'Red' ? { s: 7, p: 16 } : { s: 7, p: 15 }]])),
+};
 const MONX = { 'Aboleth': { leg: 3, lr: 3 }, 'Adult Red Dragon': { leg: 3, lr: 3 }, 'Mage': { cs: 3, sdc: 14 }, 'Priest': { sdc: 13 },
   'Archmage': { cs: 3, sdc: 17 }, 'Druid': { sdc: 12 }, 'Spirit Naga': { sdc: 14 }, 'Lich': { leg: 3, lr: 3, cs: 3, sdc: 20 }, 'Vampire': { leg: 3, lr: 3 },
   'Mummy Lord': { leg: 3, lr: 3, sdc: 17 }, 'Unicorn': { leg: 3 }, 'Solar': { leg: 3 }, 'Kraken': { leg: 3, lr: 3 }, 'Tarrasque': { leg: 3, lr: 3 }, 'Pit Fiend': { lr: 4 } };

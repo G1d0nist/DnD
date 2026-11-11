@@ -1,6 +1,24 @@
 // Справочные данные D&D 5.5 (Player's Handbook 2024 / SRD 5.2). Описания сокращены.
 'use strict';
 
+// Защиты из текста («Сопротивление огню; иммунитет к яду и отравлению; уязвимость к дробящему урону»):
+// res, imm, vuln — виды урона (ключи стола), cimm — состояния, к которым иммунитет. Общий разбор для листа и бестиария
+const DEF_DMG = [[/огн/, 'fire'], [/холод/, 'cold'], [/электр|молни/, 'lightning'], [/звук|гром/, 'thunder'], [/кисл/, 'acid'], [/яд(?!ов)|ядом|яду/, 'poison'],
+  [/дробящ/, 'bludgeoning'], [/колющ/, 'piercing'], [/рубящ/, 'slashing'], [/физич|немагическ/, 'bps'], [/излуч/, 'radiant'], [/некрот/, 'necrotic'], [/психи/, 'psychic'], [/силов/, 'force']];
+const DEF_COND = [[/очаров/, 'charmed'], [/испуг/, 'frightened'], [/отравлен/, 'poisoned'], [/паралич|парализ/, 'paralyzed'], [/ошеломл/, 'stunned'],
+  [/ничком|сбит/, 'prone'], [/ослепл/, 'blinded'], [/оглох|оглуш/, 'deafened'], [/схвач|захват/, 'grappled'], [/опутан/, 'restrained'], [/окамен/, 'petrified'], [/недееспособ/, 'incapacitated']];
+function parseDefenses(text) {
+  const out = { res: [], imm: [], vuln: [], cimm: [] }, add = (k, v) => { if (!out[k].includes(v)) out[k].push(v); };
+  String(text || '').toLowerCase().split(/[.;\n]/).forEach((seg) => {
+    // В одном предложении может быть несколько частей: «сопротивление огню, иммунитет к яду»
+    (seg.match(/(сопротивл|иммун|уязвим)[^]*?(?=сопротивл|иммун|уязвим|$)/g) || []).forEach((part) => {
+      const kind = /^сопротивл/.test(part) ? 'res' : /^иммун/.test(part) ? 'imm' : 'vuln';
+      DEF_DMG.forEach(([re, k]) => { if (re.test(part)) add(kind, k); });
+      if (kind === 'imm') DEF_COND.forEach(([re, k]) => { if (re.test(part)) add('cimm', k); });
+    });
+  });
+  return out;
+}
 const ABILITIES = [
   { k: 'str', n: 'Сила', s: 'СИЛ' },
   { k: 'dex', n: 'Ловкость', s: 'ЛОВ' },
