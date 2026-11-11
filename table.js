@@ -155,7 +155,7 @@ function subscribe(gid, code) {
   on('lights', (v) => { game.lights = v || {}; drawTerrain(); });
   on('notes', (v) => { game.notes = v || {}; drawTerrain(); });
   on('doors', (v) => { game.doors = v || {}; drawTerrain(); });
-  on('effects', (v) => { game.effects = v || {}; syncEffects(); undoTrack(); });
+  on('effects', (v) => { game.effects = v || {}; syncEffects(); hideWatch(); undoTrack(); });
   on('xp', (v) => { game.xp = v || {}; });
   on('scenes', (v) => { game.scenes = v || {}; });
   on('rest', (v) => { game.rest = v; handleRest(); });
@@ -170,7 +170,7 @@ function subscribe(gid, code) {
   on('members', (v) => { game.members = v || {}; syncEffects(); applyXp(); applyLoot(); handleRest(); syncChests(); abilSync(); });
   on('abilSeen', (v) => { game.abilSeen = v || {}; abilSync(); });
   on(`abilEdit/${user.uid}`, (v) => { if (v && v.abil) applyAbilEdit(v); });
-  on('tokens', (v) => { game.tokens = v || {}; cleanupInit(); syncEffects(); awardKills(); zoneTick(); concWatch(); undoTrack(); });
+  on('tokens', (v) => { game.tokens = v || {}; cleanupInit(); syncEffects(); hideWatch(); awardKills(); zoneTick(); concWatch(); undoTrack(); });
   on('map', (v) => { game.map = v || {}; drawTerrain(); });
   on('init', (v) => { game.init = v; checkMyTurn(); checkNpcTurn(); cleanupInit(); syncEffects(); zoneTurn(); });
   on('econ', (v) => { game.econ = v || {}; undoTrack(); });
@@ -915,7 +915,7 @@ function renderTokens() {
     const invis = (t.cond || []).includes('invisible'), banned = fxOf(id).some(([, e]) => e.banish);
     // Невидимый враг игрокам не виден; изгнанного на поле нет (мастер видит призрак)
     // Видение невидимого, истинное или слепое зрение вашего персонажа — невидимый враг виден (полупрозрачным)
-    if ((t.hidden && !isDM()) || fogHides(t) || cloudHides(t, id) || (invis && !isDM() && team(t) !== 'pc' && !seesInvis(`pc_${user.uid}`, id)) || (banned && !isDM())) return;
+    if ((t.hidden && !isDM()) || (hidOf(id) && !isDM() && team(t) !== 'pc') || fogHides(t) || cloudHides(t, id) || (invis && !isDM() && team(t) !== 'pc' && !seesInvis(`pc_${user.uid}`, id)) || (banned && !isDM())) return;
     seen.add(id);
     let el = box.querySelector(`[data-tok="${id}"]`);
     if (!el) { el = document.createElement('div'); el.className = 'tok'; el.dataset.tok = id; box.appendChild(el); }
@@ -2625,6 +2625,70 @@ function seesInvis(aid, tid) {
   if (!A || !T) return false;
   const s = sensesOf(aid), d = distFt(A, T);
   return s.si || (s.ts && d <= s.ts) || (s.bs && d <= s.bs) || fxOf(tid).some(([, e]) => e.lit);
+}
+/* ---------- Скрытность (2024): Спрятаться и Поиск ---------- */
+// Спрятавшийся носит эффект «Спрятался»: состояние «невидим», hide — итог Скрытности (СЛ для поиска).
+// Эффект пропадает при атаке или заклинании (breakAct), при Поиске врага и когда враг с ясным обзором замечает его пассивной Внимательностью
+const hidOf = (id) => { const f = fxOf(id).find(([, e]) => +e.hide); return f ? { k: f[0], v: +f[1].hide } : null; };
+// Ясно ли наблюдатель видит место существа (без учёта невидимости от пряток): не ослеплён, нет густого тумана или тьмы, укрытие меньше ¾
+function clearView(aid, tid) {
+  const A = game.tokens[aid], T = game.tokens[tid];
+  if (!A || !T || isDead(A) || incapTok(A) || (A.cond || []).includes('blinded')) return false;
+  const s = sensesOf(aid), d = distFt(A, T);
+  if (!(s.bs && d <= s.bs)) {
+    const v = lineVeil(A, T);
+    if (v === 'fog') return false;
+    if (v === 'dark' && !(s.ts && d <= s.ts) && !(s.ds && d <= s.ds)) return false;
+  }
+  const cov = coverOf(A, T, aid, tid);
+  return !cov.total && cov.bonus < 5;
+}
+// Пассивная Внимательность: персонаж — из листа, существо — 10 + мод. Мудрости
+const passivePer = (id) => { const t = game.tokens[id]; if (!t) return 10; return t.kind === 'pc' && !t.comp ? +(charOf(t) || {}).pp || 10 : +t.pp || 10 + abMod((t.ab || [])[4]); };
+function stealthAct(a, id) {
+  const t = game.tokens[id], m = me(), fight = inFight();
+  if (!t || !canMove(t)) return;
+  const pc = t.kind === 'pc' && !t.comp && !t.sum, eu = (u) => (fight ? R.update(ref(gpath(`econ/${id}`)), u).catch(() => {}) : null);
+  if (a === 'seek') {
+    // Поиск: Внимательность против Скрытности спрятавшихся врагов, чьё место видно
+    let total;
+    if (pc) { const r = m && m.charId && app.mute(() => app.check(m.charId, { skill: 'perception', dc: 0, label: 'Поиск (Внимательность)' })); if (!r) return; total = r.total; }
+    else { const d = die(20); total = d + abMod((t.ab || [])[4]); }
+    eu({ a: 1 });
+    const found = Object.entries(game.tokens).filter(([k, o]) => k !== id && hostile(t, o) && hidOf(k) && clearView(id, k) && total >= hidOf(k).v);
+    found.forEach(([k]) => R.remove(ref(gpath(`effects/${hidOf(k).k}`))).catch(() => {}));
+    addLog({ kind: 'act', who: t.name, txt: `🔎 ищет (Внимательность ${total})${found.length ? ` — находит: ${found.map(([, o]) => o.name).join(', ')}` : ' — никого не находит'}`, ...(isDM() && !found.length ? { dmOnly: true } : {}) });
+    return;
+  }
+  // Спрятаться: никто из врагов не должен ясно видеть (сильное заслонение или укрытие ¾)
+  const watchers = Object.entries(game.tokens).filter(([k, o]) => k !== id && hostile(t, o) && !isDead(o) && clearView(k, id));
+  if (watchers.length) {
+    const who = watchers.map(([, o]) => o.name).slice(0, 3).join(', ');
+    if (!isDM()) { app.toast(`🫥 Не спрятаться: вас видит ${esc(who)}. Нужны густой туман или тьма, либо укрытие ¾ от каждого врага`); return; }
+    if (!app.confirm(`${t.name} на виду у: ${who}. Всё равно спрятать?`)) return;
+  }
+  let total;
+  if (pc) { const r = m && m.charId && app.mute(() => app.check(m.charId, { skill: 'stealth', dc: 15, label: 'Спрятаться (Скрытность)' })); if (!r) return; total = r.total; }
+  else { const d = die(20); total = d + abMod((t.ab || [])[1]); }
+  eu(a === 'hideB' ? { b: 1 } : { a: 1 });
+  if (total < 15) { addLog({ kind: 'act', who: t.name, txt: `🫥 пытается спрятаться — Скрытность ${total}, не вышло (нужно 15)`, ...(pc ? {} : { dmOnly: true }) }); return; }
+  addEffect(id, { n: `Спрятался (${total})`, ic: '🫥', cond: 'invisible', hide: total, breakAct: true, by: user.uid, from: id });
+  addLog({ kind: 'act', who: t.name, txt: `🫥 прячется — Скрытность ${total}`, ...(pc ? {} : { dmOnly: true }) });
+}
+// Пассивная Внимательность: враг с ясным обзором и пассивной Внимательностью не ниже итога Скрытности замечает спрятавшегося.
+// Проверяет владелец спрятавшегося (игрок — своего персонажа, мастер — существ)
+const hideFound = new Set();
+function hideWatch() {
+  if (!game || !user) return;
+  Object.entries(game.effects || {}).forEach(([k, e]) => {
+    const T = game.tokens[e.tgt];
+    if (!+e.hide || !T || hideFound.has(k) || !ownsTarget(T)) return;
+    const spot = Object.entries(game.tokens).find(([id, o]) => id !== e.tgt && hostile(T, o) && clearView(id, e.tgt) && passivePer(id) >= +e.hide);
+    if (!spot) return;
+    hideFound.add(k);
+    R.remove(ref(gpath(`effects/${k}`))).catch(() => {});
+    addLog({ kind: 'act', who: spot[1].name, txt: `👁 замечает спрятавшегося: ${T.name} (пассивная Внимательность ${passivePer(spot[0])} против Скрытности ${e.hide})` });
+  });
 }
 // Густой туман или магическая тьма на линии между существами, включая их собственные клетки
 function obscuredBetween(A, T) {
@@ -7265,6 +7329,10 @@ function renderTurn() {
       ${btn('dodge', '🛡 Уклонение', 'Действие: до начала вашего следующего хода атаки по вам с помехой, спасброски Ловкости с преимуществом', !e.a && !e.dodge)}
       ${btn('dashB', '🏃 Рывок бонусным', 'Хитрое действие / Шаг ветра: Рывок бонусным действием', mv.bonus.includes('dash') && !e.b && mv.speed > 0)}
       ${btn('disB', '↩ Отход бонусным', 'Хитрое действие / Терпеливая оборона: Отход бонусным действием', mv.bonus.includes('dis') && !e.b && !e.dis)}
+      ${hidOf(id) ? `<span class="small muted" title="Пока вы спрятаны, враги вас не видят: ваши атаки с преимуществом, по вам — с помехой. Атака или заклинание раскрывают вас">🫥 Спрятан (${hidOf(id).v})</span>`
+        : `${btn('hide', '🫥 Спрятаться', 'Действие: Скрытность СЛ 15. Нужно, чтобы вас не видел ни один враг — густой туман, тьма или укрытие ¾', !e.a)}
+      ${btn('hideB', '🫥 Спрятаться бонусным', 'Хитрое действие: Спрятаться бонусным действием', mv.bonus.includes('hide') && !e.b)}`}
+      ${btn('seek', '🔎 Поиск', 'Действие: Внимательность против Скрытности спрятавшихся врагов, чьё место вы видите', !e.a)}
       ${btn('stand', `⬆ Встать (${half} фт)`, 'Тратит половину скорости и снимает «Лежит ничком»', mv.prone && !dm && mv.speed > 0 && mv.left >= half)}
     </div>` : ''}
     ${!dm && canAct && turn ? classActsHtml(id, e) : ''}
@@ -8018,6 +8086,7 @@ async function onClick(e) {
     else if (a === 'areaDel') await R.remove(ref(gpath(`areas/${b.dataset.k}`)));
     else if (a === 'logClear') { if (app.confirm('Очистить журнал для всех?')) await R.remove(ref(gpath('log'))); }
     else if (['eco', 'dash', 'dashB', 'dis', 'disB', 'dodge', 'stand'].includes(a)) await econAct(a, b.dataset.id, b.dataset.k);
+    else if (['hide', 'hideB', 'seek'].includes(a)) stealthAct(a, b.dataset.id);
     else if (/^c(Rage|Reck|Wind|Surge|Flurry|Steady|Turn|Insp|Innate|Spark|Loh|Wild|WildEnd|Patient|Portent|Elem|ElemOff|Burst|Sense|Sacred|Vow|Wrath|Abjure|InspSmite|Preserve|Dawn|Guided|Mantle|LandAid|Sea|SeaHit|Star|StarOff|ShadowStep|HealHand|FeyStep|HealLight)$/.test(a)) classAction(a, b.dataset.id, b.dataset.k);
     else if (a === 'initDel') await removeFromInit(b.dataset.id);
     else if (a === 'unsel') { selId = null; renderSide(); renderTokens(); }

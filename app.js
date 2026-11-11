@@ -297,7 +297,9 @@ window.dndApp = {
     return { name: (c.info.name || 'Без имени') + (c.shape ? ` (${c.shape.n})` : ''), img: c.info.portrait || '', poly: !!(c.shape && c.shape.poly), cls: classLabel(c), hp: +cb.hp || 0, hpMax: +cb.hpMax || 1, temp: +cb.temp || 0, ac: +cb.ac || 10,
       cond: [...cb.conditions, ...(cb.exhaustion ? [`истощение ${cb.exhaustion}`] : [])], conc: cb.conc || '', speed: curSpeed(c), init: initBonus(c), size: (c.shape && c.shape.size) || c.info.size || 'Средний', shapeSpd: c.shape ? String(c.shape.speed || '') : '',
       // Рывок и Отход бонусным действием: Хитрое действие плута, Шаг ветра / Терпеливая оборона монаха
-      bonus: clsLvl(c, 'Плут') >= 2 || clsLvl(c, 'Монах') >= 2 ? ['dash', 'dis'] : [], atks: attacksPerAction(c), evasion: hasEvasion(c), dsS: +cb.deathS || 0, dsF: +cb.deathF || 0,
+      bonus: [...(clsLvl(c, 'Плут') >= 2 || clsLvl(c, 'Монах') >= 2 ? ['dash', 'dis'] : []), ...(clsLvl(c, 'Плут') >= 2 ? ['hide'] : [])],
+      // Пассивная Внимательность — для поиска спрятавшихся на столе
+      pp: 10 + skillBonus(c, SKILLS.find((s) => s.k === 'perception')), atks: attacksPerAction(c), evasion: hasEvasion(c), dsS: +cb.deathS || 0, dsF: +cb.deathF || 0,
       dv: +((String(c.prof.senses || '').match(/тёмное зрение\D*(\d+)/i) || [])[1] || 0),
       // Спасброски Силы и Ловкости — цель захвата или толчка выбирает лучший
       svs: [saveBonus(c, 'str'), saveBonus(c, 'dex')], grapDC: 8 + am(c, 'str') + pb(c),
