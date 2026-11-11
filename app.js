@@ -438,7 +438,9 @@ window.dndApp = {
     const B = clsLvl(c, 'Варвар'), F = clsLvl(c, 'Воин'), M = clsLvl(c, 'Монах'), Rg = clsLvl(c, 'Плут');
     const unarmed = c.attacks.find((a) => /безоруж|боевые искусства/i.test(a.n));
     return {
-      rage: B ? { left: left('rage'), on: raging(c), dmg: rageDmg(c) } : null, reckless: B >= 2,
+      rage: B ? { left: left('rage'), on: raging(c), dmg: rageDmg(c), lvl: B, sub: (classList(c).find((e) => e.cls === 'Варвар') || {}).sub || '' } : null, reckless: B >= 2,
+      // Воин: уровень и подкласс (Тактический сдвиг 5, Изученные атаки 13, Чемпион: Выживший 18)
+      fighter: F ? { lvl: F, sub: (classList(c).find((e) => e.cls === 'Воин') || {}).sub || '', con: am(c, 'con') } : null,
       secondWind: F ? { left: left('secondWind') } : null, surge: F >= 2 ? { left: left('actionSurge') } : null,
       flurry: M >= 2 && unarmed ? { focus: left('focus'), n: M >= 10 ? 3 : 2, atk: unarmed.id } : null,
       stun: M >= 5 ? { focus: left('focus'), dc: 8 + am(c, 'wis') + pb(c) } : null, steady: Rg >= 3,
@@ -1343,6 +1345,11 @@ function autoAdv(c, o) {
   if (k === 'init') { if (has('invisible')) adv.push(n('invisible')); if (has('incapacitated')) dis.push(n('incapacitated')); }
   if (k === 'save' && o.abil === 'dex' && has('restrained')) dis.push(n('restrained'));
   if ((k === 'check' || k === 'save') && o.abil === 'str' && raging(c) && !heavyArmor(c)) adv.push('ярость');
+  // Варвар: Опасное чутьё (2) — спасброски Ловкости, Дикий инстинкт (7) — инициатива; Чемпион: Примечательный атлет — инициатива и Атлетика
+  const B = clsLvl(c, 'Варвар'), champ = classList(c).some((e) => e.cls === 'Воин' && e.sub === 'Чемпион' && e.lvl >= 3);
+  if (k === 'save' && o.abil === 'dex' && B >= 2 && !has('incapacitated')) adv.push('Опасное чутьё');
+  if (k === 'init' && B >= 7) adv.push('Дикий инстинкт');
+  if (champ && (k === 'init' || o.skill === 'athletics')) adv.push('Примечательный атлет');
   if (o.skill === 'stealth' && armorStealthDis(c)) dis.push('доспех');
   if (o.conc && hasFeat(c, 'warCaster')) adv.push('Боевой заклинатель');
   return { adv, dis };
@@ -1386,7 +1393,9 @@ function rollD20(label, bonus, opts = {}) {
     extraSum += neg ? -r.total : r.total;
     return ` ${neg ? '−' : '+'}${r.total} (${x.n})`;
   }).join('');
-  const total = used + bonus - pen + extraSum;
+  let total = used + bonus - pen + extraSum;
+  // Неукротимая мощь (варвар 18): проверка или спасбросок Силы — не меньше значения Силы
+  if ((opts.kind === 'check' || opts.kind === 'save') && opts.abil === 'str' && clsLvl(c, 'Варвар') >= 18 && total < (+c.abil.str || 0)) { notes.push(`Неукротимая мощь: ${total}→${c.abil.str}`); total = +c.abil.str; }
   detail += ` ${fmt(bonus)}` + diceTxt + (pen ? ` −${pen} (истощение)` : '') + (notes.length ? ` · ${notes.join(', ')}` : '');
   // Чемпион: критическое попадание оружием на 19–20 (с 15 уровня — на 18–20)
   const critAt = opts.weapon ? critMin(c) : 20;
@@ -3064,6 +3073,14 @@ function applyDamage(n, crit) {
   const wasZero = (+cb.hp || 0) <= 0;
   cb.hp = (+cb.hp || 0) - rest;
   let msg = `Получено ${n} урона${warded ? ` (${warded} принято Магической защитой)` : ''}${absorbed ? ` (${absorbed} поглощено врем. хитами)` : ''}`;
+  // Неутомимая ярость (варвар 11+): в ярости упал до 0 (и не умер сразу) — спасбросок Телосложения СЛ 10 (+5 за каждый раз до отдыха);
+  // успех — хиты = 2 × уровень варвара
+  const Bz = clsLvl(c, 'Варвар');
+  if (cb.hp <= 0 && !wasZero && Bz >= 11 && raging(c) && -cb.hp < (+cb.hpMax || 0)) {
+    const dc = 10 + 5 * (+cb.relentless || 0), r = rollD20(`Неутомимая ярость (СЛ ${dc})`, saveBonus(c, 'con'), { kind: 'save', abil: 'con', dc });
+    cb.relentless = (+cb.relentless || 0) + 1;
+    if (r.total >= dc) { cb.hp = 2 * Bz; toast(`😡 Неутомимая ярость: остаётесь на ногах с ${cb.hp} хитами`, 'crit'); return; }
+  }
   if (cb.hp <= 0) {
     const over = -cb.hp;
     cb.hp = 0;
@@ -3108,7 +3125,7 @@ function doLongRest(c) {
   c.effects = []; endConc(c); pendingConc = 0;
   c.shape = null;
   // Магическая защита гаснет до первого заклинания ограждения; Предзнаменование — новые к20
-  cb.ward = 0; cb.wardOn = false;
+  cb.ward = 0; cb.wardOn = false; cb.relentless = 0;
   cb.portent = portentN(c) ? Array.from({ length: portentN(c) }, () => die(20)) : [];
   if (cb.portent.length) toast(`🔮 Предзнаменование: ${cb.portent.join(', ')}`);
   c.slots.forEach((s) => { s.used = 0; }); c.pact.used = 0;
@@ -3538,6 +3555,7 @@ const ACT = {
     const c = ch();
     c.pact.used = 0;
     c.resources.forEach((r) => { if (r.recharge === 'short') r.used = 0; });
+    c.combat.relentless = 0; // Неутомимая ярость: СЛ снова 10
     advanceEffects(c, 600); // прошёл час
     closeModal(); toast('☕ Короткий отдых завершён');
   },

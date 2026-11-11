@@ -1704,7 +1704,9 @@ function moveInfo(id) {
   // Газообразная форма — скорость ровно 10 фт
   fxOf(id).forEach(([, f]) => { if (+f.spdSet) speed = +f.spdSet; });
   if (e.zero) speed = 0; // Верный прицел: скорость 0 до конца хода
-  const incap = isDown(t) || cond.some((k) => INCAP.includes(k)), bonus = (charOf(t) || {}).bonus || [];
+  const incap = isDown(t) || cond.some((k) => INCAP.includes(k));
+  // Ярость в облике орла: Рывок и Отход бонусным действием
+  const bonus = [...new Set([...((charOf(t) || {}).bonus || []), ...(fxOf(id).some(([, f]) => f.wildAsp === 'eagle') ? ['dash', 'dis'] : [])])];
   const total = speed * (1 + (e.dash || 0));
   return { speed, total, used: e.move || 0, left: Math.max(0, total - (e.move || 0)), prone: cond.includes('prone'), incap, bonus,
     canDash: !incap && speed > 0 && (!e.a || (bonus.includes('dash') && !e.b)) };
@@ -1784,16 +1786,36 @@ function classAction(a, id, k) {
     const r = app.classAct(m.charId, 'rage');
     if (!r) return;
     // Эффект на поле (сопротивление дробящему, колющему и рубящему, красное свечение) ставит и снимает синхронизация листа
-    if (r.on) { if (fight) eu({ b: 1 }); addLog({ kind: 'act', who: t.name, txt: `😡 впадает в ярость (+${K.rage ? K.rage.dmg : 2} к урону Силой, сопротивление физическому урону)` }); }
+    if (r.on) {
+      if (fight) eu({ b: 1 });
+      addLog({ kind: 'act', who: t.name, txt: `😡 впадает в ярость (+${K.rage ? K.rage.dmg : 2} к урону Силой, сопротивление физическому урону)` });
+      const sub = (K.rage || {}).sub, B = (K.rage || {}).lvl || 1;
+      // Путь мирового древа: Животворящая сила — временные хиты = уровень варвара
+      if (sub === 'Путь мирового древа') { app.setTemp(m.charId, B); addLog({ kind: 'act', who: t.name, txt: `🌳 Животворящая сила: ${B} временных хитов` }); }
+      // Путь дикого сердца: Ярость дикой природы — выбор облика на эту ярость
+      if (sub === 'Путь дикого сердца') {
+        const ASP = [['bear', '🐻 Медведь', 'Сопротивление всему урону, кроме силового, некротического, психического и излучения', ['fire', 'cold', 'lightning', 'thunder', 'acid', 'poison', 'bps']],
+          ['eagle', '🦅 Орёл', 'Рывок и Отход — бонусным действием', ['bps']], ['wolf', '🐺 Волк', 'Союзники атакуют с преимуществом врагов рядом с вами', ['bps']]];
+        app.openModal(`<h2>Ярость дикой природы</h2><div class="list">${ASP.map(([k, n, d], i) => `<button class="atk-pick" data-asp="${i}"><b>${n}</b><span class="muted small">${d}</span></button>`).join('')}</div>`);
+        $$('[data-asp]').forEach((x) => x.addEventListener('click', () => {
+          const [k, n, , res] = ASP[+x.dataset.asp];
+          app.closeModal();
+          addEffect(id, { n: `Ярость: ${n.split(' ')[1]}`, ic: n.split(' ')[0], rage: true, wildAsp: k, resist: res, by: user.uid, from: id });
+          addLog({ kind: 'act', who: t.name, txt: `${n}: ярость дикой природы` });
+        }));
+      }
+    }
     else addLog({ kind: 'act', who: t.name, txt: '😡 ярость заканчивается' });
     pushMyChar();
   } else if (a === 'cReck') { eu({ reck: 1 }); addLog({ kind: 'act', who: t.name, txt: '⚡ Безрассудная атака: атаки Силой с преимуществом, по нему — тоже' }); }
   else if (a === 'cWind') {
     const r = app.classAct(m.charId, 'secondWind');
     if (!r) return;
-    if (fight) eu({ b: 1 });
+    // Тактический сдвиг (воин 5+): ещё половина скорости перемещения, без атак по возможности
+    const KF = K.fighter || {}, shift = KF.lvl >= 5 && fight ? Math.floor(speedOf(t) / 2 / 5) * 5 : 0;
+    if (fight) eu({ b: 1, ...(shift ? { move: (e.move || 0) - shift, dis: 1 } : {}) });
     floatText(id, `+${r.heal}`, 'fx-heal');
-    addLog({ kind: 'act', who: t.name, txt: `💚 Второе дыхание: +${r.heal} хитов`, detail: r.detail });
+    addLog({ kind: 'act', who: t.name, txt: `💚 Второе дыхание: +${r.heal} хитов${shift ? ` · Тактический сдвиг: +${shift} фт без атак по возможности` : ''}`, detail: r.detail });
   } else if (a === 'cSurge') {
     if (!app.classAct(m.charId, 'surge')) return;
     eu({ a: null, atk: null, surge: 1 });
@@ -2397,6 +2419,8 @@ function attackTarget(tid) {
   if (ea.reck && !ranged && !A.spell && !a.npc && !brutal) adv.push('безрассудная атака');
   if (econ(tid).reck) adv.push('цель безрассудна');
   if (A.spell && fxOf(a.from).some(([, f]) => f.innate)) adv.push('врождённое колдовство');
+  // Варвар в ярости (облик волка) рядом с целью — союзники атакуют её с преимуществом
+  if (Object.entries(game.tokens).some(([k, o]) => k !== a.from && k !== tid && team(o) === team(me_) && !incapTok(o) && distFt(o, T) <= 5 && fxOf(k).some(([, f]) => f.wildAsp === 'wolf'))) adv.push('стая (волк)');
   if (ea.steady) { adv.push('верный прицел'); R.update(ref(gpath(`econ/${a.from}`)), { steady: null }).catch(() => {}); }
   fxOf(a.from).forEach(([k, e]) => {
     if (e.sap) { dis.push('ослаблен'); used.push(k); }
@@ -2424,6 +2448,11 @@ function attackTarget(tid) {
       ...(!A.spell && bA.dmgDie ? [{ e: bA.dmgDie, n: 'Мантия крестоносца' }] : []),
       ...(brutal ? [{ e: a.brutalDice || '1d10', n: 'Жестокий удар' }] : [])],
     cunning: !!a.cunning, ...(elem ? { dtype: elem.dtype } : {}) };
+  // Варвар в ярости, первое попадание в ход атакой оружием: Берсерк (при Безрассудной атаке) — к6 × бонус ярости, Фанатик — 1к6 + ½ уровня
+  const KB = !a.npc && !A.spell ? (app.classActs(a.charId) || {}).rage : null;
+  const bonusHit = KB && KB.on && !econ(a.from).fury && !ranged
+    ? (KB.sub === 'Путь берсерка' && ea.reck ? { e: `${KB.dmg}d6`, n: 'Бешенство' } : KB.sub === 'Путь фанатика' ? { e: `1d6+${Math.floor(KB.lvl / 2)}`, n: 'Божественная ярость' } : null) : null;
+  if (bonusHit) ro.dmgDice.push(bonusHit);
   // Стихийный эпицентр (монах 17): раз в ход попавший безоружный удар — ещё кость Боевых искусств стихией
   const MKe = elem ? (app.classActs(a.charId) || {}).monk : null, epi = MKe && MKe.lvl >= 17 && !econ(a.from).epi;
   if (epi) ro.dmgDice.push({ e: MKe.die, n: 'Стихийный эпицентр' });
@@ -2453,6 +2482,9 @@ function attackTarget(tid) {
     const rr = app.mute(() => app.rollFormula(String(e.retal), e.n));
     if (rr && rr.total) addLog({ kind: 'dmg', who: T.name, txt: `${e.n} — ответный урон`, tgt: a.from, tgtName: me_.name, dmg: rr.total, dtype: e.retalType || '', detail: rr.detail });
   });
+  if (bonusHit && res.hit) R.update(ref(gpath(`econ/${a.from}`)), { fury: 1 }).catch(() => {});
+  // Изученные атаки (воин 13+): промах — следующая атака по этой цели с преимуществом
+  if (!res.hit && !a.npc) { const KF = (app.classActs(a.charId) || {}).fighter; if (KF && KF.lvl >= 13) addEffect(a.from, { n: 'Изученные атаки', vex: tid, by: user.uid, from: a.from }); }
   // Жестокий удар: попадание — толчок на 15 фт (Большой и меньше) или скорость −15 фт до начала следующего хода варвара
   if (brutal) {
     R.update(ref(gpath(`econ/${a.from}`)), { brut: 1 }).catch(() => {});
@@ -4260,6 +4292,13 @@ function checkMyTurn() {
   // Героизм: в начале хода — временные хиты
   const hero = fxOf(`pc_${user.uid}`).find(([, e]) => +e.thpTurn);
   if (hero && m.charId) app.setTemp(m.charId, +hero[1].thpTurn);
+  // Чемпион, Выживший (18): в начале хода при половине хитов и меньше (но не 0) — 5 + мод. Телосложения хитов
+  const KF = m.charId ? (app.classActs(m.charId) || {}).fighter : null, sm = m.charId ? app.summary(m.charId) : null;
+  if (KF && KF.sub === 'Чемпион' && KF.lvl >= 18 && sm && sm.hp > 0 && sm.hp <= sm.hpMax / 2) {
+    const h = 5 + Math.max(0, KF.con);
+    app.heal(m.charId, h);
+    addLog({ kind: 'act', who: sm.name, txt: `💪 Выживший: +${h} хитов в начале хода` });
+  }
   const mine = game.tokens[`pc_${user.uid}`];
   app.toast(mine && isDown(mine) && !isStable(mine) && !isDead(mine) ? '💀 Ваш ход: вы без сознания — бросьте спасбросок от смерти' : '⚔ Ваш ход!', 'crit');
   snd('turn');
