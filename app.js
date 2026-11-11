@@ -309,6 +309,14 @@ window.dndApp = {
       aura: clsLvl(c, 'Паладин') >= 6 ? { r: clsLvl(c, 'Паладин') >= 18 ? 30 : 10, b: Math.max(1, am(c, 'cha')), courage: clsLvl(c, 'Паладин') >= 10,
         oath: clsLvl(c, 'Паладин') >= 7 ? (classList(c).find((e) => e.cls === 'Паладин') || {}).sub || '' : '' } : null,
       wild: !!(c.shape && !c.shape.poly), ward: +cb.ward || 0, wardMax: wardMax(c),
+      // Сопротивления для стола: из поля «Сопротивления…» листа и умений (Психическая защита аберрантного разума)
+      resist: charResists(c),
+      // Все спасброски — союзник перебрасывает ваш спасбросок (Контрочарование барда)
+      sv: Object.fromEntries(ABILITIES.map((a) => [a.k, saveBonus(c, a.k)])),
+      // Рефлексы вора (плут-вор 17): два хода в первом раунде боя
+      thiefRefl: classList(c).some((e) => e.cls === 'Плут' && e.sub === 'Вор' && e.lvl >= 17),
+      // Благословение тёмного (колдун-исчадие): временные хиты, когда враг падает от заклинания
+      dob: classList(c).some((e) => e.cls === 'Колдун' && e.sub === 'Покровитель Исчадие' && e.lvl >= 3) ? Math.max(1, am(c, 'cha')) + clsLvl(c, 'Колдун') : 0,
       // Охотник 7+: Оборонительная тактика (Уход от орды / Многослойная защита) — учитывают атакующие
       hdef: classList(c).some((e) => e.cls === 'Следопыт' && e.sub === 'Охотник' && e.lvl >= 7) ? ((c.cpicks || {}).hdef || [])[0] || '' : '',
       // Базовые характеристики — мастер видит и меняет их со стола
@@ -383,7 +391,9 @@ window.dndApp = {
     const plain = (s) => ({ shape: 'target', size: 0, width: 5, save: '', half: false, self: false, range: /касан/i.test(s.r || '') ? 5 : parseInt(s.r) || 0,
       dtype: dmgWord(s.x), act: /бонусн/i.test(s.t || '') ? 'bonus' : /реакц/i.test(s.t || '') ? 'reaction' : 'action', pick: false });
     return c.spells.filter((s) => (+s.l === 0 || s.prep || s.always) && !SMITES[s.e]).map((s) => ({ s, a: spellArea(s) || (extra.includes(s.e) ? plain(s) : null) })).filter((x) => x.a)
-      .map(({ s, a }) => ({ id: s.id, e: s.e || '', n: s.n, l: +s.l, f: s.f || '', u: s.u || '', addMod: !!s.addMod, cn: !!s.cn, dur: s.d || '', comp: s.c || '', sch: s.s || '', rt: !!s.rt, ct: s.t || '', dc: spellDCFor(c, s), slots: slotOptions(c, s), ...a }));
+      .map(({ s, a }) => ({ id: s.id, e: s.e || '', n: s.n, l: +s.l, f: s.f || '', u: s.u || '', addMod: !!s.addMod, cn: !!s.cn, dur: s.d || '', comp: s.c || '', sch: s.s || '', rt: !!s.rt, ct: s.t || '', dc: spellDCFor(c, s), slots: slotOptions(c, s), ...a,
+        // Иллюзионист 3+: Улучшенные иллюзии — «Малая иллюзия» бонусным действием
+        ...(s.e === 'Minor Illusion' && classList(c).some((e) => e.cls === 'Волшебник' && e.sub === 'Иллюзионист' && e.lvl >= 3) ? { act: 'bonus' } : {}) }));
   },
   // Портрет персонажа (маленький JPEG) — хранится в листе, стол показывает его на токене
   setPortrait(id, data) { const c = state.chars[id]; if (!c) return; c.info.portrait = data || ''; c.updatedAt = Date.now(); if (c === ch()) { save(); render(); } else lsSet(STORE, JSON.stringify(state)); },
@@ -570,12 +580,16 @@ window.dndApp = {
       bard: Bd ? { lvl: Bd, sub: subOf(c, 'Бард'), cha: Math.max(1, am(c, 'cha')) } : null,
       // Друид: круг, Мудрость, СЛ, использования Дикого облика (Помощь земли, Гнев моря, Звёздная форма)
       // Колдун: покровитель (Шаги феи, Исцеляющий свет, Благословение тёмного), СЛ; чародей: подкласс (Всплеск дикой магии)
-      warlock: Wl ? { lvl: Wl, sub: subOf(c, 'Колдун'), cha: Math.max(1, am(c, 'cha')), dc: 8 + am(c, 'cha') + pb(c), fey: left('feySteps'), light: left('healingLight') } : null,
-      sorc: So ? { lvl: So, sub: subOf(c, 'Чародей') } : null,
+      warlock: Wl ? { lvl: Wl, sub: subOf(c, 'Колдун'), cha: Math.max(1, am(c, 'cha')), dc: 8 + am(c, 'cha') + pb(c), fey: left('feySteps'), light: left('healingLight'), clair: left('clairvoyant') } : null,
+      sorc: So ? { lvl: So, sub: subOf(c, 'Чародей'), pts: left('sorcery'), trance: left('tranceOrder'), on: !!c.combat.trance } : null,
+      // Волшебник: школа (Иллюзионист — Иллюзорный двойник)
+      wiz: clsLvl(c, 'Волшебник') ? { lvl: clsLvl(c, 'Волшебник'), sub: subOf(c, 'Волшебник'), ills: left('illusorySelf') } : null,
       druid: Dr ? { lvl: Dr, sub: subOf(c, 'Друид'), wis: Math.max(1, am(c, 'wis')), dc: 8 + am(c, 'wis') + pb(c), atk: am(c, 'wis') + pb(c), ws: left('wildShape'), star: c.combat.starForm || '' } : null,
     };
   },
   // Звёздная форма друида (Круг звёзд): archer | chalice | dragon | '' — снять
+  // Транс порядка (Заводной разум 14): флаг в листе — к20 не ниже 10
+  trance(id, on) { const c = state.chars[id]; if (!c) return; c.combat.trance = !!on; save(); render(); },
   starForm(id, f) {
     const c = state.chars[id];
     if (!c) return;
@@ -904,6 +918,16 @@ function classList(c) {
     ...(c.multi || []).map((m) => ({ cls: String(m.cls || '').trim(), sub: m.sub || '', lvl: clamp(parseInt(m.lvl) || 1, 1, 20), id: m.id }))]
     .filter((e) => { if (!e.cls) return !!e.primary; if (seen.has(e.cls)) return false; seen.add(e.cls); return true; })
     .map((e) => ({ ...e, sub: subAllowed(e) ? e.sub : '' }));
+}
+// Сопротивления персонажа: часть поля «Сопротивления, иммунитеты, уязвимости» после слова «сопротивл…» до «иммун…»/«уязвим…»
+const RES_KEYS = [[/огн/, 'fire'], [/холод/, 'cold'], [/электр|молни/, 'lightning'], [/звук|гром/, 'thunder'], [/кисл/, 'acid'], [/яд/, 'poison'],
+  [/дробящ|колющ|рубящ|физич/, 'bps'], [/излуч/, 'radiant'], [/некрот/, 'necrotic'], [/психи/, 'psychic'], [/силов/, 'force']];
+function charResists(c) {
+  const out = new Set(), txt = String(c.combat.defenses || '').toLowerCase();
+  (txt.match(/сопротивл[^]*?(?=иммун|уязвим|$)/g) || []).forEach((seg) => RES_KEYS.forEach(([re, k]) => { if (re.test(seg)) out.add(k); }));
+  // Аберрантный разум 6+: Психическая защита — сопротивление психическому урону
+  if (classList(c).some((e) => e.cls === 'Чародей' && e.sub === 'Аберрантный разум' && e.lvl >= 6)) out.add('psychic');
+  return [...out];
 }
 // Подкласс персонажа в классе (пусто, если класса нет)
 const subOf = (c, cls) => (classList(c).find((e) => e.cls === cls) || {}).sub || '';
@@ -1286,6 +1310,10 @@ function resLevels(c) {
   const wl = classList(c).find((e) => e.cls === 'Колдун');
   if (wl && wl.sub === 'Покровитель Архифея') map.feySteps = wl.lvl;
   if (wl && wl.sub === 'Покровитель Небожитель') map.healingLight = wl.lvl;
+  if (wl && wl.sub === 'Покровитель Великий Древний') map.clairvoyant = wl.lvl;
+  const wz = classList(c).find((e) => e.cls === 'Волшебник' && e.sub === 'Иллюзионист'), sc = classList(c).find((e) => e.cls === 'Чародей' && e.sub === 'Заводной разум');
+  if (wz) map.illusorySelf = wz.lvl;
+  if (sc) map.tranceOrder = sc.lvl;
   (speciesOf(c)?.res || []).forEach((k) => { map[k] = lvl(c); });
   return map;
 }
@@ -1442,6 +1470,8 @@ function rollD20(label, bonus, opts = {}) {
   if (opts.floor10 && nat < 10) { used = 10; notes.push(`Надёжный талант: ${nat}→10`); }
   // Звёздная форма «Дракон» (Круг звёзд): к20 спасброска концентрации не ниже 10
   if (opts.conc && c.combat.starForm === 'dragon' && used < 10) { used = 10; notes.push(`Звёздный дракон: ${nat}→10`); }
+  // Транс порядка (Заводной разум 14): к20 атак, проверок и спасбросков не ниже 10
+  if (c.combat.trance && used < 10) { used = 10; notes.push(`Транс порядка: ${nat}→10`); }
   // Кости от эффектов стола: +1к4 «Благословения», −1к4 «Порчи»
   let extraSum = 0;
   const diceTxt = (opts.dice || []).map((x) => {
@@ -3217,7 +3247,7 @@ function doLongRest(c) {
   c.effects = []; endConc(c); pendingConc = 0;
   c.shape = null;
   // Магическая защита гаснет до первого заклинания ограждения; Предзнаменование — новые к20
-  cb.ward = 0; cb.wardOn = false; cb.relentless = 0; cb.starForm = '';
+  cb.ward = 0; cb.wardOn = false; cb.relentless = 0; cb.starForm = ''; cb.trance = false;
   cb.portent = portentN(c) ? Array.from({ length: portentN(c) }, () => die(20)) : [];
   if (cb.portent.length) toast(`🔮 Предзнаменование: ${cb.portent.join(', ')}`);
   c.slots.forEach((s) => { s.used = 0; }); c.pact.used = 0;

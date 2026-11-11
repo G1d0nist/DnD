@@ -155,7 +155,7 @@ function subscribe(gid, code) {
   on('lights', (v) => { game.lights = v || {}; drawTerrain(); });
   on('notes', (v) => { game.notes = v || {}; drawTerrain(); });
   on('doors', (v) => { game.doors = v || {}; drawTerrain(); });
-  on('effects', (v) => { game.effects = v || {}; syncEffects(); hideWatch(); undoTrack(); });
+  on('effects', (v) => { game.effects = v || {}; syncEffects(); hideWatch(); counterWatch(); undoTrack(); });
   on('xp', (v) => { game.xp = v || {}; });
   on('scenes', (v) => { game.scenes = v || {}; });
   on('rest', (v) => { game.rest = v; handleRest(); });
@@ -1685,6 +1685,9 @@ function removeFromInit(entryId) {
 const leaving = new Set();
 function cleanupInit() {
   if (!game || !isDM() || !game.init || !game.init.list) return;
+  // Рефлексы вора: второй ход только в первом раунде
+  const trE = (game.init.round || 1) >= 2 && initList().find((en) => en.tr && !leaving.has(en.id));
+  if (trE) { leaving.add(trE.id); removeFromInit(trE.id).finally(() => setTimeout(() => leaving.delete(trE.id), 1500)); return; }
   const dead = initList().find((en) => { const t = game.tokens[en.tokenId]; return t && isDead(t) && !leaving.has(en.id); });
   if (!dead) return;
   leaving.add(dead.id);
@@ -2040,6 +2043,47 @@ Object.assign(CD_ACTS, {
     };
   },
 });
+Object.assign(CD_ACTS, {
+  // Бастион закона (Заводной разум 6+): 1–5 очков чародейства — столько к8 оберега вам или существу в 30 фт (упрощённо — временные хиты)
+  cBastion({ t, id, m, C }) {
+    const S = C.sorc, max = Math.min(5, S.pts), list = seenNear(id, 30, (k, o) => team(o) === team(t));
+    app.openModal(`<h2>⚙ Бастион закона</h2><p class="muted small">Очки чародейства → столько к8 оберега. На столе оберег — временные хиты, равные броску костей.</p>
+      <div class="form-grid"><label>Кому<select id="bsT">${list.map(([k, o]) => `<option value="${k}">${esc(o.name)}</option>`).join('')}</select></label>
+      <label>Очков (1–${max})<input id="bsN" type="number" min="1" max="${max}" value="${max}"></label></div>
+      <div class="modal-actions"><button data-act="closeModal">Отмена</button><button class="primary" id="bsOk">⚙ Наложить</button></div>`);
+    $('#bsOk').onclick = () => {
+      const tid = $('#bsT').value, n = Math.max(1, Math.min(max, +$('#bsN').value || 1));
+      if (!tid || !app.spendSorc(m.charId, n)) { app.toast('Не хватает очков чародейства'); return; }
+      app.closeModal();
+      const r = rollExpr(`${n}d8`);
+      addEffect(tid, { n: 'Бастион закона', thp: r.total, once: true, by: user.uid, from: id });
+      addLog({ kind: 'act', who: t.name, txt: `⚙ Бастион закона: ${game.tokens[tid].name} — оберег ${n}к8 = ${r.total}`, detail: r.detail });
+    };
+  },
+  // Транс порядка (Заводной разум 14+): бонусным действием на минуту к20 не ниже 10, атаки по вам без преимущества
+  cTrance({ t, id, m, C, fight, eu }) {
+    if (C.sorc.trance > 0) { if (!app.useRes(m.charId, 'tranceOrder', 'Транс порядка')) return; } else if (!app.spendSorc(m.charId, 5)) { app.toast('Нужно 5 очков чародейства'); return; }
+    if (fight) eu({ b: 1 });
+    app.trance(m.charId, true);
+    addEffect(id, { n: 'Транс порядка', ic: '⚙', trance: true, by: user.uid, from: id, ...(fight ? { until: (game.init.round || 1) + 9 } : {}) });
+    addLog({ kind: 'act', who: t.name, txt: '⚙ Транс порядка: к20 не ниже 10, атаки по нему без преимущества (1 минута)' });
+  },
+  cTranceOff({ t, id, m }) {
+    app.trance(m.charId, false);
+    const ks = fxOf(id).filter(([, f]) => f.trance).map(([k]) => k);
+    if (ks.length) R.update(ref(gpath('effects')), Object.fromEntries(ks.map((k) => [k, null]))).catch(() => {});
+    addLog({ kind: 'act', who: t.name, txt: '⚙ Транс порядка заканчивается' });
+  },
+  // Ясновидящий боец (Великий Древний 6+): существо — спасбросок Мудрости, иначе 1 минуту помеха на атаки по вам, ваши атаки по нему с преимуществом
+  cClair({ t, id, m, C }) {
+    const W = C.warlock;
+    pickTok('🧠 Ясновидящий боец', `Существо, связанное с вами телепатией: спасбросок Мудрости СЛ ${W.dc}.`, seenNear(id, 60, (k, o) => k !== id && hostile(t, o)), (tid) => {
+      if (!app.useRes(m.charId, 'clairvoyant', 'Ясновидящий боец')) return;
+      saveRequest(tid, { n: `${t.name}: Ясновидящий боец`, who: t.name, abil: 'wis', dc: W.dc, from: id, fail: { n: 'Ясновидящий боец', ic: '🧠', foe: id, disVs: id, rounds: 10 } });
+      addLog({ kind: 'act', who: t.name, txt: `🧠 Ясновидящий боец → ${game.tokens[tid].name}: спасбросок Мудрости СЛ ${W.dc}` });
+    });
+  },
+});
 // Умения воинских классов (кнопки хода): ресурс тратится в листе, на поле — эффект, флаг хода или атака
 function classAction(a, id, k) {
   const t = game.tokens[id], m = me(), e = econ(id), fight = inFight();
@@ -2274,7 +2318,7 @@ function applyLog() {
       else { const m = me(); if (m && m.charId) app.heal(m.charId, e.heal); }
     } else if (t.kind === 'npc') {
       Object.assign(upd, npcDamageUpd(e.tgt, t, dmgR, e.crit));
-      if (isDead({ ...t, hp: upd[`tokens/${e.tgt}/hp`], dsF: upd[`tokens/${e.tgt}/dsF`] ?? t.dsF }) && !isDead(t)) upd[`log/${e.k}/down`] = true;
+      if (isDead({ ...t, hp: upd[`tokens/${e.tgt}/hp`], dsF: upd[`tokens/${e.tgt}/dsF`] ?? t.dsF }) && !isDead(t)) { upd[`log/${e.k}/down`] = true; if (e.kind !== 'atk') dobGrant(e.from); }
     } else {
       const m = me();
       if (m && m.charId) {
@@ -2453,6 +2497,7 @@ function openAttack(id) {
     ${elemOf(id) ? `<label class="check" title="Стихийная настройка: попадание безоружным ударом — цель проходит спасбросок Силы или отлетает на 10 фт"><input type="checkbox" id="atkElemPush" checked> ${elemOf(id).ic} Безоружные удары толкают цель на 10 фт</label>` : ''}
     ${K.cunning ? `<label>Хитрый удар (−1к6 Скрытой атаки, СЛ ${K.cunning.dc})<select id="atkCunning"><option value="">— нет —</option><option value="trip">Подножка: Ловкость или сбит с ног</option><option value="poison">Яд: Телосложение или отравлен</option></select></label>` : ''}
     ${K.stun && K.stun.focus > 0 && !e.stun ? `<label class="check" title="Раз в ход: попадание в ближнем бою — цель проходит спасбросок Телосложения или ошеломлена до начала вашего следующего хода"><input type="checkbox" id="atkStun"> 💫 Ошеломляющий удар при попадании (1 очко, СЛ ${K.stun.dc})</label>` : ''}
+    ${fxOf(id).some(([, f]) => f.insp && f.valor) ? `<label class="check" title="Боевое вдохновение: кость добавится к урону при попадании (и потратится только при попадании), а не к броску атаки"><input type="checkbox" id="atkValor"> 🎵 Вдохновение — к урону, а не к атаке</label>` : ''}
     ${K.monk && K.monk.sub === 'Путь милосердия' && K.monk.lvl >= 3 && K.monk.focus > 0 && !e.harm ? `<label class="check" title="Раз в ход: попадание безоружным ударом — 1 очко, +${K.monk.die}+Мдр некротикой${K.monk.lvl >= 6 ? ', цель отравлена' : ''}"><input type="checkbox" id="atkHarm"> 💀 Рука вреда при попадании (1 очко)</label>` : ''}
     ${K.ranger && K.ranger.sub === 'Сумрачный охотник' && K.ranger.lvl >= 3 && K.ranger.dread > 0 && !e.dread ? `<label class="check" title="Раз в ход при попадании оружием: +${K.ranger.dreadDie} психического урона"><input type="checkbox" id="atkDread"> 🌑 Ужасающий удар при попадании (+${K.ranger.dreadDie}, осталось ${K.ranger.dread})</label>` : ''}
     ${O.sneak ? `<p class="muted small">Скрытая атака ${O.sneak}к6 добавится сама — раз в ход, фехтовальным или дальнобойным оружием при преимуществе или если рядом с целью ваш союзник.${e.sa ? ' <b>В этом ходу уже была.</b>' : ''}</p>` : ''}`;
@@ -2475,9 +2520,9 @@ function openAttack(id) {
     }
     const left = way === 'action' ? (e.atk > 0 ? e.atk : per) : way === 'magic' ? A.beams || 1 : 1, stunOn = !!($('#atkStun') || {}).checked;
     const brutal = ($('#atkBrutal') || {}).value || '', cunning = ($('#atkCunning') || {}).value || '', elemPush = $('#atkElemPush') ? $('#atkElemPush').checked : true;
-    const dread = !!($('#atkDread') || {}).checked, harm = !!($('#atkHarm') || {}).checked;
+    const dread = !!($('#atkDread') || {}).checked, harm = !!($('#atkHarm') || {}).checked, valorDmg = !!($('#atkValor') || {}).checked;
     app.closeModal();
-    aim = { from: id, charId: m.charId, atk: A, way, left, man, smite, dread, harm, ...(stunOn ? { stun: true, stunDc: K.stun.dc } : {}),
+    aim = { from: id, charId: m.charId, atk: A, way, left, man, smite, dread, harm, valorDmg, ...(stunOn ? { stun: true, stunDc: K.stun.dc } : {}),
       ...(brutal ? { brutal, brutalDice: K.brutal.dice } : {}), ...(cunning ? { cunning, cunDc: K.cunning.dc } : {}), elemPush };
     renderAll();
   }));
@@ -2690,6 +2735,37 @@ function hideWatch() {
     addLog({ kind: 'act', who: spot[1].name, txt: `👁 замечает спрятавшегося: ${T.name} (пассивная Внимательность ${passivePer(spot[0])} против Скрытности ${e.hide})` });
   });
 }
+// Благословение тёмного (колдун-исчадие): враг пал от его заклинания — временные хиты (Хар + уровень колдуна); выдаёт браузер мастера
+function dobGrant(fromId) {
+  const s = fromId && game.tokens[fromId], v = s && s.kind === 'pc' && !s.comp ? +(charOf(s) || {}).dob || 0 : 0;
+  if (!v) return;
+  addEffect(fromId, { n: 'Благословение тёмного', thp: v, once: true, by: user.uid, from: fromId });
+  addLog({ kind: 'act', who: s.name, txt: `🔥 Благословение тёмного: ${v} временных хитов` });
+}
+// Контрочарование (бард 7+): вы или союзник в 30 фт провалили спасбросок от очарования или испуга — реакцией переброс с преимуществом
+const ccSeen = new Set();
+function counterWatch() {
+  if (!game || !user || isDM()) return;
+  const myId = `pc_${user.uid}`, me_ = game.tokens[myId], m = me();
+  const B = me_ && m && m.charId ? (app.casterActs(m.charId) || {}).bard : null;
+  Object.entries(game.effects || {}).forEach(([k, e]) => {
+    if (ccSeen.has(k)) return;
+    ccSeen.add(k);
+    const T = game.tokens[e.tgt];
+    if (!B || B.lvl < 7 || incapTok(me_) || econ(myId).r || !T || !['charmed', 'frightened'].includes(e.cond) || !e.sdc || !e.sab
+      || Date.now() - (+e.t || 0) > 30000 || team(T) !== team(me_) || distFt(me_, T) > 30) return;
+    setTimeout(() => reactModal('Контрочарование?', [{ label: `🎵 ${esc(T.name)}: переброс спасброска с преимуществом`, sub: `${esc(e.n)} · ${AB_N[e.sab]} СЛ ${e.sdc}`, go: () => countercharm(k) }]), 400);
+  });
+}
+function countercharm(k) {
+  const e = (game.effects || {})[k], T = e && game.tokens[e.tgt], myId = `pc_${user.uid}`, me_ = game.tokens[myId];
+  if (!e || !T || !me_) return;
+  const bonus = T.kind === 'pc' && !T.comp ? +(((charOf(T) || {}).sv || {})[e.sab]) || 0 : +((T.sv || {})[e.sab]) || 0;
+  const d1 = die(20), d2 = die(20), total = Math.max(d1, d2) + bonus + auraBonus(e.tgt), ok = total >= +e.sdc;
+  if (inFight()) R.update(ref(gpath(`econ/${myId}`)), { r: 1 }).catch(() => {});
+  if (ok) R.remove(ref(gpath(`effects/${k}`))).catch(() => {});
+  addLog({ kind: 'act', who: me_.name, txt: `🎵 Контрочарование: ${T.name} перебрасывает спасбросок ${AB_N[e.sab]} — ${total} против СЛ ${e.sdc}: ${ok ? `«${e.n}» снято` : 'снова провал'}`, detail: `преимущество [${d1}, ${d2}] ${fmtMod(bonus)}` });
+}
 // Густой туман или магическая тьма на линии между существами, включая их собственные клетки
 function obscuredBetween(A, T) {
   if (!WALL.obsc.size) return false;
@@ -2779,7 +2855,9 @@ function attackTarget(tid) {
   if (econ(tid).reck) adv.push('цель безрассудна');
   if (A.spell && fxOf(a.from).some(([, f]) => f.innate)) adv.push('врождённое колдовство');
   // Клятва вражды (паладин мести): атаки по этой цели — с преимуществом
-  if (fxOf(tid).some(([, f]) => f.foe === a.from)) adv.push('клятва вражды');
+  fxOf(tid).forEach(([, f]) => { if (f.foe === a.from) adv.push(String(f.n || 'клятва вражды').replace(/ \(.*\)$/, '').toLowerCase()); });
+  // Ясновидящий боец: существо под ним атакует колдуна с помехой
+  if (fxOf(a.from).some(([, f]) => f.disVs === tid)) dis.push('ясновидящий боец');
   // Убийство (плут-убийца): в первом раунде боя атаки по тем, кто ещё не ходил, — с преимуществом (и Скрытая атака + уровень плута)
   const KR = !a.npc && a.charId ? app.classActs(a.charId) || {} : {};
   const assassin = KR.rogue && KR.rogue.sub === 'Убийца' && KR.rogue.lvl >= 3 && notActedYet(tid);
@@ -2812,7 +2890,11 @@ function attackTarget(tid) {
   const bA = buffsOf(a.from), bT = buffsOf(tid);
   if (bT.atkDis) dis.push('цель под защитой');
   if (bA.atkAdv) adv.push('предвидение');
-  const ro = { target: T.name, ac, adv, dis, ...(ptA ? { force: ptA } : {}), dice: [...fxDice(a.from), ...(bT.ward ? [{ e: '-1d4', n: 'Защита от оружия' }] : [])], autoCrit: d <= 5 && (tc.includes('paralyzed') || tc.includes('unconscious')),
+  // Транс порядка на цели: атаки по ней не получают преимущества
+  if (adv.length && fxOf(tid).some(([, f]) => f.trance)) adv.length = 0;
+  // Боевое вдохновение (коллегия доблести): кость вдохновения — к урону при попадании, а не к броску атаки
+  const valorI = a.valorDmg && fxOf(a.from).find(([, f]) => f.insp && f.valor), valorD = valorI ? valorI[1].insp : '';
+  const ro = { target: T.name, ac, adv, dis, ...(ptA ? { force: ptA } : {}), dice: [...fxDice(a.from).filter((x) => !(valorD && /Вдохновение барда/.test(x.n))), ...(bT.ward ? [{ e: '-1d4', n: 'Защита от оружия' }] : [])], autoCrit: d <= 5 && (tc.includes('paralyzed') || tc.includes('unconscious')),
     sneakOk: !econ(a.from).sa, allyNear, maneuver: a.man || '', smite: a.smite || '',
     // Метка охотника и Сглаз заклинателя на этой цели, Увеличение, Божественная благосклонность, Мантия крестоносца (+кость оружием)
     dmgDice: [...fxOf(tid).filter(([, e]) => e.mark && e.from === a.from).map(([, e]) => ({ e: e.mark, n: e.n })),
@@ -2825,6 +2907,7 @@ function attackTarget(tid) {
   const bonusHit = KB && KB.on && !econ(a.from).fury && !ranged
     ? (KB.sub === 'Путь берсерка' && ea.reck ? { e: `${KB.dmg}d6`, n: 'Бешенство' } : KB.sub === 'Путь фанатика' ? { e: `1d6+${Math.floor(KB.lvl / 2)}`, n: 'Божественная ярость' } : null) : null;
   if (bonusHit) ro.dmgDice.push(bonusHit);
+  if (valorD) ro.dmgDice.push({ e: valorD, n: 'Боевое вдохновение' });
   // Паладин 11+: Сияющие удары — +1к8 излучением к попаданию рукопашным оружием или безоружным ударом;
   // жрец 7+ с «Божественным ударом» — раз в ход +1к8 (14+: 2к8) к попаданию оружием; Священное оружие — + мод. Харизмы к атаке
   const KC = !a.npc && !A.spell ? app.casterActs(a.charId) || {} : {};
@@ -2853,7 +2936,7 @@ function attackTarget(tid) {
     : A.lvlSpell ? app.mute(() => app.spellRoll(a.charId, { ...ro, n: A.n, bonus: A.bonus, dmg: A.dmg, type: A.type, miss: A.miss, emp: A.emp || 0 }))
     : app.mute(() => app.attack(a.charId, A.id, ro));
   if (!res) { aim = null; renderAll(); return; }
-  useInsp(a.from);
+  if (!(valorD && !res.hit)) useInsp(a.from);
   if (guided) R.remove(ref(gpath(`effects/${guided[0]}`))).catch(() => {});
   if (ptA) usePortentFx(a.from);
   // Ищущее заклинание: промах — 1 очко чародейства и переброс к20 (один раз за сотворение)
@@ -3090,6 +3173,9 @@ function reactOptions(id, t, e, incap) {
     if ((O.shieldSlots || []).length && H.total < acOf(t, id) + 5) out.push(btn('shield', `🛡 «Щит»: отменить попадание (${H.total} против КД ${acOf(t, id) + 5})`, 'Реакция: +5 КД до начала вашего хода, тратит ячейку'));
     if (O.uncanny && H.dmg > 1) out.push(btn('uncanny', `🌀 Невероятное уклонение: урон ${H.dmg} → ${Math.floor(H.dmg / 2)}`, 'Плут: реакцией уменьшить вдвое урон от попавшей атаки'));
     if (O.deflect && H.dmg && (O.deflect.any || PHYS.test(H.dtype))) out.push(btn('deflect', `🥋 Отражение атак (−1к10+${O.deflect.dex}+ур.)`, 'Монах: урон уменьшается; если до нуля — можно перенаправить за 1 очко сосредоточенности'));
+    // Иллюзорный двойник (Иллюзионист 10+): попавшая атака промахивается
+    const WZ = (app.casterActs(m.charId) || {}).wiz;
+    if (WZ && WZ.sub === 'Иллюзионист' && WZ.lvl >= 10 && WZ.ills > 0) out.push(btn('illself', '🪞 Иллюзорный двойник: атака промахивается', 'Реакция, раз за короткий отдых: иллюзия принимает удар — попадание становится промахом'));
     // Боевое вдохновение (коллегия доблести): кость вдохновения от барда-доблести — к КД против этой атаки
     const vi = fxOf(id).find(([, f]) => f.insp && f.valor);
     if (vi) out.push(btn('valorAC', `🎵 Боевое вдохновение: +${vi[1].insp.replace('1d', 'к')} к КД (${H.total} против КД ${acOf(t, id)})`, 'Реакция: бросьте кость вдохновения и добавьте к КД — может превратить попадание в промах'));
@@ -3398,6 +3484,12 @@ function doReaction(a, id) {
     spendR();
     saveRequest(H.from, { n: `${t.name}: «Адское возмездие»`, who: t.name, abil: 'dex', dc: c.dc, dmg: f.total, half: true, dmgDetail: f.detail, dtype: 'огнём', from: id });
     addLog({ kind: 'act', who: t.name, txt: `🔥 «Адское возмездие» (${c.how}) → ${src.name}: спасбросок Ловкости СЛ ${c.dc}, ${f.total} огнём, половина при успехе`, detail: f.detail });
+    lastHit = null;
+  } else if (a === 'illself' && H) {
+    if (!app.useRes(m.charId, 'illusorySelf', 'Иллюзорный двойник')) return;
+    spendR();
+    if (H.dmg) refund(id, H.dmg, t.name, `🪞 Иллюзорный двойник: атака (${H.total}) попадает в иллюзию — промах`);
+    else addLog({ kind: 'act', who: t.name, txt: '🪞 Иллюзорный двойник: атака попадает в иллюзию — промах' });
     lastHit = null;
   } else if (a === 'cutting' && lastBardHit) {
     const P = lastBardHit, T = game.tokens[P.tgt], C = app.casterActs(m.charId) || {};
@@ -4144,8 +4236,11 @@ function confirmCast() {
     <div class="atk-ways">${ids.map((id) => `<label class="check"><input type="checkbox" data-safe="${id}" ${allies.includes(id) && allies.indexOf(id) < safeN ? 'checked' : ''}> ${esc(tok(id).name)}</label>`).join('')}</div></div>` : '';
   const hOrder = [...ids.filter((id) => !allies.includes(id)), ...ids.filter((id) => allies.includes(id))];
   const hgtHtml = mm.heightened && I.save && ids.length ? `<label class="mt">Повышенное заклинание — помеха на спасбросок<select id="cHgt">${hOrder.map((id) => `<option value="${id}">${esc(tok(id).name)}</option>`).join('')}</select></label>` : '';
+  // Великий Древний: Психические заклинания — урон заклинания можно сделать психическим
+  const gooW = cast.charId && I.f && !friendly ? (app.casterActs(cast.charId) || {}).warlock : null;
+  const psyHtml = gooW && gooW.sub === 'Покровитель Великий Древний' && gooW.lvl >= 3 ? '<label class="check mt"><input type="checkbox" id="cPsy"> 🧠 Урон психической энергией (Психические заклинания)</label>' : '';
   app.openModal(`<h2>✨ ${esc(I.n)}</h2>
-    <p class="small">${descr}</p>${sideHtml}${chooseHtml}${safeHtml}${hgtHtml}
+    <p class="small">${descr}</p>${sideHtml}${chooseHtml}${psyHtml}${safeHtml}${hgtHtml}
     ${!ids.length ? '<p class="muted">В области никого нет.</p>'
       : pick ? `<div class="atk-ways">${ids.map((id) => `<label class="check"><input type="checkbox" data-tg="${id}" ${allies.includes(id) === friendly ? 'checked' : ''}> ${nameHtml(id)}</label>`).join('')}</div>
         <p class="muted small">Это заклинание затрагивает только выбранных вами существ${F && F.n ? ` (не больше ${F.n})` : ''}.</p>`
@@ -4160,6 +4255,7 @@ function confirmCast() {
     let chosen = pick ? $$('[data-tg]').filter((x) => x.checked).map((x) => x.dataset.tg) : ids;
     if (F && F.n && A.shape !== 'target' && chosen.length > F.n) { app.toast(`Не больше ${F.n} существ`); chosen = chosen.slice(0, F.n); }
     if ($('#cChoose')) cast.choice = $('#cChoose').value;
+    if ($('#cPsy') && $('#cPsy').checked) cast.info = { ...cast.info, dtype: 'психической энергией' };
     const sf = $$('[data-safe]').filter((x) => x.checked).map((x) => x.dataset.safe);
     if (sf.length > safeN) { app.toast(`Уберечь можно не больше ${safeN}`); return; }
     cast.safe = sf; cast.hgt = $('#cHgt') ? $('#cHgt').value : '';
@@ -4428,6 +4524,7 @@ function saveNpcs(k) {
     upd[`areas/${k}/tg/${id}`] = { done: true, ok, roll: total, dmg };
     Object.assign(upd, du);
     res.push({ id, dmg, ok, down: died });
+    if (died) dobGrant(A.from);
     parts.push(`${t.name} ${total}${note} ${ok ? '✔' : '✘'}${dmg ? ` −${dmg}` : ''}${died ? ' ☠' : dmg && isDown(after) ? ' (без сознания)' : ''}`);
   });
   R.update(ref(gpath()), upd).catch((err) => app.toast(`Ошибка: ${esc(err.code || err.message)}`));
@@ -4883,7 +4980,9 @@ const DMG_KEY = [[/огн/, 'fire'], [/холод/, 'cold'], [/электр|мо
   [/излуч/, 'radiant'], [/некрот/, 'necrotic'], [/психи/, 'psychic'], [/силов/, 'force']];
 const dmgKeys = (t) => DMG_KEY.filter(([re]) => re.test(String(t || '').toLowerCase())).map(([, k]) => k);
 // Сопротивление цели этому урону (от заклинаний): половина
-const resists = (id, dtype) => { const ks = dmgKeys(dtype); return ks.length > 0 && (fxOf(id).some(([, e]) => (e.resist || []).some((r) => ks.includes(r))) || (auraBuff(id).resist || []).some((r) => ks.includes(r))); };
+// …и сопротивления персонажа из листа (поле «Сопротивления», Психическая защита)
+const resists = (id, dtype) => { const ks = dmgKeys(dtype), t = game.tokens[id]; return ks.length > 0 && (fxOf(id).some(([, e]) => (e.resist || []).some((r) => ks.includes(r))) || (auraBuff(id).resist || []).some((r) => ks.includes(r))
+  || (t && t.kind === 'pc' && !t.comp ? (charOf(t) || {}).resist || [] : []).some((r) => ks.includes(r))); };
 // Ауры-благословения (Святая аура, Круг силы, Мантия крестоносца, Аура жизни): союзники заклинателя внутри области
 function auraBuff(id) {
   const t = game.tokens[id], out = {};
@@ -5145,7 +5244,7 @@ function applyFail(A, tid) {
   if (!A.fail) return;
   // fail.rounds — на столько раундов (Солнечный луч: слепота до следующего хода), иначе — пока длится заклинание
   const until = A.fail.rounds && inFight() ? (game.init.round || 1) + A.fail.rounds : A.until;
-  addEffect(tid, { ...A.fail, by: A.by, from: A.from, spell: A.spell, conc: A.fail.rounds ? null : A.conc, until, rep: A.rep && !A.fail.once ? A.rep : null });
+  addEffect(tid, { ...A.fail, by: A.by, from: A.from, spell: A.spell, sdc: A.dc || null, sab: A.abil || null, conc: A.fail.rounds ? null : A.conc, until, rep: A.rep && !A.fail.once ? A.rep : null });
 }
 // Запрос спасброска одной цели (приём оружия, атака чудовища, повторный спасбросок): та же панель «Спасброски»
 function saveRequest(tid, spec) {
@@ -5565,7 +5664,9 @@ function chestPlayer(k) {
   if (!mine || distFt(mine, { x: C.x, y: C.y, size: 1 }) > 5) { app.toast('Подойдите к сундуку вплотную'); return; }
   if (C.o) { app.toast(`Сундук уже открыт${C.moved ? ' — содержимое у мастера в добыче' : ''}`); return; }
   const locked = +C.lock && !C.lk, trapKnown = C.trap && C.tf && !C.toff, fight = inFight(), e = econ(`pc_${user.uid}`);
-  const needAct = fight && (!isTurnOf(`pc_${user.uid}`) || e.a);
+  // Быстрые руки (плут-вор 3+): осмотр, вскрытие и обезвреживание — и бонусным действием
+  const KRg = (app.classActs(m.charId) || {}).rogue, fast = !!(KRg && KRg.sub === 'Вор' && KRg.lvl >= 3) && !e.b;
+  const needAct = fight && (!isTurnOf(`pc_${user.uid}`) || (e.a && !fast));
   app.openModal(`<div><h2>🧰 Сундук</h2>
     <p class="small">${locked ? '🔒 Заперт.' : C.lk ? '🔓 Замок открыт.' : 'Не заперт.'}${trapKnown ? ` ⚠ Ловушка: ${esc(C.trap.n)}.` : C.tf ? ' Ловушек не найдено.' : ''}</p>
     <div class="list">
@@ -5577,7 +5678,7 @@ function chestPlayer(k) {
     ${fight ? `<p class="muted small">В бою осмотр, вскрытие, взлом и обезвреживание тратят действие${needAct ? ' — сейчас действия нет' : ''}.</p>` : ''}
     <div class="modal-actions"><button data-act="closeModal">Закрыть</button></div></div>`);
   const name = mine.name, upd = (o) => R.update(ref(gpath(`chests/${k}`)), o).catch((err) => app.toast(`Не удалось: ${esc(err.code || err.message)}`));
-  const spend = () => { if (fight) R.update(ref(gpath(`econ/pc_${user.uid}`)), { a: 1 }).catch(() => {}); };
+  const spend = () => { if (fight) R.update(ref(gpath(`econ/pc_${user.uid}`)), e.a && fast ? { b: 1 } : { a: 1 }).catch(() => {}); };
   const check = (o) => app.mute(() => app.check(m.charId, o));
   const spring = () => {
     const T = C.trap, d = T.f ? rollExpr(T.f) : null;
@@ -7409,6 +7510,12 @@ function classActsHtml(id, e) {
   // Колдун: Шаги феи (Архифея), Исцеляющий свет (Небожитель)
   const W = C.warlock;
   if (W && W.sub === 'Покровитель Архифея' && W.lvl >= 3) out.push(b('cFeyStep', `🧚 Шаги феи (${W.fey})`, 'Бонусное действие: «Туманный шаг» без ячейки (30 фт) + Освежающий или Дразнящий шаг', !e.b && W.fey > 0));
+  if (W && W.sub === 'Покровитель Великий Древний' && W.lvl >= 6) out.push(b('cClair', `🧠 Ясновидящий боец (${W.clair})`, 'Существо, связанное с вами телепатией: спасбросок Мудрости, иначе минуту атакует вас с помехой, а вы его — с преимуществом', W.clair > 0));
+  // Чародей «Заводной разум»: Бастион закона (6+), Транс порядка (14+)
+  const So = C.sorc;
+  if (So && So.sub === 'Заводной разум' && So.lvl >= 6) out.push(b('cBastion', `⚙ Бастион закона (${So.pts} оч.)`, 'Очки чародейства (1–5) → столько к8 оберега вам или существу в 30 фт', So.pts > 0));
+  if (So && So.sub === 'Заводной разум' && So.lvl >= 14) out.push(So.on ? b('cTranceOff', '⚙ Транс порядка — закончить', 'Закончить Транс порядка', true)
+    : b('cTrance', `⚙ Транс порядка${So.trance > 0 ? ` (${So.trance})` : ' (5 оч.)'}`, 'Бонусное действие: минуту к20 не ниже 10, атаки по вам без преимущества', !e.b && (So.trance > 0 || So.pts >= 5)));
   if (W && W.sub === 'Покровитель Небожитель' && W.lvl >= 3) out.push(b('cHealLight', `☀ Исцеляющий свет (${W.light}к6)`, `Бонусное действие: существо в 60 фт восстанавливает до ${W.cha}к6 хитов из запаса`, !e.b && W.light > 0));
   if (K.monk && K.monk.sub === 'Путь тени' && K.monk.lvl >= 6) out.push(b('cShadowStep', '🌑 Шаг тени', 'Бонусное действие: телепорт на 60 фт из тусклого света или тьмы в тусклый свет или тьму; следующая рукопашная атака в ходу — с преимуществом', !e.b));
   if (K.monk && K.monk.sub === 'Путь милосердия' && K.monk.lvl >= 3) out.push(b('cHealHand', '🤲 Рука исцеления (1 ци)', `Действие и 1 очко: касание — ${K.monk.die}+Мдр хитов`, act && K.monk.focus > 0));
@@ -7967,7 +8074,11 @@ async function onClick(e) {
     } else if (a === 'npcInit') {
       const t = game.tokens[selId];
       await R.set(ref(gpath(`init/list/${selId}`)), { name: t.name, roll: die(20) + (+t.init || 0), owner: user.uid, kind: 'npc', tokenId: selId });
-    } else if (a === 'startFight') { await R.update(ref(gpath()), { 'init/active': true, 'init/round': 1, 'init/turn': 0, econ: null, fstats: { start: Date.now(), last: 0, by: {} } }); addLog({ kind: 'sys', txt: '⚔ Бой начался · раунд 1' }); }
+    } else if (a === 'startFight') {
+      // Рефлексы вора (плут-вор 17): второй ход в первом раунде — инициатива на 10 меньше
+      const tr = Object.fromEntries(initList().filter((en) => en.kind === 'pc' && ((game.members[en.owner] || {}).char || {}).thiefRefl && !en.tr)
+        .map((en) => [`init/list/${en.id}_tr`, { ...Object.fromEntries(Object.entries(en).filter(([x]) => x !== 'id')), name: `${en.name} (Рефлексы вора)`, roll: (+en.roll || 0) - 10, tr: 1 }]));
+      await R.update(ref(gpath()), { 'init/active': true, 'init/round': 1, 'init/turn': 0, econ: null, fstats: { start: Date.now(), last: 0, by: {} }, ...tr }); addLog({ kind: 'sys', txt: '⚔ Бой начался · раунд 1' }); }
     else if (a === 'next' || a === 'endTurn') { if (a === 'endTurn') selfRestore(); nextTurn(); }
     else if (a === 'endFight') { if (app.confirm('Закончить бой и очистить инициативу?')) { fightTally(); const rounds = (game.init && game.init.round) || 1; await R.update(ref(gpath()), { init: null, econ: null }); setTimeout(() => fightSummary(rounds), 300); addLog({ kind: 'sys', txt: 'Бой окончен' });
       if (Object.keys((game.xp || {}).kills || {}).length) xpDialog(true); } }
@@ -7988,7 +8099,7 @@ async function onClick(e) {
     else if (a === 'npcAttack') openNpcAttack(b.dataset.id);
     else if (a === 'legend') openNpcAttack(b.dataset.id, true);
     else if (a === 'compAttack') openCompAttack(b.dataset.id);
-    else if (['uncanny', 'deflect', 'rebuke', 'protect', 'cutting', 'valorAC'].includes(a)) doReaction(a, b.dataset.id);
+    else if (['uncanny', 'deflect', 'rebuke', 'protect', 'cutting', 'valorAC', 'illself'].includes(a)) doReaction(a, b.dataset.id);
     else if (a === 'csUse') csUse(b.dataset.k, b.dataset.id);
     else if (a === 'csNo') await R.update(ref(gpath(`cs/${b.dataset.k}/no`)), { [b.dataset.id]: 1 });
     else if (a === 'items') itemsDialog();
@@ -8087,7 +8198,7 @@ async function onClick(e) {
     else if (a === 'logClear') { if (app.confirm('Очистить журнал для всех?')) await R.remove(ref(gpath('log'))); }
     else if (['eco', 'dash', 'dashB', 'dis', 'disB', 'dodge', 'stand'].includes(a)) await econAct(a, b.dataset.id, b.dataset.k);
     else if (['hide', 'hideB', 'seek'].includes(a)) stealthAct(a, b.dataset.id);
-    else if (/^c(Rage|Reck|Wind|Surge|Flurry|Steady|Turn|Insp|Innate|Spark|Loh|Wild|WildEnd|Patient|Portent|Elem|ElemOff|Burst|Sense|Sacred|Vow|Wrath|Abjure|InspSmite|Preserve|Dawn|Guided|Mantle|LandAid|Sea|SeaHit|Star|StarOff|ShadowStep|HealHand|FeyStep|HealLight)$/.test(a)) classAction(a, b.dataset.id, b.dataset.k);
+    else if (/^c(Rage|Reck|Wind|Surge|Flurry|Steady|Turn|Insp|Innate|Spark|Loh|Wild|WildEnd|Patient|Portent|Elem|ElemOff|Burst|Sense|Sacred|Vow|Wrath|Abjure|InspSmite|Preserve|Dawn|Guided|Mantle|LandAid|Sea|SeaHit|Star|StarOff|ShadowStep|HealHand|FeyStep|HealLight|Bastion|Trance|TranceOff|Clair)$/.test(a)) classAction(a, b.dataset.id, b.dataset.k);
     else if (a === 'initDel') await removeFromInit(b.dataset.id);
     else if (a === 'unsel') { selId = null; renderSide(); renderTokens(); }
     else if (a === 'tokDel') { if (app.confirm('Убрать токен с поля?')) { await R.remove(ref(gpath(`tokens/${selId}`))); selId = null; } }

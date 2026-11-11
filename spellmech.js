@@ -61,6 +61,7 @@ const SPELL_MECH = {
     aura: { size: 5, save: 'dex', half: true, dmg: '2d6', up: '1d6', dtype: 'огнём', trig: ['end'] } } },
   'Guardian of Faith': { shape: 'summon', range: 30, summon: { n: 'Страж веры', ic: '🛡', invul: true, size: 2, speed: 0,
     aura: { size: 10, save: 'dex', half: true, dmg: '20', dtype: 'излучением', trig: ['enter', 'start'], pick: true, cap: 60 } } },
+  'Minor Illusion': { shape: 'summon', range: 30, summon: { n: 'Малая иллюзия', ic: '🪞', invul: true, illus: true, speed: 0 } },
   'Mage Hand': { shape: 'summon', range: 30, summon: { n: 'Волшебная рука', ic: '✋', invul: true, fly: true, speed: 30 } },
   'Find Familiar': { shape: 'summon', range: 10, summon: { forms: ['Owl', 'Cat', 'Bat', 'Raven', 'Hawk', 'Spider', 'Frog', 'Rat', 'Weasel', 'Crab', 'Lizard', 'Octopus', 'Poisonous Snake'], noAtk: true } },
   'Find Steed': { shape: 'summon', range: 30, summon: { n: 'Потусторонний скакун', ic: '🐎', size: 2, ac: '10+L', hp: '5+10*L', speed: 60, atk: [{ n: 'Удар копытом', dmg: '1d8+L', type: 'дробящим', reach: 5 }] } },
