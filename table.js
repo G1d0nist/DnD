@@ -1639,6 +1639,8 @@ function checkNpcTurn() {
 // Логово ходит на счёт инициативы 20, проигрывая ничьи
 const initList = () => Object.entries((game.init && game.init.list) || {}).map(([id, e]) => ({ id, ...e }))
   .sort((a, b) => b.roll - a.roll || (a.kind === 'lair') - (b.kind === 'lair') || String(a.name).localeCompare(String(b.name), 'ru'));
+// Существо ещё не ходило в этом бою: первый раунд и его место в очереди позже текущего (или его нет в очереди)
+const notActedYet = (tid) => { if (!inFight() || (game.init.round || 1) > 1) return false; const i = initList().findIndex((e) => (e.tokenId || e.id) === tid); return i < 0 || i > (game.init.turn || 0); };
 function currentEntry() {
   if (!game || !game.init || !game.init.active) return null;
   const l = initList();
@@ -2266,6 +2268,7 @@ function openAttack(id) {
     ${elemOf(id) ? `<label class="check" title="Стихийная настройка: попадание безоружным ударом — цель проходит спасбросок Силы или отлетает на 10 фт"><input type="checkbox" id="atkElemPush" checked> ${elemOf(id).ic} Безоружные удары толкают цель на 10 фт</label>` : ''}
     ${K.cunning ? `<label>Хитрый удар (−1к6 Скрытой атаки, СЛ ${K.cunning.dc})<select id="atkCunning"><option value="">— нет —</option><option value="trip">Подножка: Ловкость или сбит с ног</option><option value="poison">Яд: Телосложение или отравлен</option></select></label>` : ''}
     ${K.stun && K.stun.focus > 0 && !e.stun ? `<label class="check" title="Раз в ход: попадание в ближнем бою — цель проходит спасбросок Телосложения или ошеломлена до начала вашего следующего хода"><input type="checkbox" id="atkStun"> 💫 Ошеломляющий удар при попадании (1 очко, СЛ ${K.stun.dc})</label>` : ''}
+    ${K.ranger && K.ranger.sub === 'Сумрачный охотник' && K.ranger.lvl >= 3 && K.ranger.dread > 0 && !e.dread ? `<label class="check" title="Раз в ход при попадании оружием: +${K.ranger.dreadDie} психического урона"><input type="checkbox" id="atkDread"> 🌑 Ужасающий удар при попадании (+${K.ranger.dreadDie}, осталось ${K.ranger.dread})</label>` : ''}
     ${O.sneak ? `<p class="muted small">Скрытая атака ${O.sneak}к6 добавится сама — раз в ход, фехтовальным или дальнобойным оружием при преимуществе или если рядом с целью ваш союзник.${e.sa ? ' <b>В этом ходу уже была.</b>' : ''}</p>` : ''}`;
   app.openModal(`<h2>⚔ Атака</h2>
     <div class="atk-ways">${ways.map(([k, n], i) => `<label class="check"><input type="radio" name="atkWay" value="${k}" ${i ? '' : 'checked'}> ${esc(n)}</label>`).join('')}</div>
@@ -2286,8 +2289,9 @@ function openAttack(id) {
     }
     const left = way === 'action' ? (e.atk > 0 ? e.atk : per) : way === 'magic' ? A.beams || 1 : 1, stunOn = !!($('#atkStun') || {}).checked;
     const brutal = ($('#atkBrutal') || {}).value || '', cunning = ($('#atkCunning') || {}).value || '', elemPush = $('#atkElemPush') ? $('#atkElemPush').checked : true;
+    const dread = !!($('#atkDread') || {}).checked;
     app.closeModal();
-    aim = { from: id, charId: m.charId, atk: A, way, left, man, smite, ...(stunOn ? { stun: true, stunDc: K.stun.dc } : {}),
+    aim = { from: id, charId: m.charId, atk: A, way, left, man, smite, dread, ...(stunOn ? { stun: true, stunDc: K.stun.dc } : {}),
       ...(brutal ? { brutal, brutalDice: K.brutal.dice } : {}), ...(cunning ? { cunning, cunDc: K.cunning.dc } : {}), elemPush };
     renderAll();
   }));
@@ -2526,6 +2530,14 @@ function attackTarget(tid) {
   if (A.spell && fxOf(a.from).some(([, f]) => f.innate)) adv.push('врождённое колдовство');
   // Клятва вражды (паладин мести): атаки по этой цели — с преимуществом
   if (fxOf(tid).some(([, f]) => f.foe === a.from)) adv.push('клятва вражды');
+  // Убийство (плут-убийца): в первом раунде боя атаки по тем, кто ещё не ходил, — с преимуществом (и Скрытая атака + уровень плута)
+  const KR = !a.npc && a.charId ? app.classActs(a.charId) || {} : {};
+  const assassin = KR.rogue && KR.rogue.sub === 'Убийца' && KR.rogue.lvl >= 3 && notActedYet(tid);
+  if (assassin) adv.push('убийство');
+  // Охотник (оборонительная тактика): Многослойная защита — попавший по нему атакует его с помехой до конца хода; Уход от орды — помеха атакам по возможности
+  const hdefT = T.kind === 'pc' ? (charOf(T) || {}).hdef : '';
+  if (hdefT === 'Многослойная защита' && (econ(a.from).mad || {})[tid]) dis.push('многослойная защита');
+  if (hdefT === 'Уход от орды' && a.oa) dis.push('уход от орды');
   // Варвар в ярости (облик волка) рядом с целью — союзники атакуют её с преимуществом
   if (Object.entries(game.tokens).some(([k, o]) => k !== a.from && k !== tid && team(o) === team(me_) && !incapTok(o) && distFt(o, T) <= 5 && fxOf(k).some(([, f]) => f.wildAsp === 'wolf'))) adv.push('стая (волк)');
   if (ea.steady) { adv.push('верный прицел'); R.update(ref(gpath(`econ/${a.from}`)), { steady: null }).catch(() => {}); }
@@ -2554,7 +2566,7 @@ function attackTarget(tid) {
       ...(!A.spell ? fxOf(a.from).filter(([, e]) => e.dmgDie).map(([, e]) => ({ e: e.dmgDie, n: e.n })) : []),
       ...(!A.spell && bA.dmgDie ? [{ e: bA.dmgDie, n: 'Мантия крестоносца' }] : []),
       ...(brutal ? [{ e: a.brutalDice || '1d10', n: 'Жестокий удар' }] : [])],
-    cunning: !!a.cunning, ...(elem ? { dtype: elem.dtype } : {}) };
+    cunning: !!a.cunning, ...(elem ? { dtype: elem.dtype } : {}), sneakPlus: assassin ? KR.rogue.lvl : 0 };
   // Варвар в ярости, первое попадание в ход атакой оружием: Берсерк (при Безрассудной атаке) — к6 × бонус ярости, Фанатик — 1к6 + ½ уровня
   const KB = !a.npc && !A.spell ? (app.classActs(a.charId) || {}).rage : null;
   const bonusHit = KB && KB.on && !econ(a.from).fury && !ranged
@@ -2567,6 +2579,14 @@ function attackTarget(tid) {
   const dStrike = KC.cleric && KC.cleric.strike && !econ(a.from).dstrike ? KC.cleric.strike : '';
   if (dStrike) ro.dmgDice.push({ e: dStrike, n: 'Божественный удар' });
   fxOf(a.from).forEach(([, f]) => { if (+f.atkBonus && !A.spell) ro.dice.push({ e: String(f.atkBonus), n: f.n }); });
+  // Следопыт: Убийца колоссов (раз в ход, цель ранена), Ужасающие удары странника фей (раз в ход на цель), Ужасающий удар сумрачного охотника (по выбору, раз в ход)
+  const KRa = !A.spell ? KR.ranger : null, eF = econ(a.from);
+  const coloss = KRa && KRa.prey === 'Убийца колоссов' && !eF.coloss && +T.hpMax > 0 && (+T.hp || 0) < +T.hpMax;
+  if (coloss) ro.dmgDice.push({ e: '1d8', n: 'Убийца колоссов' });
+  const feyS = KRa && KRa.sub === 'Странник фей' && KRa.lvl >= 3 && !(eF.feyT || {})[tid];
+  if (feyS) ro.dmgDice.push({ e: KRa.fey, n: 'Ужасающие удары' });
+  const dreadS = KRa && a.dread && !eF.dread && KRa.dread > 0;
+  if (dreadS) ro.dmgDice.push({ e: KRa.dreadDie, n: 'Ужасающий удар' });
   // Направленный удар (жрец войны): +10 к следующему броску атаки, эффект тратится
   const guided = fxOf(a.from).find(([, f]) => +f.guided);
   if (guided) ro.dice.push({ e: String(guided[1].guided), n: guided[1].n });
@@ -2602,6 +2622,20 @@ function attackTarget(tid) {
   });
   if (bonusHit && res.hit) R.update(ref(gpath(`econ/${a.from}`)), { fury: 1 }).catch(() => {});
   if (dStrike && res.hit) R.update(ref(gpath(`econ/${a.from}`)), { dstrike: 1 }).catch(() => {});
+  if (res.hit && coloss) R.update(ref(gpath(`econ/${a.from}`)), { coloss: 1 }).catch(() => {});
+  if (res.hit && feyS) R.update(ref(gpath(`econ/${a.from}/feyT`)), { [tid]: 1 }).catch(() => {});
+  if (res.hit && dreadS) { app.useRes(a.charId, 'dreadStrike', 'Ужасающий удар'); R.update(ref(gpath(`econ/${a.from}`)), { dread: 1 }).catch(() => {}); a.dread = false; }
+  // Многослойная защита охотника: попал — дальнейшие атаки этого существа по нему в этом ходу с помехой
+  if (res.hit && hdefT === 'Многослойная защита') R.update(ref(gpath(`econ/${a.from}/mad`)), { [tid]: 1 }).catch(() => {});
+  // Убийца орд: раз в ход — ещё одна атака по другому существу в 5 фт от цели
+  if (KRa && KRa.prey === 'Убийца орд' && !eF.horde && inFight()) {
+    const other = Object.entries(game.tokens).filter(([k, o]) => k !== tid && k !== a.from && hostile(me_, o) && !isDead(o) && distFt(o, T) <= 5);
+    if (other.length) {
+      R.update(ref(gpath(`econ/${a.from}`)), { horde: 1 }).catch(() => {});
+      a.left += 1;
+      addLog({ kind: 'act', who: me_.name, txt: `🏹 Убийца орд: ещё одна атака — по ${other.map(([, o]) => o.name).join(' или ')} (в 5 фт от ${T.name})` });
+    }
+  }
   // Изученные атаки (воин 13+): промах — следующая атака по этой цели с преимуществом
   if (!res.hit && !a.npc) { const KF = (app.classActs(a.charId) || {}).fighter; if (KF && KF.lvl >= 13) addEffect(a.from, { n: 'Изученные атаки', vex: tid, by: user.uid, from: a.from }); }
   // Жестокий удар: попадание — толчок на 15 фт (Большой и меньше) или скорость −15 фт до начала следующего хода варвара

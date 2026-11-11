@@ -307,6 +307,8 @@ window.dndApp = {
       aura: clsLvl(c, 'Паладин') >= 6 ? { r: clsLvl(c, 'Паладин') >= 18 ? 30 : 10, b: Math.max(1, am(c, 'cha')), courage: clsLvl(c, 'Паладин') >= 10,
         oath: clsLvl(c, 'Паладин') >= 7 ? (classList(c).find((e) => e.cls === 'Паладин') || {}).sub || '' : '' } : null,
       wild: !!(c.shape && !c.shape.poly), ward: +cb.ward || 0, wardMax: wardMax(c),
+      // Охотник 7+: Оборонительная тактика (Уход от орды / Многослойная защита) — учитывают атакующие
+      hdef: classList(c).some((e) => e.cls === 'Следопыт' && e.sub === 'Охотник' && e.lvl >= 7) ? ((c.cpicks || {}).hdef || [])[0] || '' : '',
       // Базовые характеристики — мастер видит и меняет их со стола
       abil: Object.fromEntries(ABILITIES.map((a) => [a.k, +c.abil[a.k] || 10])) };
   },
@@ -436,7 +438,7 @@ window.dndApp = {
     const c = state.chars[id];
     if (!c) return null;
     const left = (k) => { const r = c.resources.find((x) => x.auto === k); return r ? r.max - r.used : 0; };
-    const B = clsLvl(c, 'Варвар'), F = clsLvl(c, 'Воин'), M = clsLvl(c, 'Монах'), Rg = clsLvl(c, 'Плут');
+    const B = clsLvl(c, 'Варвар'), F = clsLvl(c, 'Воин'), M = clsLvl(c, 'Монах'), Rg = clsLvl(c, 'Плут'), Ra = clsLvl(c, 'Следопыт');
     const unarmed = c.attacks.find((a) => /безоруж|боевые искусства/i.test(a.n));
     return {
       rage: B ? { left: left('rage'), on: raging(c), dmg: rageDmg(c), lvl: B, sub: (classList(c).find((e) => e.cls === 'Варвар') || {}).sub || '' } : null, reckless: B >= 2,
@@ -457,6 +459,11 @@ window.dndApp = {
       cunning: Rg >= 5 ? { dc: 8 + am(c, 'dex') + pb(c) } : null,
       // Упорный (воин 9+): переброс проваленного спасброска с бонусом уровня воина
       indom: F >= 9 ? { left: left('indomitable'), bonus: F } : null,
+      // Плут: подкласс (Убийца — Убийство, Клинок души — психические клинки)
+      rogue: Rg ? { lvl: Rg, sub: (classList(c).find((e) => e.cls === 'Плут') || {}).sub || '' } : null,
+      // Следопыт: подкласс и выборы Охотника, Ужасающий удар сумрачного охотника, Ужасающие удары странника фей
+      ranger: Ra ? { lvl: Ra, sub: (classList(c).find((e) => e.cls === 'Следопыт') || {}).sub || '', prey: ((c.cpicks || {}).hprey || [])[0] || '',
+        dread: left('dreadStrike'), dreadDie: Ra >= 11 ? '2d8' : '2d6', fey: Ra >= 11 ? '1d6' : '1d4' } : null,
     };
   },
   // Предзнаменование со стола: оставшиеся к20; usePortent — забрать одно значение (оно тратится)
@@ -793,14 +800,16 @@ window.dndApp = {
       const r = rollD20(`${A.n} → ${o.target || 'цель'}`, A.bonus, { attack: true, kind: 'attack', weapon: !A.spell, adv: o.adv, dis: o.dis, ac: o.ac, dice, force: o.force });
       const hit = r.nat !== 1 && (r.crit || r.total >= o.ac);
       const crit = hit && (r.crit || !!o.autoCrit);
-      let expr = A.beast ? (crit ? scaleDice(A.dmg, 2) : A.dmg) : A.cantrip ? withMod(crit ? scaleDice(A.dice, 2) : A.dice, A.mod) : A.dmg ? dmgExpr(c, a, crit) : '';
+      let expr = A.beast || A.fixed ? (crit ? scaleDice(A.dmg, 2) : A.dmg) : A.cantrip ? withMod(crit ? scaleDice(A.dice, 2) : A.dice, A.mod) : A.dmg ? dmgExpr(c, a, crit) : '';
       const extra = [], X = (e) => (crit ? scaleDice(e, 2) : e);
       // Скрытая атака: раз в ход, фехтовальное или дальнобойное, есть преимущество или союзник рядом с целью (и нет помехи)
       // Хитрый удар (плут 5+): одна к6 Скрытой атаки меняется на эффект (сбить с ног, отравить)
       const sneakDice = Math.ceil(clsLvl(c, 'Плут') / 2), cutD = o.cunning ? 1 : 0;
       if (hit && o.sneakOk && sneakDice && A.fin && (r.mode > 0 || (o.allyNear && r.mode === 0))) {
         if (sneakDice - cutD > 0) expr += `+${X(`${sneakDice - cutD}d6`)}`;
-        extra.push('Скрытая атака');
+        // Убийство (Убийца): в первом раунде по ещё не ходившему — + уровень плута
+        if (+o.sneakPlus) expr += `+${+o.sneakPlus}`;
+        extra.push(+o.sneakPlus ? 'Скрытая атака + Убийство' : 'Скрытая атака');
         if (cutD) extra.push('хитрый удар (−1к6)');
       }
       // Божественная кара: ячейка тратится только при попадании, 2к8 + 1к8 за уровень выше 1
@@ -817,7 +826,7 @@ window.dndApp = {
       const mk = a && masteryActive(c, a) ? a.mastery : '';
       res = { total: r.total, nat: r.nat, detail: r.detail, hit, crit, dmg: d ? Math.max(0, d.total) : 0, dmgDetail: d ? d.detail : '', type: o.dtype || A.type,
         mastery: mk, mdc: a ? 8 + abilFor(c, a) + pb(c) : 0, mmod: a ? abilFor(c, a) : 0, extra,
-        sneak: extra.includes('Скрытая атака'), smite, man: sup ? o.maneuver : '', manDC: 8 + pb(c) + Math.max(am(c, 'str'), am(c, 'dex')), repel: !!A.repel && hit };
+        sneak: extra.some((x) => x.startsWith('Скрытая атака')), smite, man: sup ? o.maneuver : '', manDC: 8 + pb(c) + Math.max(am(c, 'str'), am(c, 'dex')), repel: !!A.repel && hit };
     });
     save(); render();
     return res;
@@ -966,7 +975,9 @@ const auraBonus = (c) => (clsLvl(c, 'Паладин') >= 6 && (+c.combat.hp || 0
 // Владение спасброском: отмечено в листе или дано чертой «Устойчивый»
 const saveProf = (c, k) => !!c.saves[k] || c.feats.some((f) => f.key === 'resilient' && f.a === k);
 const saveBonus = (c, k) => am(c, k) + (saveProf(c, k) ? pb(c) : 0) + auraBonus(c) + magicSum(c, 'mSave');
-const initBonus = (c) => am(c, 'dex') + (+c.combat.initBonus || 0) + (hasFeat(c, 'alert') ? pb(c) : 0);
+// Инициатива: Ловкость, бонус из листа, Бдительный (+БМ), Сумрачный охотник (+мод. Мудрости)
+const initBonus = (c) => am(c, 'dex') + (+c.combat.initBonus || 0) + (hasFeat(c, 'alert') ? pb(c) : 0)
+  + (classList(c).some((e) => e.cls === 'Следопыт' && e.sub === 'Сумрачный охотник' && e.lvl >= 3) ? am(c, 'wis') : 0);
 const spellMod = (c) => am(c, c.spellcasting.ability);
 const spellDC = (c) => 8 + pb(c) + spellMod(c) + (+c.spellcasting.bonus || 0);
 const spellAtk = (c) => pb(c) + spellMod(c) + (+c.spellcasting.bonus || 0);
@@ -1238,6 +1249,10 @@ function resLevels(c) {
   if (hasFeat(c, 'lucky')) map.luckyFeat = lvl(c);
   const bm = classList(c).find((e) => e.cls === 'Воин' && e.sub === 'Мастер боевых искусств');
   if (bm) map.superiority = bm.lvl;
+  // Сумрачный охотник — Ужасающий удар, Клинок души — кости пси-энергии
+  const gs = classList(c).find((e) => e.cls === 'Следопыт' && e.sub === 'Сумрачный охотник'), sk = classList(c).find((e) => e.cls === 'Плут' && e.sub === 'Клинок души');
+  if (gs) map.dreadStrike = gs.lvl;
+  if (sk) map.psiDice = sk.lvl;
   (speciesOf(c)?.res || []).forEach((k) => { map[k] = lvl(c); });
   return map;
 }
@@ -1355,6 +1370,8 @@ function autoAdv(c, o) {
   if (k === 'save' && o.abil === 'dex' && B >= 2 && !has('incapacitated')) adv.push('Опасное чутьё');
   if (k === 'init' && B >= 7) adv.push('Дикий инстинкт');
   if (champ && (k === 'init' || o.skill === 'athletics')) adv.push('Примечательный атлет');
+  // Убийца (плут 3+): Убийство — преимущество на инициативу
+  if (k === 'init' && classList(c).some((e) => e.cls === 'Плут' && e.sub === 'Убийца' && e.lvl >= 3)) adv.push('Убийство');
   if (o.skill === 'stealth' && armorStealthDis(c)) dis.push('доспех');
   if (o.conc && hasFeat(c, 'warCaster')) adv.push('Боевой заклинатель');
   return { adv, dis };
@@ -3059,6 +3076,11 @@ function tableAttacks(c) {
         + (clsLvl(c, 'Жрец') >= 7 && ((c.cpicks || {}).bstrike || []).includes('Мощные заклинания') && /Жрец/.test(s.k || '') ? am(c, 'wis') : 0);
       return { id: 'sp:' + s.id, n: s.n, bonus: spellAtkFor(c, s), dmg: withMod(dice, mod), dice, mod, type: dmgWord(s.x), rng: atkRange(s.r, true), spell: true, cantrip: true, beams, repel: EB && inv.includes('Отталкивающий взрыв') };
     }),
+    // Клинок души: Психические клинки — фехтовальные, метательные (60/120 фт), 1к6 + Лов психической энергией; второй клинок бонусным действием — 1к4
+    ...(classList(c).some((e) => e.cls === 'Плут' && e.sub === 'Клинок души' && e.lvl >= 3) ? [['psyBlade', 'Психический клинок', '1d6'], ['psyBlade2', 'Психический клинок (второй, бонусное)', '1d4']].map(([id, n, d]) => {
+      const m = Math.max(am(c, 'dex'), am(c, 'str'));
+      return { id, n, bonus: m + pb(c), dmg: withMod(d, m), type: 'психической энергией', rng: { reach: 5, near: 60, far: 120, thrown: true }, fin: true, fixed: true };
+    }) : []),
   ];
 }
 
