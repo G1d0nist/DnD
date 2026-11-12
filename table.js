@@ -394,9 +394,18 @@ function pushMyChar() {
     R.update(ref(gpath()), upd).catch(() => {});
   }, 300);
 }
+// Можно ли поставить существо на клетку: в пределах поля, не стена, не препятствие, не закрытая дверь
+function standable(x, y, s = 1) {
+  for (let dx = 0; dx < s; dx++) for (let dy = 0; dy < s; dy++) {
+    const k = `${x + dx}_${y + dy}`, T = TERRAIN[(game.map || {})[k]];
+    if (x + dx < 0 || y + dy < 0 || x + dx >= W() || y + dy >= H() || (T && T.block) || doorShut(k) || WALL.block.has(k)) return false;
+  }
+  return true;
+}
 function placeMyToken(x, y) {
   const m = me(), s = m && app.summary(m.charId);
   if (!s) { app.toast('Персонаж не найден на этом устройстве'); return; }
+  if (!standable(x, y, SIZE_N[s.size] || 1)) { app.toast('Сюда не встать — там стена или препятствие'); return; }
   R.set(ref(gpath(`tokens/pc_${user.uid}`)), { kind: 'pc', owner: user.uid, name: s.name, x, y, size: SIZE_N[s.size] || 1, color: colorOf(user.uid),
     hp: s.hp, hpMax: s.hpMax, temp: s.temp, ac: s.ac, cond: s.cond, speed: s.speed, init: s.init, dv: s.dv || 0, ...(s.img ? { img: s.img } : {}), ...(s.sense ? { sense: s.sense } : {}) });
   lastSent = '';
@@ -407,6 +416,7 @@ function placeCompanion(x, y) {
   const m = me(), p = m && app.companions(m.charId).find((c) => c.id === compPlace);
   compPlace = null;
   if (!p) return;
+  if (!standable(x, y)) { app.toast('Сюда не встать — там стена или препятствие'); return; }
   R.set(ref(gpath(`tokens/pc_${user.uid}_${p.id}`)), { kind: 'pc', comp: p.id, owner: user.uid, name: p.n, x, y, size: 1, color: colorOf(user.uid),
     hp: p.hp, hpMax: p.hpMax, ac: p.ac, speed: parseInt(p.speed) || 30, cond: [], ...compStats(p) }).catch((err) => app.toast(`Не удалось: ${esc(err.code || err.message)}`));
 }
@@ -830,7 +840,7 @@ function drawFog() {
     }
   }
   if (!fogVis) return;
-  const player = !isDM() || fogPreview, seen = game.seen || {};
+  const player = !isDM() || fogPreview, seen = game.seen || {}, dark3 = g3Dark();
   for (let x = 0; x < W(); x++) for (let y = 0; y < H(); y++) {
     const k = `${x}_${y}`;
     if (fogVis.has(k)) {
@@ -838,7 +848,7 @@ function drawFog() {
       else if (fogDark.has(k)) { g.fillStyle = 'rgba(14,16,30,.48)'; g.fillRect(x * CELL, y * CELL, CELL, CELL); }
       continue;
     }
-    g.fillStyle = player ? (seen[k] ? 'rgba(10,8,6,.62)' : '#0a0806') : seen[k] ? 'rgba(0,0,0,.18)' : 'rgba(0,0,0,.42)';
+    g.fillStyle = player ? (seen[k] && !dark3 ? 'rgba(10,8,6,.62)' : '#0a0806') : seen[k] ? 'rgba(0,0,0,.18)' : 'rgba(0,0,0,.42)';
     g.fillRect(x * CELL, y * CELL, CELL, CELL);
   }
   // Игрок запоминает увиденное — общая разведка отряда
@@ -8433,7 +8443,13 @@ function cellShade(k) {
   if (!fogVis) return 1;
   if (fogVis.has(k)) return fogDark.has(k) ? 0.5 : fogDim.has(k) ? 0.72 : 1;
   const seen = (game.seen || {})[k];
-  return !isDM() || fogPreview ? (seen ? 0.38 : -1) : seen ? 0.8 : 0.6;
+  return !isDM() || fogPreview ? (seen && !g3Dark() ? 0.38 : -1) : seen ? 0.8 : 0.6;
+}
+// Подземелье (каменный пол, темнота, туман по зрению): в объёмном виде всё, чего отряд сейчас не видит, — чистая тьма,
+// как в образце стиля; разведанное не подсвечивается (в плоском виде — по-прежнему приглушено)
+function g3Dark() {
+  const f = fogSet();
+  return g3on && f.mode === 'vision' && (f.amb || 'bright') === 'dark' && ['', 'stone'].includes((game.meta || {}).ground || '');
 }
 function g3State() {
   const f = fogSet(), amb = fogOn() ? f.amb || 'bright' : (game.meta || {}).timeLight ? dayPart().amb : 'bright';

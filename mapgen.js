@@ -1286,6 +1286,12 @@ const MAPGEN = (() => {
     out.cells = {};
     for (let y = 0; y < h; y++) for (let x = 0; x < w; x++) if (G.g[y][x]) out.cells[`${x}_${y}`] = G.g[y][x];
     Object.keys(out.doors).forEach((k) => { if (out.cells[k] === 'wall') delete out.doors[k]; });
+    // Две двери подряд в одном проходе — вторая лишняя (двустворчатые ворота поперёк прохода остаются)
+    Object.keys(out.doors).forEach((k) => {
+      if (!out.doors[k]) return;
+      const [x, y] = k.split('_').map(Number), wall = (a, b) => out.cells[`${a}_${b}`] === 'wall';
+      [[1, 0], [0, 1]].forEach(([dx, dy]) => { const n = `${x + dx}_${y + dy}`; if (out.doors[n] && wall(x + dy, y + dx) && wall(x - dy, y - dx)) { if (out.doors[n].l) out.doors[k].l = 1; delete out.doors[n]; } });
+    });
     out.chests = out.chests.filter((c, i, a) => !['wall', 'rock', 'tree', 'water', 'furn', 'lava', 'chasm', 'grave', 'mushroom', 'crate', 'stairs'].includes(out.cells[`${c.x}_${c.y}`]) && a.findIndex((d) => d.x === c.x && d.y === c.y) === i && !out.doors[`${c.x}_${c.y}`]);
     return out;
   }
