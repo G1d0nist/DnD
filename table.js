@@ -3782,7 +3782,7 @@ function drawAreas() {
       g.fillStyle = Z.dark ? 'rgba(4,4,8,.82)' : Z.obscure === 'heavy' ? 'rgba(190,195,205,.55)' : Z.obscure === 'light' ? 'rgba(190,195,205,.28)' : rgba(col, A.preview ? 0.32 : 0.22);
       const cells = A.shape === 'multi' ? multiCells(A, true) : areaCells(A);
       cells.forEach(([x, y]) => g.fillRect(x * CELL, y * CELL, CELL, CELL));
-      if (Z.obscure === 'heavy' && !Z.dark) cells.forEach(([x, y], i) => { if ((x * 7 + y * 3) % 4) return; g.fillStyle = 'rgba(235,238,245,.35)'; g.beginPath(); g.arc(x * CELL + 20, y * CELL + 20, 14 + (i % 5), 0, Math.PI * 2); g.fill(); });
+      if (Z.obscure === 'heavy' && !Z.dark && !g3on) cells.forEach(([x, y], i) => { if ((x * 7 + y * 3) % 4) return; g.fillStyle = 'rgba(235,238,245,.35)'; g.beginPath(); g.arc(x * CELL + 20, y * CELL + 20, 14 + (i % 5), 0, Math.PI * 2); g.fill(); });
       if (Z.silence) { g.save(); g.font = '18px system-ui'; cells.forEach(([x, y]) => { if ((x + y) % 3 === 0) g.fillText('🔇', x * CELL + 10, y * CELL + 27); }); g.restore(); }
       g.beginPath();
       if (A.shape === 'multi') (A.parts || []).concat(A.cur && A.preview ? [A.cur] : []).forEach((P) => shapePath(g, P)); else shapePath(g, G);
@@ -3935,6 +3935,8 @@ function drawWall(g, A) {
   (A.band || []).forEach((k) => { const [x, y] = k.split('_').map(Number); g.fillStyle = 'rgba(255,120,40,.16)'; g.fillRect(x * CELL, y * CELL, CELL, CELL); });
   (A.cells || []).forEach((k, i) => {
     const [x, y] = k.split('_').map(Number), px = x * CELL, py = y * CELL;
+    // Объёмный вид: стена стоит на поле сама (пламя, камень, лёд) — на полу остаётся только тонкий контур клеток
+    if (g3on && !A.preview) { g.globalAlpha = 0.45; g.strokeStyle = prism ? 'rgba(255,255,255,.8)' : line; g.lineWidth = 1.5; g.strokeRect(px + 2, py + 2, CELL - 4, CELL - 4); g.globalAlpha = 1; return; }
     g.fillStyle = prism ? `hsla(${(i * 47) % 360},90%,60%,.75)` : fill;
     g.fillRect(px + 1, py + 1, CELL - 2, CELL - 2);
     g.strokeStyle = prism ? 'rgba(255,255,255,.8)' : line; g.lineWidth = 2; g.setLineDash(A.preview ? [5, 4] : []);
@@ -7250,7 +7252,7 @@ function fxLog() {
       if ((e.t || 0) < openedAt || Date.now() - (e.t || 0) > 15000) { if (e.down) skulls.add(e.k); return; }
       if (e.kind === 'atk' && e.graze) fxHit(e.tgt, e.dmg, {});
       else if (e.kind === 'atk') fxAttack(e);
-      else if (e.kind === 'heal') floatText(e.tgt, `+${e.heal}`, 'fx-heal');
+      else if (e.kind === 'heal') { floatText(e.tgt, `+${e.heal}`, 'fx-heal'); const c = g3on && !calm() && tokCenter(e.tgt); if (c) g3.burst({ shape: 'target', x: c.x / CELL, y: c.y / CELL, r: c.s / CELL / 2, color: '#5a9e5a' }); }
       else if (e.kind === 'dmg') fxHit(e.tgt, e.dmg, {});
       else if (e.kind === 'area' && e.fx) fxArea(e.fx);
       else if (e.kind === 'save' && e.res) e.res.forEach((r, i) => setTimeout(() => fxHit(r.id, r.dmg, { saved: r.ok, down: r.down }), 200 + i * 140));
@@ -7273,10 +7275,13 @@ function fxAttack(e) {
   const impact = () => fxHit(e.tgt, e.hit ? e.dmg : null, { crit: e.crit, miss: !e.hit, down: e.down });
   if (!A || calm()) { impact(); return; }
   const color = colorFor(e.dtype);
-  if (e.anim === 'melee' || !e.anim) { fxSlash(B, color, e.crit); setTimeout(impact, 200); return; }
+  // Объёмный вид: взмах, стрела или сгусток магии летят в сцене; он же говорит, когда показать урон
+  const atk3 = (to) => ({ from: e.from, to: e.tgt, ax: A.x / CELL, ay: A.y / CELL, bx: to.x / CELL, by: to.y / CELL, kind: e.anim || 'melee', color, hit: !!e.hit, crit: !!e.crit });
+  if (e.anim === 'melee' || !e.anim) { if (g3on) g3.attack(atk3(B)); else fxSlash(B, color, e.crit); setTimeout(impact, 200); return; }
   const dist = Math.hypot(B.x - A.x, B.y - A.y) || 1, ux = (B.x - A.x) / dist, uy = (B.y - A.y) / dist, side = (e.nat || 0) % 2 ? 1 : -1;
   // Промах: снаряд проходит мимо цели
   const end = e.hit ? B : { x: B.x + ux * CELL * 1.6 - uy * CELL * 0.55 * side, y: B.y + uy * CELL * 1.6 + ux * CELL * 0.55 * side };
+  if (g3on) { setTimeout(impact, g3.attack(atk3(end))); return; }
   const dur = Math.min(650, 160 + dist * 0.9);
   fxProjectile(A, end, e.anim, color, e.hit ? dur : dur * 1.3);
   setTimeout(impact, dur);
@@ -7336,6 +7341,11 @@ function floatText(id, text, cls) {
 // Вспышка области: сфера и конус «раскрываются» от точки начала, линия — бьёт лучом, затем гаснут
 function fxArea(f) {
   if (calm()) return;
+  if (g3on) { // объёмный вид: взрыв, конус, луч — в сцене, а не рисунком на полу
+    const c = f.shape === 'target' ? tokCenter(f.tgt) : null;
+    if (f.shape !== 'target' || c) g3.burst({ shape: f.shape, x: c ? c.x / CELL : f.ox, y: c ? c.y / CELL : f.oy, r: c ? c.s / CELL / 2 : f.r || aLen(f), len: aLen(f), hw: aHalfW(f), ang: f.ang || 0, color: f.color });
+    return;
+  }
   fxAreas.push({ f, t0: performance.now() });
   if (f.shape === 'sphere' && f.size >= 20) $('#tblBoard').animate([{ translate: '0 0' }, { translate: '3px -2px' }, { translate: '-3px 2px' }, { translate: '2px 1px' }, { translate: '0 0' }], { duration: 300, delay: 250 });
   if (!fxRaf) fxRaf = requestAnimationFrame(fxFrame);
@@ -8457,6 +8467,15 @@ function g3State() {
     ...Object.values(game.tokens || {}).filter((t) => t.lt && !(t.hidden && !isDM()) && !fogHides(t)).map((t) => ({ x: t.x + (t.size || 1) / 2, y: t.y + (t.size || 1) / 2, r: ((+t.lt.b || 0) + (+t.lt.d || 0)) / FT() }))];
   return { w: W(), h: H(), bg: !!bgImg, ground: (game.meta || {}).ground || '', map: bgImg ? {} : game.map || {}, doors: game.doors || {}, chests: Object.values(game.chests || {}).map((C) => ({ x: C.x, y: C.y, o: !!C.o })), drops: Object.values(game.drops || {}).map((D) => ({ x: D.x, y: D.y })), lights: lights.filter((L) => cellShade(`${Math.floor(L.x)}_${Math.floor(L.y)}`) >= 0), amb, shade: cellShade };
 }
+// Области, которые держатся на поле, и стены заклинаний — для частиц и объёмных стен; только видимые клетки
+function g3Zones() {
+  return Object.values(game.areas || {}).filter((A) => A && (!A.glyph || A.by === user.uid || isDM()) && !['target', 'tp', 'summon'].includes(A.shape)).map((A) => {
+    const Z = A.z || {}, wall = A.shape === 'wall';
+    const kind = wall ? `wall-${(A.wall || {}).style || 'x'}` : Z.dark ? 'dark' : Z.obscure ? 'cloud' : A.glyph ? 'glyph' : A.keep ? 'zone' : '';
+    const cells = !kind ? [] : wall ? (A.cells || []).map((k) => k.split('_').map(Number)) : A.shape === 'multi' ? multiCells(A) : areaCells(A);
+    return { kind, color: A.color || '#d4a64a', cells: cells.filter(([x, y]) => cellShade(`${x}_${y}`) >= 0) };
+  }).filter((z) => z.cells.length);
+}
 async function g3Toggle(want) {
   if (g3busy) return;
   ls.set('dnd55-3d', want ? '1' : '0');
@@ -8464,7 +8483,7 @@ async function g3Toggle(want) {
     g3busy = true;
     try {
       const m = await import('./table3d.js');
-      g3 = m.create($('#tblWrap'), { CELL, canvases: { terrain: $('#tblTerrain'), areas: $('#tblAreas'), range: $('#tblRange'), fog: $('#tblFog'), fx: $('#tblFxCv') }, state: g3State,
+      g3 = m.create($('#tblWrap'), { CELL, canvases: { terrain: $('#tblTerrain'), areas: $('#tblAreas'), range: $('#tblRange'), fog: $('#tblFog'), fx: $('#tblFxCv') }, state: g3State, zones: g3Zones,
         view: () => { const w = $('#tblWrap'); return { cx: (cam.x + w.clientWidth / 2) / zoom / CELL, cy: (cam.y + w.clientHeight / 2) / zoom / CELL, zoom, vh: w.clientHeight }; } });
       window.__g3 = g3;
     } catch (err) { g3busy = false; ls.set('dnd55-3d', '0'); app.toast('Не удалось включить объёмный вид: нужен интернет при первом включении и видеокарта с WebGL'); console.error(err); return; }
