@@ -1,0 +1,104 @@
+<!doctype html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<title>Образец стиля стола</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Cormorant+SC:wght@600;700&family=Inter:wght@400;500;600;700;800&display=swap" rel="stylesheet">
+<style>
+:root{--gold:#d4a64a;--gold2:#f0c76a;--text:#ece3d4;--muted:#a39581;--line:#3d342a;--red:#c94a3d;color-scheme:dark}
+*{box-sizing:border-box}
+html,body{margin:0;height:100%;overflow:hidden;background:#060508;color:var(--text);font:14px/1.4 Inter,system-ui,sans-serif}
+#cv{position:fixed;inset:0;display:block;touch-action:none}
+.panel{background:linear-gradient(180deg,rgba(42,34,26,.93),rgba(18,14,11,.95));border:1px solid #5b4a33;border-radius:10px;
+  box-shadow:inset 0 0 0 1px #000,inset 0 0 0 2px rgba(240,199,106,.07),0 10px 30px rgba(0,0,0,.6)}
+#badge{position:fixed;left:12px;top:10px;padding:6px 10px;display:flex;gap:8px;align-items:center;z-index:5;flex-wrap:wrap}
+#badge b{font:700 17px 'Cormorant SC',Georgia,serif;color:var(--gold2);letter-spacing:.03em}
+.btn{font:inherit;font-size:12px;color:var(--text);background:#2d2720;border:1px solid #4d4030;border-radius:7px;padding:4px 10px;cursor:pointer}
+.btn:hover{border-color:var(--gold)}
+.btn.on{background:#6b5022;border-color:var(--gold)}
+#init{position:fixed;left:50%;top:10px;transform:translateX(-50%);display:flex;gap:10px;align-items:center;padding:6px 14px 8px;z-index:5}
+#init .round{color:var(--muted);font-size:10px;text-transform:uppercase;letter-spacing:.14em;text-align:center;margin-right:4px}
+#init .round b{display:block;font:700 22px 'Cormorant SC',serif;color:var(--gold2);letter-spacing:0;line-height:1}
+.med{position:relative;display:flex;flex-direction:column;align-items:center;transition:transform .25s,opacity .25s}
+.med canvas{width:44px;height:44px}
+.med .n{font-size:10px;color:var(--muted)}
+.med.cur{transform:scale(1.15)}
+.med.cur .n{color:var(--gold2)}
+.med.cur canvas{filter:drop-shadow(0 0 6px rgba(240,199,106,.8))}
+.med.dead{opacity:.35;filter:grayscale(1)}
+#bar{position:fixed;left:50%;bottom:12px;transform:translateX(-50%);display:flex;gap:14px;align-items:stretch;padding:10px 14px;z-index:5;max-width:calc(100vw - 24px)}
+.who{display:flex;gap:10px;align-items:center}
+.who canvas{width:64px;height:64px}
+.who .nm{font:700 22px 'Cormorant SC',serif;color:var(--gold2);line-height:1}
+.who .sub{font-size:11px;color:var(--muted)}
+.hp{position:relative;height:15px;width:150px;background:#1a0f0d;border-radius:8px;margin-top:5px;overflow:hidden;box-shadow:0 0 0 1px #000,0 0 0 2px #5b4a33}
+.hp i{position:absolute;left:0;top:0;bottom:0;background:linear-gradient(180deg,#e0645a,#8a1f1a);transition:width .4s}
+.hp span{position:absolute;inset:0;text-align:center;font-size:10px;line-height:15px;font-weight:700;text-shadow:0 1px 2px #000}
+.sep{width:1px;background:linear-gradient(180deg,transparent,#6b5638,transparent)}
+.acts{display:flex;gap:8px;align-items:center}
+.slot{position:relative;width:60px;height:60px;border-radius:9px;border:1px solid #6b5638;padding:0;cursor:pointer;
+  background:radial-gradient(circle at 50% 35%,#3a3027,#16120f);box-shadow:inset 0 0 0 2px #0008,inset 0 2px 6px #0009}
+.slot canvas{width:58px;height:58px;display:block}
+.slot kbd{position:absolute;right:4px;top:2px;font:600 10px Inter;color:var(--muted)}
+.slot .cost{position:absolute;left:5px;top:5px;width:7px;height:7px;background:#5fbf55;transform:rotate(45deg);box-shadow:0 0 4px #5fbf55}
+.slot:hover:not(:disabled){border-color:var(--gold2);box-shadow:inset 0 0 0 2px #0008,0 0 12px rgba(240,199,106,.35)}
+.slot.on{border-color:var(--gold2);box-shadow:inset 0 0 0 2px #0008,0 0 16px rgba(240,199,106,.7)}
+.slot:disabled{filter:grayscale(1) brightness(.5);cursor:not-allowed}
+.res{display:flex;flex-direction:column;justify-content:center;gap:6px;font-size:11px;color:var(--muted);min-width:140px}
+.pips{display:flex;gap:6px;align-items:center}
+.pip{width:10px;height:10px;transform:rotate(45deg);border:1px solid #8fd07a;background:#4caf50;box-shadow:0 0 5px #4caf5099}
+.pip.sl{border-radius:50%;transform:none;background:#8a74e0;border-color:#b5a5ff;box-shadow:0 0 6px #8a74e099}
+.pip.off{background:#222;box-shadow:none;border-color:#444}
+.mv{height:6px;width:120px;background:#1b1712;border-radius:3px;overflow:hidden;box-shadow:0 0 0 1px #000}
+.mv i{display:block;height:100%;background:linear-gradient(90deg,#c89b45,#f0c76a);transition:width .3s}
+#log{position:fixed;right:12px;top:80px;width:290px;max-height:calc(100vh - 230px);overflow:auto;padding:10px 12px;font-size:12px;z-index:4}
+#log h4{margin:0 0 6px;font:700 16px 'Cormorant SC',serif;color:var(--gold)}
+#log p{margin:0 0 6px;color:#cfc3b0}
+.c{color:var(--gold2)}.f{color:#ff9a4a}.l{color:#9cc7ff}.r{color:#e0665b}.g{color:#8bc47a}.m{color:var(--muted)}
+#tip{position:fixed;z-index:9;pointer-events:none;width:270px;padding:10px 12px;display:none}
+#tip h5{margin:0;font:700 19px 'Cormorant SC',serif;color:var(--gold2)}
+#tip .sub{color:var(--muted);font-size:11px;margin-bottom:4px}
+#tip p{margin:4px 0 0;font-size:12px}
+#banner{position:fixed;left:50%;top:30%;transform:translate(-50%,-50%);font:700 46px 'Cormorant SC',serif;color:var(--gold2);text-align:center;
+  text-shadow:0 0 20px #000,0 0 40px rgba(240,160,60,.5);pointer-events:none;opacity:0;transition:opacity .4s;z-index:6}
+#banner small{display:block;font:500 14px Inter;color:var(--text)}
+#hint{position:fixed;left:50%;bottom:104px;transform:translateX(-50%);font-size:12px;color:#d9ccb6;text-shadow:0 1px 3px #000,0 0 8px #000;z-index:4;white-space:nowrap;pointer-events:none}
+@media (max-width:820px){
+  #log{display:none}#log.show{display:block;left:12px;right:12px;width:auto;top:124px}
+  .who .hp{width:96px}.res,#hint,.sep{display:none}#bar{gap:8px;padding:8px}
+  .slot{width:46px;height:46px}.slot canvas{width:44px;height:44px}.who canvas,#whoSub{display:none}.who .nm{font-size:18px}
+  #init{top:auto;bottom:86px;padding:4px 10px}.med canvas{width:34px;height:34px}.med .n{white-space:nowrap;font-size:9px}
+}
+</style>
+</head>
+<body>
+<canvas id="cv"></canvas>
+<div id="badge" class="panel"><b>Этап 0 · образец стиля</b>
+  <button class="btn" id="flatBtn" title="Тот же бой без света, текстур и эффектов">Плоский вид</button>
+  <button class="btn" id="resetBtn">Заново</button>
+  <button class="btn" id="logBtn">Журнал</button>
+</div>
+<div id="init" class="panel"></div>
+<div id="log" class="panel"><h4>Журнал</h4><div id="logBody"></div></div>
+<div id="hint"></div>
+<div id="bar" class="panel">
+  <div class="who"><canvas id="portrait" width="128" height="128"></canvas>
+    <div><div class="nm" id="whoName"></div><div class="sub" id="whoSub"></div>
+      <div class="hp"><i id="hpFill"></i><span id="hpText"></span></div></div></div>
+  <div class="sep"></div>
+  <div class="acts" id="acts"></div>
+  <div class="sep"></div>
+  <div class="res">
+    <div class="pips">Действие <span class="pip" id="pipAct"></span></div>
+    <div class="pips">Ячейки 3 круга <span id="pipSlots" class="pips"></span></div>
+    <div>Движение <span id="mvText"></span><div class="mv"><i id="mvFill"></i></div></div>
+  </div>
+</div>
+<div id="tip" class="panel"></div>
+<div id="banner"></div>
+<script src="stage0-gfx.js"></script>
+<script src="stage0-game.js"></script>
+</body>
+</html>
