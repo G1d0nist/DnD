@@ -818,3 +818,8 @@ body.printing .hpbar { background: #eee !important; }
 .t3-hp { width: 44px; height: 5px; margin: 2px auto 0; border-radius: 3px; background: #000a; border: 1px solid #0008; overflow: hidden; }
 .t3-hp i { display: block; height: 100%; }
 #tblG3Btn.on { border-color: var(--gold); color: var(--gold2); box-shadow: 0 0 0 2px rgba(212,166,74,.25); }
+.tbl-rot { position: absolute; right: 8px; bottom: 46px; z-index: 6; display: flex; gap: 4px; }
+.tbl-rot[hidden] { display: none; }
+.tbl-rot button { width: 32px; height: 30px; padding: 0; border-radius: 99px; background: rgba(20,18,16,.85); border: 1px solid var(--line); color: var(--gold2); font-size: 15px; line-height: 1; }
+.tbl-rot.on button[data-tbl="rotN"] { border-color: var(--gold); box-shadow: 0 0 0 2px rgba(212,166,74,.25); }
+#tblNorth { display: inline-block; font-size: 11px; transition: transform .15s; }

@@ -454,6 +454,35 @@ function layoutBoard() {
 // (или перетаскивание пальцем по пустому месту) — свободная камера, ещё одно нажатие колёсика или «◎» — снова к персонажу.
 // Мастер: камера всегда свободная, «◎» и колёсико — к выделенному существу или к тому, чей ход
 let cam = { x: 0, y: 0 }, camFree = false, camKey = '', camMid = null;
+// Объёмный вид: поворот камеры вокруг точки, на которую она смотрит (радианы; 0 — север вверху экрана).
+// Правая кнопка мыши — тянуть; клавиши (по умолчанию Z и X, C — север вверх); кнопки в углу поля; два пальца — поворот
+let camYaw = 0, camRot = null;
+const yawNow = () => (g3on ? camYaw : 0);
+// Сдвиг по экрану (вправо, вниз) → сдвиг по полю с учётом поворота; snap — до четверти оборота (шаги клавишами идут по клеткам)
+function rot3(dx, dy, snap) {
+  let a = yawNow();
+  if (snap) a = Math.round(a / (Math.PI / 2)) * (Math.PI / 2);
+  if (!a) return [dx, dy];
+  const c = Math.cos(a), s = Math.sin(a), x = dx * c + dy * s, y = -dx * s + dy * c;
+  return snap ? [Math.round(x) || 0, Math.round(y) || 0] : [x, y];
+}
+function camTurn(d) {
+  if (!g3on) return;
+  camYaw = d == null ? 0 : Math.atan2(Math.sin(camYaw + d), Math.cos(camYaw + d));
+  layoutBoard(); renderRot();
+}
+// Кнопки поворота в углу поля (только объёмный вид); стрелка компаса показывает, где север
+function renderRot() {
+  let el = $('#tblRot');
+  if (!el) {
+    el = document.createElement('div'); el.id = 'tblRot'; el.className = 'tbl-rot';
+    el.innerHTML = '<button data-tbl="rotL" title="Повернуть камеру влево (клавиша Z). Мышью: тянуть правой кнопкой">⟲</button><button data-tbl="rotN" title="Север вверх (клавиша C)"><span id="tblNorth">▲</span></button><button data-tbl="rotR" title="Повернуть камеру вправо (клавиша X)">⟳</button>';
+    $('#tblWrap').appendChild(el);
+  }
+  el.hidden = !game || !g3on;
+  $('#tblNorth').style.transform = `rotate(${camYaw}rad)`;
+  el.classList.toggle('on', !!camYaw);
+}
 const myTok = () => (user && game ? game.tokens[`pc_${user.uid}`] : null);
 const camFollow = () => !isDM() && !camFree && !!myTok();
 const ZMIN = 0.3, ZMAX = 2.5;
@@ -461,6 +490,8 @@ function camClamp() {
   const w = $('#tblWrap'), vw = w.clientWidth, vh = w.clientHeight;
   if (!vw || !vh) return;
   const bw = W() * CELL * zoom, bh = H() * CELL * zoom, m = Math.min(vw, vh) * 0.3;
+  // Повёрнутая камера: рамка окна уже не совпадает с осями поля — держим в пределах поля саму точку, на которую смотрим
+  if (yawNow()) { cam.x = Math.max(-vw / 2, Math.min(bw - vw / 2, cam.x)); cam.y = Math.max(-vh / 2, Math.min(bh - vh / 2, cam.y)); return; }
   // Поле меньше окна — по центру; больше — не дальше трети окна за край
   cam.x = bw <= vw ? -(vw - bw) / 2 : Math.max(-m, Math.min(bw - vw + m, cam.x));
   cam.y = bh <= vh ? -(vh - bh) / 2 : Math.max(-m, Math.min(bh - vh + m, cam.y));
@@ -491,6 +522,7 @@ function camHome() {
 function camSetFree(on) { if (camFree === on) return; camFree = on; if (!on) camKey = ''; camUpdate(); }
 // Значок в углу поля: свободная камера и кнопка «◎»
 function renderCam() {
+  renderRot();
   let el = $('#tblCam');
   if (!el) { el = document.createElement('button'); el.id = 'tblCam'; el.className = 'tbl-cam'; el.dataset.tbl = 'camHome'; $('#tblWrap').appendChild(el); }
   const dm = isDM(), mine = myTok();
@@ -503,6 +535,14 @@ function renderCam() {
 function zoomAt(z, ox, oy) {
   z = Math.max(ZMIN, Math.min(ZMAX, +z.toFixed(2)));
   if (z === zoom) return;
+  if (g3on) { // объёмный вид: точка пола под указателем остаётся под ним
+    const w = $('#tblWrap'), r = w.getBoundingClientRect(), P = g3.ground({ clientX: r.left + ox, clientY: r.top + oy }), k = zoom / z;
+    const tx = (cam.x + w.clientWidth / 2) / zoom, ty = (cam.y + w.clientHeight / 2) / zoom;
+    zoom = z;
+    cam.x = (P.px + (tx - P.px) * k) * zoom - w.clientWidth / 2; cam.y = (P.py + (ty - P.py) * k) * zoom - w.clientHeight / 2;
+    layoutBoard(); camUpdate();
+    return;
+  }
   const bx = (cam.x + ox) / zoom, by = (cam.y + oy) / zoom;
   zoom = z;
   cam.x = bx * zoom - ox; cam.y = by * zoom - oy;
@@ -1143,7 +1183,7 @@ function edgePan(e) {
   const r = $('#tblWrap').getBoundingClientRect(), E = 36, sp = 14;
   const dx = e.clientX < r.left + E ? -sp : e.clientX > r.right - E ? sp : 0, dy = e.clientY < r.top + E ? -sp : e.clientY > r.bottom - E ? sp : 0;
   if (!dx && !dy) return;
-  cam.x += dx; cam.y += dy; layoutBoard();
+  const [rx, ry] = rot3(dx, dy); cam.x += rx; cam.y += ry; layoutBoard();
 }
 function onMove(e) {
   if (!drag) {
@@ -1166,7 +1206,7 @@ function onMove(e) {
     const dx = e.clientX - drag.x, dy = e.clientY - drag.y;
     if (!drag.moved && Math.hypot(dx, dy) < 6) return;
     if (!drag.moved) { drag.moved = true; if (!isDM()) camSetFree(true); }
-    cam.x = drag.cx - dx; cam.y = drag.cy - dy; layoutBoard();
+    const [rx, ry] = rot3(dx, dy); cam.x = drag.cx - rx; cam.y = drag.cy - ry; layoutBoard();
   } else if (drag.kind === 'paint') paintAt(p);
   else if (drag.kind === 'token') {
     drag.moved = true;
@@ -7449,7 +7489,7 @@ $('#tblWrap').addEventListener('pointerdown', (e) => {
   drag = null;
   if (game) renderTokens();
   const [a, b] = [...touchPts.values()];
-  pinch = { d: Math.hypot(a.x - b.x, a.y - b.y) || 1, z: zoom, mx: (a.x + b.x) / 2, my: (a.y + b.y) / 2 };
+  pinch = { d: Math.hypot(a.x - b.x, a.y - b.y) || 1, z: zoom, mx: (a.x + b.x) / 2, my: (a.y + b.y) / 2, ang: Math.atan2(b.y - a.y, b.x - a.x), yaw: camYaw, turn: false };
 }, true);
 window.addEventListener('pointermove', (e) => {
   if (!touchPts.has(e.pointerId)) return;
@@ -7457,6 +7497,13 @@ window.addEventListener('pointermove', (e) => {
   if (!pinch || touchPts.size < 2) return;
   const [a, b] = [...touchPts.values()], r = $('#tblWrap').getBoundingClientRect();
   zoomAt((pinch.z * Math.hypot(a.x - b.x, a.y - b.y)) / pinch.d, pinch.mx - r.left, pinch.my - r.top);
+  // Объёмный вид: поворот двумя пальцами (с небольшим порогом, чтобы не крутилось при обычном масштабе)
+  if (g3on) {
+    const now = Math.atan2(b.y - a.y, b.x - a.x);
+    let da = Math.atan2(Math.sin(now - pinch.ang), Math.cos(now - pinch.ang));
+    if (!pinch.turn && Math.abs(da) > 0.2) { pinch.turn = true; pinch.ang += Math.sign(da) * 0.2; da -= Math.sign(da) * 0.2; }
+    if (pinch.turn) { camYaw = Math.atan2(Math.sin(pinch.yaw + da), Math.cos(pinch.yaw + da)); layoutBoard(); renderRot(); }
+  }
 }, true);
 const touchEnd = (e) => { touchPts.delete(e.pointerId); if (touchPts.size < 2) pinch = null; };
 window.addEventListener('pointerup', touchEnd, true);
@@ -7951,7 +7998,8 @@ const KEY_ACTS = [
   ['attack', 'Атака — выбор атаки', ['KeyQ']], ['spell', 'Заклинание — выбор заклинания', ['KeyE']], ['saves', 'Спасбросок (запрос или вручную)', ['AltLeft', 'KeyR']],
   ['next', 'Следующая цель', ['Tab']], ['ok', 'Подтвердить: удар, заклинание', ['Enter']],
   ['endTurn', 'Закончить ход', ['Space']], ['dash', 'Рывок', ['KeyF']], ['dis', 'Отход', ['KeyG']], ['dodge', 'Уклонение', ['KeyH']],
-  ['items', 'Вещи', ['KeyI']], ['chat', 'Журнал и чат', ['KeyJ']], ['cam', 'Камера: к персонажу / свободная', ['KeyM']], ['keys', 'Это окно — клавиши', ['KeyK']],
+  ['items', 'Вещи', ['KeyI']], ['chat', 'Журнал и чат', ['KeyJ']], ['cam', 'Камера: к персонажу / свободная', ['KeyM']],
+  ['rotL', 'Объёмный вид: повернуть камеру влево', ['KeyZ']], ['rotR', 'Объёмный вид: повернуть камеру вправо', ['KeyX']], ['rotN', 'Объёмный вид: север вверх', ['KeyC']], ['keys', 'Это окно — клавиши', ['KeyK']],
 ];
 const KEY_STORE = 'dnd55-keys';
 let keyMap = null;
@@ -8045,7 +8093,7 @@ let walkT = null, walkN = 0, walkStop = false;
 const dirNow = () => { let dx = 0, dy = 0; held.forEach((k) => { dx += DIRS[k][0]; dy += DIRS[k][1]; }); return [Math.sign(dx), Math.sign(dy)]; };
 function walk() {
   walkT = null;
-  const [dx, dy] = dirNow();
+  const [dx, dy] = rot3(...dirNow(), true); // «вверх» — это вверх на экране, как бы ни была повёрнута камера
   if ((!dx && !dy) || walkStop || !game) return;
   if (cast) { castKey(dx, dy); walkT = setTimeout(walk, WALK_MS * (walkN++ ? 0.6 : 1.4)); return; }
   if (aim) return;
@@ -8160,6 +8208,7 @@ function keyAction(a) {
   else if (a === 'items') { if (!isDM()) itemsDialog(); }
   else if (a === 'chat') { mtab('log'); const c = $('#tblChat'); if (c) { c.focus(); c.scrollIntoView({ block: 'nearest' }); } }
   else if (a === 'cam') { if (isDM() || camFree) camHome(); else camSetFree(true); }
+  else if (a === 'rotL' || a === 'rotR' || a === 'rotN') camTurn(a === 'rotN' ? null : a === 'rotL' ? Math.PI / 4 : -Math.PI / 4);
   else if (a === 'next') pickNext();
   else if (a === 'ok') keyOk();
   return pid;
@@ -8256,6 +8305,7 @@ async function onClick(e) {
     else if (a === 'gameDel') { if (app.confirm('Удалить игру навсегда? Сцены, существа и всё на поле пропадут.')) { await deleteGame(b.dataset.id, b.dataset.code); renderAll(); } }
     else if (a === 'zoomIn' || a === 'zoomOut') { const w = $('#tblWrap'); zoomAt(zoom * (a === 'zoomIn' ? 1.25 : 0.8), w.clientWidth / 2, w.clientHeight / 2); }
     else if (a === 'camHome') camHome();
+    else if (a === 'rotL' || a === 'rotR' || a === 'rotN') camTurn(a === 'rotN' ? null : a === 'rotL' ? Math.PI / 4 : -Math.PI / 4);
     else if (a === 'g3') g3Toggle(!g3on);
     else if (a === 'rollInit') {
       const m = me(), roll = app.mute(() => app.rollInit(m.charId)), s = app.summary(m.charId);
@@ -8484,7 +8534,7 @@ async function g3Toggle(want) {
     try {
       const m = await import('./table3d.js');
       g3 = m.create($('#tblWrap'), { CELL, canvases: { terrain: $('#tblTerrain'), areas: $('#tblAreas'), range: $('#tblRange'), fog: $('#tblFog'), fx: $('#tblFxCv') }, state: g3State, zones: g3Zones,
-        view: () => { const w = $('#tblWrap'); return { cx: (cam.x + w.clientWidth / 2) / zoom / CELL, cy: (cam.y + w.clientHeight / 2) / zoom / CELL, zoom, vh: w.clientHeight }; } });
+        view: () => { const w = $('#tblWrap'); return { cx: (cam.x + w.clientWidth / 2) / zoom / CELL, cy: (cam.y + w.clientHeight / 2) / zoom / CELL, zoom, vh: w.clientHeight, yaw: camYaw }; } });
       window.__g3 = g3;
     } catch (err) { g3busy = false; ls.set('dnd55-3d', '0'); app.toast('Не удалось включить объёмный вид: нужен интернет при первом включении и видеокарта с WebGL'); console.error(err); return; }
     g3busy = false;
@@ -8493,6 +8543,7 @@ async function g3Toggle(want) {
   $('#tblWrap').classList.toggle('g3', g3on);
   if (g3) g3.setOn(g3on);
   const b = $('#tblG3Btn'); if (b) b.classList.toggle('on', g3on);
+  renderRot();
   if (game) { drawTerrain(); renderAll(); }
 }
 // При каждой перерисовке: включить сохранённый на устройстве выбор
@@ -8532,7 +8583,7 @@ $('#tblWrap').addEventListener('pointermove', (e) => {
   const dx = e.clientX - camMid.x, dy = e.clientY - camMid.y;
   if (!camMid.moved && Math.hypot(dx, dy) < 6) return;
   if (!camMid.moved) { camMid.moved = true; if (!isDM()) camSetFree(true); }
-  cam.x = camMid.cx - dx; cam.y = camMid.cy - dy; layoutBoard();
+  const [rx, ry] = rot3(dx, dy); cam.x = camMid.cx - rx; cam.y = camMid.cy - ry; layoutBoard();
 });
 $('#tblWrap').addEventListener('pointerup', (e) => {
   if (!camMid || e.pointerId !== camMid.id) return;
@@ -8540,6 +8591,22 @@ $('#tblWrap').addEventListener('pointerup', (e) => {
   if (was.moved) return;
   if (isDM() || camFree) camHome(); else camSetFree(true);
 });
+// Объёмный вид: правая кнопка мыши — тянуть влево-вправо, камера поворачивается; меню браузера на поле не открывается
+$('#tblWrap').addEventListener('pointerdown', (e) => {
+  if (e.button !== 2 || !game || !g3on) return;
+  e.preventDefault();
+  camRot = { x: e.clientX, yaw: camYaw, id: e.pointerId };
+  try { $('#tblWrap').setPointerCapture(e.pointerId); } catch (err) { /* уже отпущен */ }
+});
+$('#tblWrap').addEventListener('pointermove', (e) => {
+  if (!camRot || e.pointerId !== camRot.id) return;
+  const a = camRot.yaw - (e.clientX - camRot.x) * 0.008;
+  camYaw = Math.atan2(Math.sin(a), Math.cos(a)); layoutBoard(); renderRot();
+});
+const rotEnd = (e) => { if (camRot && e.pointerId === camRot.id) camRot = null; };
+$('#tblWrap').addEventListener('pointerup', rotEnd);
+$('#tblWrap').addEventListener('pointercancel', rotEnd);
+$('#tblWrap').addEventListener('contextmenu', (e) => { if (g3on) e.preventDefault(); });
 // Без автопрокрутки браузера по колёсику
 $('#tblWrap').addEventListener('mousedown', (e) => { if (e.button === 1) e.preventDefault(); });
 $('#tblWrap').addEventListener('auxclick', (e) => { if (e.button === 1) e.preventDefault(); });

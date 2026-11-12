@@ -531,7 +531,7 @@ export function create(wrap, api) {
     const fm = new THREE.MeshStandardMaterial({ map: face, roughness: 0.6, emissive: 0xffffff, emissiveMap: face, emissiveIntensity: 0.55 });
     add(new THREE.CircleGeometry(r * 0.9, 40), fm, 0, cy, 0.031 * s + 0.002);
     T.faceMat = fm; T.top = 0.3 * s + 2 * r;
-    g.rotation.x = -0.2;
+    g.rotation.order = 'YXZ'; g.rotation.x = -0.2;
     T.body = g; T.fig.add(g);
     const hit = MODELS.find(([re]) => re.test(t.name || ''));
     if (hit && !t.dead) model(hit[1]).then((src) => {
@@ -592,12 +592,15 @@ export function create(wrap, api) {
   function hit(id, miss) { const T = toks.get(id); if (!T) return; if (miss) T.miss = 0.32; else T.hit = 0.34; kick(500); }
 
   // ---------- Камера ----------
-  const cur = { x: 0, z: 0, d: 0, ok: false }, tan = Math.tan((FOV * Math.PI) / 360);
+  const cur = { x: 0, z: 0, d: 0, yaw: 0, ok: false }, tan = Math.tan((FOV * Math.PI) / 360);
   function camStep(dt) {
     const v = api.view(), d = v.vh / (CELL * v.zoom) / (2 * tan), k = cur.ok ? 1 - Math.exp(-dt * 16) : 1;
-    const moved = Math.abs(v.cx - cur.x) + Math.abs(v.cy - cur.z) + Math.abs(d - cur.d) / Math.max(1, d) > 0.002;
-    cur.x += (v.cx - cur.x) * k; cur.z += (v.cy - cur.z) * k; cur.d += (d - cur.d) * k; cur.ok = true;
-    camera.position.set(cur.x, cur.d * Math.sin(PITCH), cur.z + cur.d * Math.cos(PITCH)); camera.lookAt(cur.x, 0, cur.z);
+    // Поворот — вокруг точки, на которую смотрит камера; к новому углу идём кратчайшей дугой
+    const turn = Math.atan2(Math.sin((v.yaw || 0) - cur.yaw), Math.cos((v.yaw || 0) - cur.yaw));
+    const moved = Math.abs(v.cx - cur.x) + Math.abs(v.cy - cur.z) + Math.abs(d - cur.d) / Math.max(1, d) + Math.abs(turn) > 0.002;
+    cur.x += (v.cx - cur.x) * k; cur.z += (v.cy - cur.z) * k; cur.d += (d - cur.d) * k; cur.yaw += turn * k; cur.ok = true;
+    const flat = cur.d * Math.cos(PITCH);
+    camera.position.set(cur.x + flat * Math.sin(cur.yaw), cur.d * Math.sin(PITCH), cur.z + flat * Math.cos(cur.yaw)); camera.lookAt(cur.x, 0, cur.z);
     if (shake > 0) { const q = shake * cur.d * 0.012; camera.position.x += rr(-q, q); camera.position.y += rr(-q, q); camera.position.z += rr(-q, q); } // встряска от взрыва
     camera.far = cur.d * 4 + 100; camera.updateProjectionMatrix(); camera.updateMatrixWorld();
     scene.fog.near = cur.d * 1.15; scene.fog.far = cur.d * 3.4; // даль тонет в дымке
@@ -788,7 +791,7 @@ export function create(wrap, api) {
     if (o.kind === 'melee') {
       // Выпад атакующего и дуга удара у цели
       if (TA) { TA.lg = 0.24; const d = Math.hypot(b.x - a.x, b.z - a.z) || 1; TA.ldx = (b.x - a.x) / d; TA.ldz = (b.z - a.z) / d; TA.yaw = Math.atan2(TA.ldx, TA.ldz); }
-      const g = new THREE.Group(), m = addM(arcG, hot(E.c[0], 2.5), 0); scene.remove(m); g.add(m); g.position.copy(b); g.rotation.x = -0.5; scene.add(g);
+      const g = new THREE.Group(), m = addM(arcG, hot(E.c[0], 2.5), 0); scene.remove(m); g.add(m); g.position.copy(b); g.rotation.order = 'YXZ'; g.rotation.x = -0.5; g.rotation.y = cur.yaw; scene.add(g);
       const s = o.crit ? 1.9 : 1.35;
       addFx({ dur: 0.3, delay: 0.08, update() { const f = this.t / 0.3; m.rotation.z = 2.6 - 3.4 * ease(f); m.scale.setScalar(s * (0.7 + 0.5 * f)); m.material.opacity = Math.sin(Math.PI * Math.min(1, f * 1.15)); }, end() { scene.remove(g); m.material.dispose(); } });
       if (o.hit) addFx({ dur: 0.01, delay: 0.18, end() { impact(b, E, o.crit); } });
@@ -870,7 +873,7 @@ export function create(wrap, api) {
       // Без сознания — фигурка лежит
       const lie = t.down ? 1 : 0; T.lie = (T.lie || 0) + (lie - (T.lie || 0)) * Math.min(1, dt * 8); if (Math.abs(lie - T.lie) > 0.01) busy = true;
       T.fig.rotation.z = T.lie * 1.35; T.fig.position.x += T.lie * 0.2 * t.size;
-      if (T.spin) T.body.rotation.y = T.yaw;
+      T.body.rotation.y = T.spin ? T.yaw : cur.yaw; // модель смотрит, куда шла; медальон — всегда лицом к камере
       if (T.turn.visible) { T.turn.material.opacity = 0.55 + 0.4 * Math.sin(time * 4); const k = t.size * (1 + 0.04 * Math.sin(time * 4)); T.turn.scale.set(k, 1, k); }
       const p = project(T.pos.x, T.pos.z, (T.top + BASE_H) * (1 - T.lie * 0.6) + 0.12 + hop + lift), lx = Math.round(p.x), ly = Math.round(p.y);
       if (lx !== T.lx || ly !== T.ly) { T.lx = lx; T.ly = ly; T.lab.style.transform = `translate(${lx}px, ${ly}px) translate(-50%, -100%)`; }
