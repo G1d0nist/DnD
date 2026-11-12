@@ -275,6 +275,7 @@ async function enemyTurn(tk) {
   if (!adjacent(tk, tgt)) {
     const { dist, prev } = bfs(tk, 60); let best = null, bd = 1e9;
     for (const [k, dd] of dist) { const x = k % W, y = Math.floor(k / W); if (gap(tk, x, y, tgt) === 0 && dd < bd) { bd = dd; best = k; } }
+    if (best == null) { let bg = 1e9; for (const [k, dd] of dist) { if (dd > tk.speed) continue; const gp = gap(tk, k % W, Math.floor(k / W), tgt) * 100 + dd; if (gp < bg) { bg = gp; best = k; } } if (best === tk.y * W + tk.x) best = null; }
     if (best != null) { const steps = pathFrom(prev, best).slice(0, tk.speed); log(`${nm(tk)} идёт на ${steps.length * 5} фт.`); await walk(tk, steps); }
   }
   if (adjacent(tk, tgt)) { await wait(150); await melee(tk, tgt); } else log(`${nm(tk)} не дотягивается до цели.`);
