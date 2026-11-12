@@ -610,7 +610,8 @@ function drawTerrain() {
     if (!bgImg && !(g3on && PROP3D.has(type))) drawCell(g, type, x * CELL, y * CELL, (x * 7 + y * 13) % 5); // в объёмном виде препятствия стоят на поле сами
   });
   // Двери: закрытая — створка поперёк клетки, открытая — откинута к краю; запертая — с замком
-  Object.entries(game.doors || {}).forEach(([k, d]) => {
+  // В объёмном виде двери, светильники, сундуки и мешки стоят на поле сами
+  if (!g3on) Object.entries(game.doors || {}).forEach(([k, d]) => {
     const [x, y] = k.split('_').map(Number), cx = x * CELL, cy = y * CELL;
     g.save();
     g.fillStyle = d.o ? 'rgba(120,80,40,.35)' : '#7a5230';
@@ -621,7 +622,7 @@ function drawTerrain() {
     g.restore();
   });
   // Источники света видит только мастер
-  if (isDM()) Object.values(game.lights || {}).forEach((L) => { g.font = '18px system-ui'; g.fillText('💡', L.x * CELL + 10, L.y * CELL + 27); });
+  if (isDM() && !g3on) Object.values(game.lights || {}).forEach((L) => { g.font = '18px system-ui'; g.fillText('💡', L.x * CELL + 10, L.y * CELL + 27); });
   // Заметки мастера: значок и начало текста — только у мастера (в «Виде игроков» скрыты)
   if (isDM() && !fogPreview) Object.values(game.notes || {}).forEach((N) => {
     g.fillStyle = 'rgba(30, 24, 12, .55)'; g.fillRect(N.x * CELL + 1, N.y * CELL + 1, CELL - 2, CELL - 2);
@@ -631,11 +632,11 @@ function drawTerrain() {
   });
   // Сундуки: закрытый, открытый; мастер видит замок и ловушку
   Object.values(game.chests || {}).forEach((C) => {
-    g.font = '22px system-ui'; g.fillText(C.o ? '📭' : '🧰', C.x * CELL + 8, C.y * CELL + 29);
+    g.font = '22px system-ui'; if (!g3on) g.fillText(C.o ? '📭' : '🧰', C.x * CELL + 8, C.y * CELL + 29);
     if (isDM() && !C.o) { g.font = '11px system-ui'; if (+C.lock && !C.lk) g.fillText('🔒', C.x * CELL + 1, C.y * CELL + 12); if (C.trap && !C.toff) g.fillText('⚠', C.x * CELL + CELL - 12, C.y * CELL + 12); }
   });
   // Брошенные вещи — маленький мешок в углу клетки (под токеном тоже видно)
-  Object.values(game.drops || {}).forEach((D) => { g.font = '15px system-ui'; g.fillText('🎒', D.x * CELL + CELL - 18, D.y * CELL + CELL - 4); });
+  if (!g3on) Object.values(game.drops || {}).forEach((D) => { g.font = '15px system-ui'; g.fillText('🎒', D.x * CELL + CELL - 18, D.y * CELL + CELL - 4); });
   drawPois(g);
   if (!bgImg || bg.grid) {
     g.strokeStyle = bgImg ? 'rgba(0,0,0,.35)' : 'rgba(255,255,255,.07)';
@@ -8425,7 +8426,7 @@ document.addEventListener('change', (e) => {
 /* ---------- Объёмный вид ---------- */
 // table3d.js только рисует: слои поля идут на пол текстурами, стены и существа — объёмные. Правила, ввод и
 // синхронизация остаются здесь. Модуль (и Three.js) подгружается при первом включении
-const PROP3D = new Set(['wall', 'rock', 'tree', 'crate', 'furn', 'grave', 'mushroom']);
+const PROP3D = new Set(['wall', 'rock', 'tree', 'crate', 'furn', 'grave', 'mushroom', 'bridge', 'bush', 'thicket', 'rubble', 'snow', 'stairs', 'bog', 'ice', 'lava']);
 // Яркость клетки для стен и препятствий: −1 — игрок её ещё не видел (не рисовать)
 function cellShade(k) {
   if (!fogVis) return 1;
@@ -8437,7 +8438,7 @@ function g3State() {
   const f = fogSet(), amb = fogOn() ? f.amb || 'bright' : (game.meta || {}).timeLight ? dayPart().amb : 'bright';
   const lights = [...Object.values(game.lights || {}).map((L) => ({ x: L.x + 0.5, y: L.y + 0.5, r: ((+L.b || 20) + (+L.d || 20)) / FT(), fix: 1 })),
     ...Object.values(game.tokens || {}).filter((t) => t.lt && !(t.hidden && !isDM()) && !fogHides(t)).map((t) => ({ x: t.x + (t.size || 1) / 2, y: t.y + (t.size || 1) / 2, r: ((+t.lt.b || 0) + (+t.lt.d || 0)) / FT() }))];
-  return { w: W(), h: H(), map: bgImg ? {} : game.map || {}, doors: game.doors || {}, lights: lights.filter((L) => cellShade(`${Math.floor(L.x)}_${Math.floor(L.y)}`) >= 0), amb, shade: cellShade };
+  return { w: W(), h: H(), map: bgImg ? {} : game.map || {}, doors: game.doors || {}, chests: Object.values(game.chests || {}).map((C) => ({ x: C.x, y: C.y, o: !!C.o })), drops: Object.values(game.drops || {}).map((D) => ({ x: D.x, y: D.y })), lights: lights.filter((L) => cellShade(`${Math.floor(L.x)}_${Math.floor(L.y)}`) >= 0), amb, shade: cellShade };
 }
 async function g3Toggle(want) {
   if (g3busy) return;
