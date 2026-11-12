@@ -342,7 +342,7 @@
       <div class="card tbl-bar">
         <div class="row gap wrap"><b id="tblName"></b><span class="badge" id="tblCode" title="Код приглашения"></span><button data-tbl="copy" title="Пригласить: скопировать ссылку для игроков">🔗</button></div>
         <div class="row gap wrap tbl-tools" id="tblTools"></div>
-        <div class="row gap"><button data-tbl="zoomOut" title="Отдалить">−</button><span id="tblZoom" class="muted small"></span><button data-tbl="zoomIn" title="Приблизить">＋</button><button data-tbl="zoomFit" title="Всё поле целиком">⤢</button><button data-tbl="full" id="tblFullBtn" title="Стол во весь экран: внизу панель хода, сверху очередь">⛶</button><button data-tbl="leave" class="danger" id="tblLeave"></button></div>
+        <div class="row gap"><button data-tbl="zoomOut" title="Отдалить">−</button><span id="tblZoom" class="muted small"></span><button data-tbl="zoomIn" title="Приблизить">＋</button><button data-tbl="zoomFit" title="Всё поле целиком">⤢</button><button data-tbl="g3" id="tblG3Btn" title="Объёмный вид поля: наклонная камера, стены и фигурки. Ещё нажатие — обычный плоский вид">3D</button><button data-tbl="full" id="tblFullBtn" title="Стол во весь экран: внизу панель хода, сверху очередь">⛶</button><button data-tbl="leave" class="danger" id="tblLeave"></button></div>
       </div>
       <div class="tbl-main">
         <div class="tbl-finit" id="tblFInit" hidden></div>
@@ -416,6 +416,7 @@
 <script src="mapgen.js"></script>
 <script src="spellmech.js"></script>
 <script src="app.js"></script>
+<script type="importmap">{"imports":{"three":"https://cdn.jsdelivr.net/npm/three@0.160.0/build/three.module.min.js","three/addons/":"https://cdn.jsdelivr.net/npm/three@0.160.0/examples/jsm/"}}</script>
 <script type="module" src="sync.js"></script>
 <script type="module" src="table.js"></script>
 <script>

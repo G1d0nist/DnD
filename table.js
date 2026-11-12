@@ -58,6 +58,8 @@ let drag = null; // перетаскивание токена / панорама
 const ls = { get: (k) => { try { return localStorage.getItem(k); } catch (e) { return null; } }, set: (k, v) => { try { localStorage.setItem(k, v); } catch (e) { /* приватный режим */ } } };
 let logSeen = +ls.get('dnd55-logseen') || 0, zoomInit = false; // телефон: прочитанный журнал, начальный масштаб
 const touchPts = new Map(); // касания пальцев по полю
+// Объёмный вид (table3d.js): g3 — рисовальщик, g3on — включён; выбор запоминается на устройстве
+let g3 = null, g3on = false, g3busy = false;
 let pinch = null; // масштаб двумя пальцами: { d, z, mx, my }
 const ref = (p) => R.ref(db, p);
 const gpath = (p = '') => `games/${game.id}${p ? '/' + p : ''}`;
@@ -435,6 +437,7 @@ function layoutBoard() {
   b.style.transform = `translate(${-cam.x}px, ${-cam.y}px) scale(${zoom})`;
   ['#tblTerrain', '#tblAreas', '#tblRange', '#tblFog', '#tblFxCv'].forEach((s) => { const cv = $(s); if (cv.width !== w || cv.height !== h) { cv.width = w; cv.height = h; } });
   $('#tblZoom').textContent = Math.round(zoom * 100) + '%';
+  if (g3on) g3.kick();
 }
 /* ---------- Камера ---------- */
 // Поле сдвигается целиком, без полос прокрутки. Игрок: камера следует за своим персонажем; нажатие колёсика мыши
@@ -604,7 +607,7 @@ function drawTerrain() {
       for (let i = -CELL; i < CELL; i += 10) { g.moveTo(x * CELL + i, y * CELL + CELL); g.lineTo(x * CELL + i + CELL, y * CELL); }
       g.stroke();
     }
-    if (!bgImg) drawCell(g, type, x * CELL, y * CELL, (x * 7 + y * 13) % 5);
+    if (!bgImg && !(g3on && PROP3D.has(type))) drawCell(g, type, x * CELL, y * CELL, (x * 7 + y * 13) % 5); // в объёмном виде препятствия стоят на поле сами
   });
   // Двери: закрытая — створка поперёк клетки, открытая — откинута к краю; запертая — с замком
   Object.entries(game.doors || {}).forEach(([k, d]) => {
@@ -910,7 +913,7 @@ function cloudHides(t, id) {
 }
 function renderTokens() {
   const box = $('#tblTokens'), cur = currentEntry();
-  const seen = new Set();
+  const seen = new Set(), list3 = [];
   Object.entries(game.tokens || {}).forEach(([id, t]) => {
     const invis = (t.cond || []).includes('invisible'), banned = fxOf(id).some(([, e]) => e.banish);
     // Невидимый враг игрокам не виден; изгнанного на поле нет (мастер видит призрак)
@@ -942,26 +945,39 @@ function renderTokens() {
       ${+t.alt ? `<div class="tok-alt" title="Высота">↑${t.alt}</div>` : ''}${+t.ward ? `<div class="tok-ward" title="Магическая защита: принимает урон первой">🛡${t.ward}</div>` : ''}<div class="tok-name">${esc(label || '')}${fxOf(id).filter(([, f]) => f.ic).slice(0, 4).map(([, f]) => `<span class="tok-fx" title="${esc(fxTip(f))}">${f.ic}</span>`).join('')}${(t.cond || []).length ? ` <span class="tok-cond">●${t.cond.length}</span>` : ''}</div>`;
     // Пересоздавать содержимое только при изменении — иначе касание пальцем «теряет» токен посреди перетаскивания
     if (el._html !== html) { el.innerHTML = html; el._html = html; }
+    if (g3on) list3.push({ id, x: t.x, y: t.y, size: s, color: t.kind === 'npc' ? SIDE_COLOR[t.side || 'enemy'] : t.color || '#d4a64a', img: t.img || '', ic: t.ic || '', name: t.name || '',
+      label: `${esc(label || '')}${fxOf(id).filter(([, f]) => f.ic).slice(0, 4).map(([, f]) => f.ic).join('')}${(t.cond || []).length ? ` <span class="tok-cond">●${t.cond.length}</span>` : ''}`,
+      pct: t.hpMax ? pct : null, down, dead, sel: selId === id, turn: !!(cur && cur.tokenId === id), ghost: !!(t.hidden || invis || banned), alt: +t.alt || 0, cls: `side-${team(t)} ${t.kind}` });
   });
+  if (g3on) g3.tokens(list3, drag && drag.kind === 'token' ? drag.id : null);
   $$('[data-tok]', box).forEach((el) => { if (!seen.has(el.dataset.tok)) el.remove(); });
 }
 
 /* ---------- Мышь и касания на поле ---------- */
 function cellAt(e) {
+  // Объёмный вид: точка пола под указателем; подсказка — у самого указателя
+  if (g3on) { const q = g3.ground(e), w = $('#tblWrap').getBoundingClientRect(); return { x: Math.floor(q.px / CELL), y: Math.floor(q.py / CELL), px: q.px, py: q.py, hx: e.clientX - w.left, hy: e.clientY - w.top }; }
   const r = $('#tblBoard').getBoundingClientRect();
   return { x: Math.floor((e.clientX - r.left) / zoom / CELL), y: Math.floor((e.clientY - r.top) / zoom / CELL), px: (e.clientX - r.left) / zoom, py: (e.clientY - r.top) / zoom };
+}
+// Токен под указателем: в объёмном виде — по фигурке (она выше своей клетки)
+function tokElAt(e) {
+  if (!g3on) return e.target.closest ? e.target.closest('[data-tok]') : null;
+  if (!e.target.closest || !e.target.closest('#tblBoard')) return null;
+  const id = g3.pick(e);
+  return id ? $(`#tblTokens [data-tok="${id}"]`) : null;
 }
 function hint(text, e) {
   const h = $('#tblHint');
   if (!text) { h.hidden = true; return; }
   const p = cellAt(e);
   h.hidden = false; h.textContent = text;
-  h.style.left = p.px + 14 + 'px'; h.style.top = p.py - 28 + 'px';
+  h.style.left = (p.hx ?? p.px) + 14 + 'px'; h.style.top = (p.hy ?? p.py) - 28 + 'px';
 }
 function onDown(e) {
   if (!game || e.button > 0 || pinch || touchPts.size > 1) return;
   const p = cellAt(e);
-  let tokEl = e.target.closest('[data-tok]');
+  let tokEl = tokElAt(e);
   // Пальцем легко промахнуться мимо маленького токена: ближайший видимый токен в ¾ клетки от его края — считаем попаданием
   if (!tokEl && e.pointerType === 'touch' && (tool === 'move' || aim || (cast && cast.area.shape === 'target'))
     && !chestAt(p.x, p.y) && !dropAt(p.x, p.y) && !(game.doors || {})[`${p.x}_${p.y}`]) {
@@ -1093,7 +1109,7 @@ function onDown(e) {
   e.preventDefault();
 }
 function aimHint(e) {
-  const tokEl = e.target.closest && e.target.closest('[data-tok]'), from = game.tokens[aim.from];
+  const tokEl = tokElAt(e), from = game.tokens[aim.from];
   const T = tokEl && tokEl.dataset.tok !== aim.from && game.tokens[tokEl.dataset.tok];
   if (!T || !from) { hint('', e); if (aimLine) { aimLine = null; drawAreas(); } return; }
   const tid = tokEl.dataset.tok, d = distFt(from, T), r = aim.atk.rng;
@@ -1121,7 +1137,7 @@ function onMove(e) {
   if (!drag) {
     const over = game && e.target.closest && e.target.closest('#tblBoard');
     if (cast && over) {
-      if (cast.area.shape === 'target') { const tokEl = e.target.closest('[data-tok]'); if (!cast.area.tgts) cast.area.tgt = tokEl ? tokEl.dataset.tok : null; }
+      if (cast.area.shape === 'target') { const tokEl = tokElAt(e); if (!cast.area.tgts) cast.area.tgt = tokEl ? tokEl.dataset.tok : null; }
       else { const p = cellAt(e); castFollow(p.px / CELL, p.py / CELL); }
       drawAreas();
       castHint(e);
@@ -1145,6 +1161,7 @@ function onMove(e) {
     edgePan(e);
     const el = $(`[data-tok="${drag.id}"]`);
     if (el) { el.style.left = p.px - drag.offX + 'px'; el.style.top = p.py - drag.offY + 'px'; }
+    if (g3on) g3.dragTo(drag.id, (p.px - drag.offX) / CELL, (p.py - drag.offY) / CELL);
     const tx = Math.round((p.px - drag.offX) / CELL), ty = Math.round((p.py - drag.offY) / CELL);
     const d = drag.dist.get(`${tx}_${ty}`);
     let txt;
@@ -7252,14 +7269,17 @@ function fxAttack(e) {
   fxProjectile(A, end, e.anim, color, e.hit ? dur : dur * 1.3);
   setTimeout(impact, dur);
 }
+// Объёмный вид: точка поля (пиксели 2D) → точка экрана на высоте груди существа
+const fx3 = (c, h) => (g3on ? { ...c, ...g3.project(c.x / CELL, c.y / CELL, h ?? ((c.s || CELL) / CELL) * 0.6) } : c);
 function fxEl(cls, color) {
   const el = document.createElement('div');
   el.className = cls;
   if (color) el.style.setProperty('--c', color);
-  $('#tblFx').appendChild(el);
+  (g3on ? g3.fx : $('#tblFx')).appendChild(el);
   return el;
 }
 function fxProjectile(A, B, kind, color, dur) {
+  A = fx3(A); B = fx3(B);
   const el = fxEl(`fx-proj fx-${kind}`, color), ang = (Math.atan2(B.y - A.y, B.x - A.x) * 180) / Math.PI;
   const at = (p, rot) => `translate(${p.x}px, ${p.y}px) rotate(${rot}deg)`;
   const kf = kind === 'throw' ? [{ transform: at(A, ang) }, { transform: at(B, ang + 900) }]
@@ -7268,6 +7288,7 @@ function fxProjectile(A, B, kind, color, dur) {
   el.animate(kf, { duration: dur, easing: kind === 'bolt' ? 'ease-in' : 'linear' }).onfinish = () => el.remove();
 }
 function fxSlash(B, color, crit) {
+  B = fx3(B);
   const el = fxEl(`fx-slash${crit ? ' crit' : ''}`, color), at = `translate(${B.x}px, ${B.y}px)`;
   el.animate([{ transform: `${at} rotate(-100deg) scale(.6)`, opacity: 0 }, { opacity: 1, offset: 0.35 }, { transform: `${at} rotate(70deg) scale(1.15)`, opacity: 0 }],
     { duration: 320, easing: 'ease-out' }).onfinish = () => el.remove();
@@ -7280,6 +7301,7 @@ function fxHit(id, dmg, o = {}) {
     else face.animate([{ transform: 'none', filter: 'brightness(2.2) saturate(1.6)' }, { transform: 'translateX(-5px)' }, { transform: 'translateX(5px)' }, { transform: 'translateX(-3px)' }, { transform: 'none', filter: 'none' }],
       { duration: o.crit ? 480 : 340 });
   }
+  if (g3on && !calm() && (dmg || o.miss || o.saved)) g3.hit(id, o.miss || (o.saved && !dmg));
   if (o.miss) floatText(id, 'промах', 'fx-miss');
   else if (dmg) floatText(id, `${o.crit ? 'КРИТ! ' : ''}−${dmg}`, o.crit ? 'fx-crit' : o.saved ? 'fx-dmg half' : 'fx-dmg');
   else if (o.saved) floatText(id, 'спасся', 'fx-miss');
@@ -7287,8 +7309,9 @@ function fxHit(id, dmg, o = {}) {
 }
 const floatAt = {}; // несколько чисел над одной целью подряд — друг над другом, а не внахлёст
 function floatText(id, text, cls) {
-  const c = tokCenter(id);
+  let c = tokCenter(id);
   if (!c) return;
+  if (g3on) c = { ...fx3(c, g3.tokTop(id) + 0.3), s: 0 }; // над головой фигурки
   const now = Date.now(), prev = floatAt[id], n = prev && now - prev.t < 700 ? prev.n + 1 : 0;
   floatAt[id] = { t: now, n };
   const el = fxEl(`fx-float ${cls}`), y = c.y - c.s / 2 - n * 22;
@@ -7342,6 +7365,7 @@ function renderAll() {
   $('#tblCode').textContent = `Код: ${game.code}`;
   $('#tblLeave').textContent = isDM() ? '⏏ Выйти' : 'Покинуть'; $('#tblLeave').title = isDM() ? 'Выйти из игры: сохранить и выйти или удалить' : 'Покинуть игру';
   renderTools();
+  g3Sync();
   renderHud(); // панель хода меняет высоту поля — до раскладки поля
   layoutBoard();
   if (!$('#tblTerrain').dataset.drawn || $('#tblTerrain').dataset.drawn !== game.id) { $('#tblTerrain').dataset.drawn = game.id; drawTerrain(); }
@@ -8210,6 +8234,7 @@ async function onClick(e) {
     else if (a === 'gameDel') { if (app.confirm('Удалить игру навсегда? Сцены, существа и всё на поле пропадут.')) { await deleteGame(b.dataset.id, b.dataset.code); renderAll(); } }
     else if (a === 'zoomIn' || a === 'zoomOut') { const w = $('#tblWrap'); zoomAt(zoom * (a === 'zoomIn' ? 1.25 : 0.8), w.clientWidth / 2, w.clientHeight / 2); }
     else if (a === 'camHome') camHome();
+    else if (a === 'g3') g3Toggle(!g3on);
     else if (a === 'rollInit') {
       const m = me(), roll = app.mute(() => app.rollInit(m.charId)), s = app.summary(m.charId);
       await R.set(ref(gpath(`init/list/${user.uid}`)), { name: s.name, roll, owner: user.uid, kind: 'pc', tokenId: `pc_${user.uid}` });
@@ -8397,6 +8422,52 @@ document.addEventListener('change', (e) => {
   if (e.target.matches('[data-tbl-num]') && game && selId) R.update(ref(gpath(`tokens/${selId}`)), { [e.target.dataset.tblNum]: Math.max(0, +e.target.value || 0) });
   if (e.target.matches('[data-tbl-sv]') && game && selId) R.update(ref(gpath(`tokens/${selId}/sv`)), { [e.target.dataset.tblSv]: +e.target.value || 0 });
 });
+/* ---------- Объёмный вид ---------- */
+// table3d.js только рисует: слои поля идут на пол текстурами, стены и существа — объёмные. Правила, ввод и
+// синхронизация остаются здесь. Модуль (и Three.js) подгружается при первом включении
+const PROP3D = new Set(['wall', 'rock', 'tree', 'crate', 'furn', 'grave', 'mushroom']);
+// Яркость клетки для стен и препятствий: −1 — игрок её ещё не видел (не рисовать)
+function cellShade(k) {
+  if (!fogVis) return 1;
+  if (fogVis.has(k)) return fogDark.has(k) ? 0.5 : fogDim.has(k) ? 0.72 : 1;
+  const seen = (game.seen || {})[k];
+  return !isDM() || fogPreview ? (seen ? 0.38 : -1) : seen ? 0.8 : 0.6;
+}
+function g3State() {
+  const f = fogSet(), amb = fogOn() ? f.amb || 'bright' : (game.meta || {}).timeLight ? dayPart().amb : 'bright';
+  const lights = [...Object.values(game.lights || {}).map((L) => ({ x: L.x + 0.5, y: L.y + 0.5, r: ((+L.b || 20) + (+L.d || 20)) / FT(), fix: 1 })),
+    ...Object.values(game.tokens || {}).filter((t) => t.lt && !(t.hidden && !isDM()) && !fogHides(t)).map((t) => ({ x: t.x + (t.size || 1) / 2, y: t.y + (t.size || 1) / 2, r: ((+t.lt.b || 0) + (+t.lt.d || 0)) / FT() }))];
+  return { w: W(), h: H(), map: bgImg ? {} : game.map || {}, doors: game.doors || {}, lights: lights.filter((L) => cellShade(`${Math.floor(L.x)}_${Math.floor(L.y)}`) >= 0), amb, shade: cellShade };
+}
+async function g3Toggle(want) {
+  if (g3busy) return;
+  ls.set('dnd55-3d', want ? '1' : '0');
+  if (want && !g3) {
+    g3busy = true;
+    try {
+      const m = await import('./table3d.js');
+      g3 = m.create($('#tblWrap'), { CELL, canvases: { terrain: $('#tblTerrain'), areas: $('#tblAreas'), range: $('#tblRange'), fog: $('#tblFog'), fx: $('#tblFxCv') }, state: g3State,
+        view: () => { const w = $('#tblWrap'); return { cx: (cam.x + w.clientWidth / 2) / zoom / CELL, cy: (cam.y + w.clientHeight / 2) / zoom / CELL, zoom, vh: w.clientHeight }; } });
+      window.__g3 = g3;
+    } catch (err) { g3busy = false; ls.set('dnd55-3d', '0'); app.toast('Не удалось включить объёмный вид: нужен интернет при первом включении и видеокарта с WebGL'); console.error(err); return; }
+    g3busy = false;
+  }
+  g3on = !!(want && g3 && game);
+  $('#tblWrap').classList.toggle('g3', g3on);
+  if (g3) g3.setOn(g3on);
+  const b = $('#tblG3Btn'); if (b) b.classList.toggle('on', g3on);
+  if (game) { drawTerrain(); renderAll(); }
+}
+// При каждой перерисовке: включить сохранённый на устройстве выбор
+function g3Sync() {
+  if (!g3on && !g3busy && game && ls.get('dnd55-3d') === '1') g3Toggle(true);
+}
+// После перерисовки слоя — обновить его текстуру на полу
+{
+  const hook = (f, name) => function (...a) { const r = f.apply(this, a); if (g3on) g3.tex(name); return r; };
+  drawTerrain = hook(drawTerrain, 'terrain'); drawAreas = hook(drawAreas, 'areas'); drawRange = hook(drawRange, 'range'); drawRuler = hook(drawRuler, 'range');
+  drawFog = hook(drawFog, 'fog'); fxFrame = hook(fxFrame, 'fx'); drawAimRange = hook(drawAimRange, 'range');
+}
 document.addEventListener('keydown', onKeyDown);
 document.addEventListener('keyup', onKeyUp);
 const board = $('#tblBoard');
