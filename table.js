@@ -586,8 +586,9 @@ function drawTerrain() {
   const cv = $('#tblTerrain'), g = cv.getContext('2d'), bg = bgSet();
   layoutBoard();
   g.clearRect(0, 0, cv.width, cv.height);
-  g.fillStyle = GROUND[(game.meta || {}).ground] || '#1f1b16';
-  g.fillRect(0, 0, cv.width, cv.height);
+  // Объёмный вид без карты-подложки рисует пол сам (table3d.js) — здесь остаются только сетка и пометки
+  const own3 = g3on && !bgImg;
+  if (!own3) { g.fillStyle = GROUND[(game.meta || {}).ground] || '#1f1b16'; g.fillRect(0, 0, cv.width, cv.height); }
   if (bgImg) {
     const w = (bg.w || W()) * CELL, h = (w * bgImg.naturalHeight) / bgImg.naturalWidth;
     g.globalAlpha = bg.op;
@@ -597,7 +598,7 @@ function drawTerrain() {
   // Поверх карты местность полупрозрачная — чтобы рисунок оставался виден
   Object.entries(game.map || {}).forEach(([k, type]) => {
     const [x, y] = k.split('_').map(Number), T = TERRAIN[type];
-    if (!T) return;
+    if (!T || own3) return;
     g.fillStyle = bgImg && type === 'wall' ? 'rgba(40,30,22,.55)' : T.color;
     g.fillRect(x * CELL, y * CELL, CELL, CELL);
     if (bgImg && type === 'wall') { g.strokeStyle = 'rgba(255,190,120,.45)'; g.strokeRect(x * CELL + 1.5, y * CELL + 1.5, CELL - 3, CELL - 3); }
@@ -8438,7 +8439,7 @@ function g3State() {
   const f = fogSet(), amb = fogOn() ? f.amb || 'bright' : (game.meta || {}).timeLight ? dayPart().amb : 'bright';
   const lights = [...Object.values(game.lights || {}).map((L) => ({ x: L.x + 0.5, y: L.y + 0.5, r: ((+L.b || 20) + (+L.d || 20)) / FT(), fix: 1 })),
     ...Object.values(game.tokens || {}).filter((t) => t.lt && !(t.hidden && !isDM()) && !fogHides(t)).map((t) => ({ x: t.x + (t.size || 1) / 2, y: t.y + (t.size || 1) / 2, r: ((+t.lt.b || 0) + (+t.lt.d || 0)) / FT() }))];
-  return { w: W(), h: H(), map: bgImg ? {} : game.map || {}, doors: game.doors || {}, chests: Object.values(game.chests || {}).map((C) => ({ x: C.x, y: C.y, o: !!C.o })), drops: Object.values(game.drops || {}).map((D) => ({ x: D.x, y: D.y })), lights: lights.filter((L) => cellShade(`${Math.floor(L.x)}_${Math.floor(L.y)}`) >= 0), amb, shade: cellShade };
+  return { w: W(), h: H(), bg: !!bgImg, ground: (game.meta || {}).ground || '', map: bgImg ? {} : game.map || {}, doors: game.doors || {}, chests: Object.values(game.chests || {}).map((C) => ({ x: C.x, y: C.y, o: !!C.o })), drops: Object.values(game.drops || {}).map((D) => ({ x: D.x, y: D.y })), lights: lights.filter((L) => cellShade(`${Math.floor(L.x)}_${Math.floor(L.y)}`) >= 0), amb, shade: cellShade };
 }
 async function g3Toggle(want) {
   if (g3busy) return;

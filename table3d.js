@@ -42,6 +42,13 @@ export function create(wrap, api) {
     scene.add(mesh);
     layers[name] = { cv, tex, mesh, w: 0, h: 0 };
   });
+  // Местность. С картой-подложкой холст 2D и есть пол. Без неё пол рисуется здесь (paintGround) — плиты, трава, песок,
+  // вода с неровным берегом, — а холст 2D ложится сверху прозрачным слоем пометок (сетка, заметки, значки мастера)
+  const terr = layers.terrain, terrLit = terr.mesh.material, terrMarks = new THREE.MeshBasicMaterial({ map: terr.tex, transparent: true, depthWrite: false, toneMapped: false });
+  const groundCv = document.createElement('canvas'), groundTex = new THREE.CanvasTexture(groundCv);
+  groundTex.colorSpace = THREE.SRGBColorSpace; groundTex.anisotropy = renderer.capabilities.getMaxAnisotropy();
+  const groundMesh = new THREE.Mesh(unit, new THREE.MeshStandardMaterial({ map: groundTex, bumpMap: groundTex, bumpScale: 2.2, roughness: 0.9, emissive: 0xffffff, emissiveMap: groundTex, emissiveIntensity: 0.1 }));
+  groundMesh.receiveShadow = true; groundMesh.renderOrder = -1; scene.add(groundMesh);
   function tex(name) {
     const L = layers[name]; if (!L) return;
     // Холст поменял размер — текстуру создаём заново (память под неё выделяется один раз)
@@ -72,23 +79,11 @@ export function create(wrap, api) {
   };
   const rippleTex = sinTex((u, v) => { const e = 1 / 128, dx = (wave(u + e, v) - wave(u - e, v)) * 5, dy = (wave(u, v + e) - wave(u, v - e)) * 5, l = Math.hypot(dx, dy, 1); return [(-dx / l * 0.5 + 0.5) * 255, (-dy / l * 0.5 + 0.5) * 255, (1 / l * 0.5 + 0.5) * 255]; });
   const lavaTex = sinTex((u, v) => { const k = Math.max(0, Math.min(1, wave(u, v) * 0.8 + 0.5)); return [70 + 185 * k, 12 + 150 * k * k, 4 + 40 * k * k * k]; }); lavaTex.colorSpace = THREE.SRGBColorSpace;
-  const waterMat = new THREE.MeshStandardMaterial({ roughness: 0.12, metalness: 0.35, normalMap: rippleTex, normalScale: new THREE.Vector2(0.3, 0.3), transparent: true, opacity: 0.82, depthWrite: false });
-  const iceMat = new THREE.MeshStandardMaterial({ roughness: 0.08, metalness: 0.2, transparent: true, opacity: 0.7, depthWrite: false });
-  const lavaMat = new THREE.MeshBasicMaterial({ map: lavaTex, toneMapped: false });
-  // Рельеф пола: мягкие пятна — свет факела ложится неровно
-  const bumpTex = (() => {
-    const N = 128, c = document.createElement('canvas'); c.width = c.height = N; const g = c.getContext('2d'); g.fillStyle = '#808080'; g.fillRect(0, 0, N, N);
-    for (let i = 0; i < 260; i++) { const x = Math.random() * N, y = Math.random() * N, r = 3 + Math.random() * 9, v = Math.random() > 0.5 ? 255 : 0;
-      for (const [ox, oy] of [[0, 0], [N, 0], [-N, 0], [0, N], [0, -N]]) { const gr = g.createRadialGradient(x + ox, y + oy, 0, x + ox, y + oy, r); gr.addColorStop(0, `rgba(${v},${v},${v},.35)`); gr.addColorStop(1, `rgba(${v},${v},${v},0)`); g.fillStyle = gr; g.fillRect(x + ox - r, y + oy - r, r * 2, r * 2); } }
-    const t = new THREE.CanvasTexture(c); t.wrapS = t.wrapT = THREE.RepeatWrapping; return t;
-  })();
-  layers.terrain.mesh.material.bumpMap = bumpTex; layers.terrain.mesh.material.bumpScale = 1.6;
   // Столешница: поле лежит на тёмной каменной плите
   const slab = new THREE.Mesh(box(1, 0.5, 1), new THREE.MeshStandardMaterial({ map: noise, color: 0x3a332c, roughness: 0.9 })); slab.position.y = -0.26; slab.receiveShadow = true; scene.add(slab);
   const ico = (r) => new THREE.IcosahedronGeometry(r, 1);
   // Часть препятствия: геометрия, материал, цвет, высота центра, сдвиг в клетке, v — доля случайного разброса размера
   const PROPS = {
-    wall: [{ g: box(1, WALL_H, 1), m: stoneMat, c: 0x8a7f72, y: WALL_H / 2 }],
     rock: [{ g: new THREE.IcosahedronGeometry(0.5, 1), m: stoneMat, c: 0x8d867c, y: 0.3, s: [0.92, 0.75, 0.92], v: 0.2, spin: true }],
     tree: [{ g: new THREE.CylinderGeometry(0.07, 0.1, 0.6, 7), m: plainMat, c: 0x4a3220, y: 0.3 },
       { g: new THREE.ConeGeometry(0.46, 0.95, 8), m: leafMat, c: 0x2f6b2a, y: 0.95, v: 0.18, spin: true },
@@ -99,11 +94,6 @@ export function create(wrap, api) {
     grave: [{ g: box(0.42, 0.6, 0.13), m: stoneMat, c: 0x9a9aa2, y: 0.3 }],
     mushroom: [{ g: new THREE.CylinderGeometry(0.08, 0.11, 0.6, 8), m: plainMat, c: 0xd8cfc0, y: 0.3 },
       { g: new THREE.SphereGeometry(0.46, 14, 8, 0, Math.PI * 2, 0, Math.PI / 2), m: plainMat, c: 0x8a4fb0, y: 0.55, s: [1, 0.6, 1] }],
-    // Плоские клетки (flat): лежат чуть выше пола, под слоями областей и тумана
-    water: [{ g: unit, m: waterMat, c: 0x3f78b8, y: 0.006, flat: true }],
-    bog: [{ g: unit, m: waterMat, c: 0x35421f, y: 0.006, flat: true }],
-    ice: [{ g: unit, m: iceMat, c: 0xbfe4f6, y: 0.006, flat: true }],
-    lava: [{ g: unit, m: lavaMat, c: 0xffffff, y: 0.006, flat: true }],
     bridge: [{ g: box(1, 0.06, 1), m: plainMat, c: 0x7a5230, y: 0.04 }, { g: box(1, 0.1, 0.06), m: plainMat, c: 0x4a2e18, y: 0.12, dz: -0.47 }, { g: box(1, 0.1, 0.06), m: plainMat, c: 0x4a2e18, y: 0.12, dz: 0.47 }],
     bush: [{ g: ico(0.24), m: leafMat, c: 0x4f8a3a, y: 0.17, dx: -0.14, dz: 0.1, v: 0.2, spin: true }, { g: ico(0.19), m: leafMat, c: 0x5c9a44, y: 0.14, dx: 0.2, dz: -0.12, v: 0.2, spin: true }],
     thicket: [{ g: new THREE.ConeGeometry(0.26, 0.5, 7), m: leafMat, c: 0x1f4a20, y: 0.25, dx: -0.2, dz: -0.18, v: 0.25, spin: true },
@@ -113,6 +103,198 @@ export function create(wrap, api) {
     snow: [{ g: ico(0.3), m: plainMat, c: 0xe9eef5, y: 0.03, dx: -0.12, dz: 0.1, s: [1.2, 0.35, 1], v: 0.2, spin: true }, { g: ico(0.22), m: plainMat, c: 0xdfe6ef, y: 0.03, dx: 0.22, dz: -0.2, s: [1.2, 0.35, 1], v: 0.2, spin: true }],
     stairs: [0, 1, 2].map((i) => ({ g: box(0.9, 0.1 * (i + 1), 0.3), m: stoneMat, c: 0xa09078, y: 0.05 * (i + 1), dz: 0.3 - i * 0.3 })),
   };
+  // ---------- Пол и стены: рисунок как в образце стиля (этап 0б) ----------
+  const mulberry = (a) => () => { a |= 0; a = (a + 0x6D2B79F5) | 0; let t = Math.imul(a ^ (a >>> 15), 1 | a); t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t; return ((t ^ (t >>> 14)) >>> 0) / 4294967296; };
+  const rgba = (hex, a) => `rgba(${parseInt(hex.slice(1, 3), 16)},${parseInt(hex.slice(3, 5), 16)},${parseInt(hex.slice(5, 7), 16)},${a})`;
+  // Грунт: основной цвет, оттенки пятен, цвет травинок
+  const SOIL = {
+    grass: ['#2f4a25', ['#3d5c2e', '#26401f', '#4a6a35'], '#5d8040'], swamp: ['#2a3724', ['#35452b', '#222e1e', '#3f4c2c'], '#52663a'],
+    sand: ['#8d7a4c', ['#9d8858', '#7b693f', '#ab9762'], ''], dirt: ['#4a3a2a', ['#584633', '#3c2e21', '#64513b'], ''],
+    snow: ['#b4c0cf', ['#c9d3e0', '#a3b0c2', '#dde5ee'], ''], road: ['#6a5842', ['#7a674e', '#5a4a37', '#857258'], ''],
+    difficult: ['#3d3226', ['#4a3d2e', '#30271d', '#55483a'], ''], rubble: ['#4b463f', ['#5a554d', '#3c3832', '#676158'], ''],
+    shade: ['#1f3019', ['#27391f', '#182613', '#2d4223'], '#3a5a2c'], bog: ['#27321d', ['#324024', '#1c2616', '#3b4a26'], '#6f8a45'],
+    water: ['#1c4d6b', ['#235d7e', '#143a54', '#2a6a8c'], ''], ice: ['#93bbd2', ['#b4d8ea', '#7fa9c2', '#cfe8f4'], ''],
+    lava: ['#8a2207', ['#c9480d', '#4a1205', '#e8731a'], ''], chasm: ['#050404', ['#0a0807', '#000000', '#0d0b09'], ''],
+  };
+  const PEBBLES = { road: 3, difficult: 9, rubble: 16, dirt: 1.5, sand: 0.6 };
+  function pebble(g, x, y, r, R) {
+    const p = [], n = 5 + Math.floor(R() * 3);
+    for (let i = 0; i < n; i++) { const a = (i * 6.283) / n + R() * 0.5, rr = r * (0.7 + R() * 0.4); p.push([x + Math.cos(a) * rr, y + Math.sin(a) * rr * 0.8]); }
+    const path = (dx, dy) => { g.beginPath(); p.forEach(([px, py], i) => (i ? g.lineTo(px + dx, py + dy) : g.moveTo(px + dx, py + dy))); g.closePath(); };
+    g.fillStyle = 'rgba(0,0,0,.45)'; path(r * 0.25, r * 0.25); g.fill();
+    g.fillStyle = `hsl(${25 + R() * 15},${5 + R() * 8}%,${30 + R() * 18}%)`; path(0, 0); g.fill();
+    g.fillStyle = 'rgba(255,240,220,.12)'; path(-r * 0.15, -r * 0.2); g.fill();
+  }
+  // Закрасить прямоугольник грунтом: пятна, крапинки, травинки, камешки, трещины льда, жилы лавы
+  function soil(g, kind, x0, y0, w, h, s, R) {
+    const [base, tones, blade] = SOIL[kind], n = (w * h) / (s * s), pick = () => tones[Math.floor(R() * tones.length)];
+    g.fillStyle = base; g.fillRect(x0, y0, w, h);
+    for (let i = 0; i < n * 1.8; i++) { const x = x0 + R() * w, y = y0 + R() * h, r = s * (0.3 + R() * 0.9), c = pick(), gr = g.createRadialGradient(x, y, 0, x, y, r); gr.addColorStop(0, rgba(c, 0.55)); gr.addColorStop(1, rgba(c, 0)); g.fillStyle = gr; g.fillRect(x - r, y - r, r * 2, r * 2); }
+    for (let i = 0; i < n * 40; i++) { g.fillStyle = R() < 0.4 ? 'rgba(0,0,0,.16)' : rgba(pick(), 0.6); const d = (1 + R() * 2.2) * (s / 64); g.fillRect(x0 + R() * w, y0 + R() * h, d, d); }
+    if (blade) { g.strokeStyle = rgba(blade, 0.55); g.lineWidth = Math.max(1, s / 56); g.beginPath(); for (let i = 0; i < n * 34; i++) { const x = x0 + R() * w, y = y0 + R() * h, l = s * (0.04 + R() * 0.08); g.moveTo(x, y); g.lineTo(x + (R() - 0.5) * l, y - l); } g.stroke(); }
+    for (let i = 0; i < n * (PEBBLES[kind] || 0); i++) pebble(g, x0 + R() * w, y0 + R() * h, s * (0.025 + R() * 0.06), R);
+    const veins = kind === 'ice' ? ['rgba(255,255,255,.5)', 1.4, 0.02] : kind === 'lava' ? ['rgba(255,214,110,.75)', 2.2, 0.035] : null;
+    if (veins) { g.strokeStyle = veins[0]; g.lineWidth = s * veins[2]; for (let i = 0; i < n * veins[1]; i++) { let x = x0 + R() * w, y = y0 + R() * h; g.beginPath(); g.moveTo(x, y); for (let k = 0; k < 4; k++) { x += (R() - 0.5) * s * 0.5; y += (R() - 0.5) * s * 0.5; g.lineTo(x, y); } g.stroke(); } }
+  }
+  // Каменные плиты клетки: одна, две или четыре, с фаской, крапом и трещинами; warm — светлее (пол в доме)
+  function flag(g, x, y, s, warm) {
+    const R = mulberry(x * 7919 + y * 104729 + 13), X = x * s, Y = y * s, lay = R(), k = s / 64;
+    const rects = lay < 0.3 ? [[0, 0, 1, 1]] : lay < 0.55 ? [[0, 0, 1, 0.5], [0, 0.5, 1, 0.5]] : lay < 0.8 ? [[0, 0, 0.5, 1], [0.5, 0, 0.5, 1]] : [[0, 0, 0.5, 0.5], [0.5, 0, 0.5, 0.5], [0, 0.5, 0.5, 0.5], [0.5, 0.5, 0.5, 0.5]];
+    g.fillStyle = '#0d0b09'; g.fillRect(X, Y, s, s);
+    for (const [a, b, c, d] of rects) {
+      const x0 = X + a * s + 1.5 * k, y0 = Y + b * s + 1.5 * k, w = c * s - 3 * k, h = d * s - 3 * k, j = () => (R() - 0.5) * 2.4 * k;
+      const p = [[x0 + j(), y0 + j()], [x0 + w + j(), y0 + j()], [x0 + w + j(), y0 + h + j()], [x0 + j(), y0 + h + j()]];
+      const L = (warm ? 33 : 25) + R() * 11, hue = 24 + R() * 16, sat = (warm ? 12 : 6) + R() * 9;
+      g.beginPath(); p.forEach(([px, py], i) => (i ? g.lineTo(px, py) : g.moveTo(px, py))); g.closePath();
+      const gr = g.createLinearGradient(x0, y0, x0 + w, y0 + h); gr.addColorStop(0, `hsl(${hue},${sat}%,${L + 5}%)`); gr.addColorStop(1, `hsl(${hue},${sat}%,${L - 7}%)`);
+      g.fillStyle = gr; g.fill();
+      g.save(); g.clip();
+      for (let i = 0; i < 30; i++) { g.fillStyle = R() < 0.5 ? 'rgba(255,240,220,.05)' : 'rgba(0,0,0,.13)'; g.fillRect(x0 + R() * w, y0 + R() * h, (1 + R() * 2.5) * k, (1 + R() * 2.5) * k); }
+      if (R() < 0.55) { const bx = x0 + R() * w, by = y0 + R() * h, br = (8 + R() * 18) * k, bg = g.createRadialGradient(bx, by, 0, bx, by, br); bg.addColorStop(0, R() < 0.5 ? 'rgba(0,0,0,.18)' : 'rgba(255,230,200,.07)'); bg.addColorStop(1, 'rgba(0,0,0,0)'); g.fillStyle = bg; g.fillRect(bx - br, by - br, br * 2, br * 2); }
+      if (R() < 0.25) { g.strokeStyle = 'rgba(0,0,0,.5)'; g.lineWidth = k; g.beginPath(); let cx = x0 + R() * w, cy = y0 + R() * h; g.moveTo(cx, cy); for (let i = 0; i < 4; i++) { cx += (R() - 0.5) * 18 * k; cy += (R() - 0.5) * 18 * k; g.lineTo(cx, cy); } g.stroke(); }
+      g.restore();
+      g.lineWidth = 1.2 * k;
+      g.strokeStyle = 'rgba(255,235,210,.10)'; g.beginPath(); g.moveTo(p[3][0], p[3][1]); g.lineTo(p[0][0], p[0][1]); g.lineTo(p[1][0], p[1][1]); g.stroke();
+      g.strokeStyle = 'rgba(0,0,0,.38)'; g.beginPath(); g.moveTo(p[1][0], p[1][1]); g.lineTo(p[2][0], p[2][1]); g.lineTo(p[3][0], p[3][1]); g.stroke();
+    }
+  }
+  // Дощатый пол на всё поле: доски вдоль, разной длины, со стыками и волокнами
+  function planks(g, W, H, s, R) {
+    const bh = s / 3;
+    for (let r = 0; r * bh < H; r++) for (let x = -R() * s; x < W;) {
+      const len = s * (1.5 + R() * 2), y = r * bh, L = 19 + R() * 9;
+      g.fillStyle = `hsl(${24 + R() * 10},${28 + R() * 10}%,${L}%)`; g.fillRect(x, y, len, bh);
+      g.strokeStyle = 'rgba(0,0,0,.22)'; g.lineWidth = Math.max(1, s / 90); g.beginPath();
+      for (let i = 0; i < 4; i++) { const yy = y + R() * bh; g.moveTo(x + R() * len * 0.3, yy); g.lineTo(x + len * (0.6 + R() * 0.4), yy + (R() - 0.5) * 2); } g.stroke();
+      g.fillStyle = 'rgba(0,0,0,.55)'; g.fillRect(x + len - s / 40, y, s / 40, bh); g.fillRect(x, y + bh - s / 48, len, s / 48);
+      g.fillStyle = 'rgba(255,230,190,.07)'; g.fillRect(x, y, len, s / 48);
+      x += len;
+    }
+  }
+  // Пятно местности: клетки, раздутые и с неровным краем — чтобы граница не шла по квадратам
+  function blot(g, cells, has, s, grow, R) {
+    g.fillStyle = g.strokeStyle = '#fff'; g.lineJoin = 'round'; g.lineWidth = grow * 2 * s;
+    cells.forEach(([x, y]) => {
+      g.fillRect(x * s - 0.5, y * s - 0.5, s + 1, s + 1); g.strokeRect(x * s, y * s, s, s);
+      [[0, -1], [1, 0], [0, 1], [-1, 0]].forEach(([dx, dy]) => {
+        if (has(x + dx, y + dy)) return;
+        for (let i = 0; i < 6; i++) {
+          const t = R(), out = grow * s * (0.2 + R() * 1.2), r = s * (0.05 + R() * 0.13);
+          const cx = (x + 0.5 + dx * 0.5 + (dx ? 0 : t - 0.5)) * s + dx * out, cy = (y + 0.5 + dy * 0.5 + (dy ? 0 : t - 0.5)) * s + dy * out;
+          g.beginPath(); g.arc(cx, cy, r, 0, 6.283); g.fill();
+        }
+      });
+    });
+  }
+  // [грунт, типы клеток, раздутие, цвет каймы, ширина каймы, плотность]
+  const PATCH = [['road', ['road'], 0.1, 'rgba(0,0,0,.3)', 0.1, 1], ['sand', ['sand'], 0.14, '', 0, 1], ['snow', ['snow'], 0.14, 'rgba(255,255,255,.3)', 0.12, 1],
+    ['difficult', ['difficult'], 0.1, 'rgba(0,0,0,.35)', 0.1, 0.92], ['rubble', ['rubble'], 0.1, 'rgba(0,0,0,.35)', 0.1, 0.88], ['shade', ['tree', 'thicket', 'bush', 'mushroom'], 0.16, '', 0, 0.72],
+    ['bog', ['bog'], 0.12, 'rgba(8,12,6,.75)', 0.16, 1], ['water', ['water'], 0.12, 'rgba(8,12,10,.8)', 0.18, 1], ['ice', ['ice'], 0.1, 'rgba(220,240,255,.4)', 0.1, 1],
+    ['lava', ['lava'], 0.1, 'rgba(255,110,20,.95)', 0.28, 1], ['chasm', ['chasm'], 0.06, 'rgba(0,0,0,.95)', 0.22, 1]];
+  // Блестящая плёнка над водой, болотом, льдом и лавой — одной плоскостью по маске пятна
+  const LIQ = { water: { color: 0x3a86aa, opacity: 0.5, rough: 0.1, ripple: 1 }, bog: { color: 0x3c4c26, opacity: 0.45, rough: 0.2, ripple: 1 }, ice: { color: 0xe2f4ff, opacity: 0.3, rough: 0.05 }, lava: { lava: 1, opacity: 0.8 } };
+  const liquids = {}, tmpCv = document.createElement('canvas');
+  let groundSig = '';
+  function paintGround() {
+    const map = S.map, sig = `${S.w}x${S.h}|${S.ground}|` + Object.entries(map).map(([k, t]) => k + t).join(',');
+    if (sig === groundSig) return; groundSig = sig;
+    const s = Math.max(24, Math.min(64, Math.floor(4096 / Math.max(S.w, S.h)))), W = S.w * s, H = S.h * s;
+    if (groundCv.width !== W || groundCv.height !== H) { groundTex.dispose(); groundCv.width = W; groundCv.height = H; }
+    tmpCv.width = W; tmpCv.height = H;
+    const g = groundCv.getContext('2d'), tg = tmpCv.getContext('2d'), R = mulberry(S.w * 31 + S.h), at = (x, y) => map[`${x}_${y}`];
+    const by = {}; Object.entries(map).forEach(([k, t]) => { const [x, y] = k.split('_').map(Number); if (x >= 0 && y >= 0 && x < S.w && y < S.h) (by[t] = by[t] || []).push([x, y]); });
+    // Основа: грунт по виду местности, доски или каменные плиты
+    if (SOIL[S.ground]) soil(g, S.ground, 0, 0, W, H, s, R);
+    else if (S.ground === 'wood') { g.fillStyle = '#1a120b'; g.fillRect(0, 0, W, H); planks(g, W, H, s, R); }
+    else for (let y = 0; y < S.h; y++) for (let x = 0; x < S.w; x++) flag(g, x, y, s, false);
+    PATCH.forEach(([kind, types, grow, rim, rimW, alpha], pi) => {
+      let cells = types.flatMap((t) => by[t] || []);
+      // Мост над водой — вода идёт и под ним
+      if (LIQ[kind]) cells = cells.concat((by.bridge || []).filter(([x, y]) => [[0, -1], [1, 0], [0, 1], [-1, 0]].some(([dx, dy]) => at(x + dx, y + dy) === kind)));
+      const L = LIQ[kind] && (liquids[kind] = liquids[kind] || {});
+      if (L && L.mesh) L.mesh.visible = cells.length > 0;
+      if (!cells.length) return;
+      const set = new Set(cells.map(([x, y]) => `${x}_${y}`)), has = (x, y) => set.has(`${x}_${y}`);
+      const xs = cells.map((c) => c[0]), ys = cells.map((c) => c[1]), x0 = (Math.min(...xs) - 1) * s, y0 = (Math.min(...ys) - 1) * s, w = (Math.max(...xs) + 2) * s - x0, h = (Math.max(...ys) + 2) * s - y0;
+      tg.globalCompositeOperation = 'source-over'; tg.clearRect(0, 0, W, H);
+      blot(tg, cells, has, s, grow, mulberry(pi * 977 + 5));
+      tg.globalCompositeOperation = 'source-atop'; soil(tg, kind, x0, y0, w, h, s, mulberry(pi * 131 + 7));
+      g.save(); g.globalAlpha = alpha; if (rim) { g.shadowColor = rim; g.shadowBlur = rimW * s; } g.drawImage(tmpCv, 0, 0); g.restore();
+      if (!L) return;
+      // Маска для блестящей плёнки — те же пятна (то же зерно), вдвое мельче
+      const ms = s / 2, P = LIQ[kind];
+      if (!L.mesh) {
+        L.cv = document.createElement('canvas'); L.tex = new THREE.CanvasTexture(L.cv);
+        const mat = P.lava ? new THREE.MeshBasicMaterial({ map: lavaTex, toneMapped: false }) : new THREE.MeshStandardMaterial({ color: P.color, roughness: P.rough, metalness: 0.3, normalMap: P.ripple ? rippleTex : null, normalScale: new THREE.Vector2(0.3, 0.3) });
+        mat.alphaMap = L.tex; mat.transparent = true; mat.opacity = P.opacity; mat.depthWrite = false;
+        L.mesh = new THREE.Mesh(unit, mat); L.mesh.position.y = 0.002; L.mesh.renderOrder = -0.5; L.mesh.receiveShadow = !P.lava; scene.add(L.mesh);
+      }
+      if (L.cv.width !== S.w * ms || L.cv.height !== S.h * ms) { L.tex.dispose(); L.cv.width = S.w * ms; L.cv.height = S.h * ms; }
+      const mg = L.cv.getContext('2d'); mg.fillStyle = '#000'; mg.fillRect(0, 0, L.cv.width, L.cv.height);
+      blot(mg, cells, has, ms, grow, mulberry(pi * 977 + 5)); L.tex.needsUpdate = true;
+      L.mesh.scale.set(S.w, 1, S.h); L.mesh.position.x = S.w / 2; L.mesh.position.z = S.h / 2; L.mesh.visible = true;
+    });
+    // Пол в доме — тёплые плиты ровно по клеткам
+    (by.floor || []).forEach(([x, y]) => flag(g, x, y, s, true));
+    (by.wall || []).forEach(([x, y]) => { g.fillStyle = '#100d0b'; g.fillRect(x * s, y * s, s, s); });
+    // Тень у основания стен и под предметами
+    for (let y = 0; y < S.h; y++) for (let x = 0; x < S.w; x++) {
+      const t = at(x, y); if (t === 'wall') continue;
+      const X = x * s, Y = y * s;
+      for (const [dx, dy, d, a] of [[0, -1, 0.5, 0.6], [0, 1, 0.25, 0.35], [-1, 0, 0.32, 0.4], [1, 0, 0.32, 0.4]]) {
+        if (at(x + dx, y + dy) !== 'wall') continue;
+        const gr = dy === -1 ? g.createLinearGradient(0, Y, 0, Y + d * s) : dy === 1 ? g.createLinearGradient(0, Y + s, 0, Y + s - d * s) : dx === -1 ? g.createLinearGradient(X, 0, X + d * s, 0) : g.createLinearGradient(X + s, 0, X + s - d * s, 0);
+        gr.addColorStop(0, `rgba(0,0,0,${a})`); gr.addColorStop(1, 'rgba(0,0,0,0)'); g.fillStyle = gr; g.fillRect(X, Y, s, s);
+      }
+      if (PROPS[t] && t !== 'bridge' && t !== 'snow') { const gr = g.createRadialGradient(X + s / 2, Y + s / 2, 0, X + s / 2, Y + s / 2, s * 0.6); gr.addColorStop(0, 'rgba(0,0,0,.5)'); gr.addColorStop(1, 'rgba(0,0,0,0)'); g.fillStyle = gr; g.fillRect(X - s * 0.1, Y - s * 0.1, s * 1.2, s * 1.2); }
+    }
+    rippleTex.repeat.set(S.w / 1.5, S.h / 1.5); lavaTex.repeat.set(S.w / 2, S.h / 2);
+    groundTex.needsUpdate = true;
+  }
+  // Кладка стен: камни рядами со сдвигом; верх стены — тёмный срез
+  function brickCanvas(top) {
+    const c = document.createElement('canvas'); c.width = c.height = 256; const g = c.getContext('2d'), R = mulberry(top ? 11 : 3);
+    g.fillStyle = top ? '#16130f' : '#1d1814'; g.fillRect(0, 0, 256, 256);
+    if (top) { for (let i = 0; i < 400; i++) { g.fillStyle = R() < 0.5 ? 'rgba(255,240,220,.05)' : 'rgba(0,0,0,.3)'; g.fillRect(R() * 256, R() * 256, 2 + R() * 4, 2 + R() * 4); } return c; }
+    for (let r = 0; r < 8; r++) for (let x = -(r % 2) * 24 - R() * 10; x < 256;) {
+      const w = 40 + R() * 26, x0 = Math.max(0, x) + 2, x1 = Math.min(256, x + w) - 2;
+      if (x1 > x0) {
+        g.fillStyle = `hsl(${24 + R() * 14},${6 + R() * 8}%,${33 + R() * 14}%)`; g.fillRect(x0, r * 32 + 2, x1 - x0, 28);
+        g.fillStyle = 'rgba(255,235,210,.12)'; g.fillRect(x0, r * 32 + 2, x1 - x0, 2);
+        g.fillStyle = 'rgba(0,0,0,.35)'; g.fillRect(x0, r * 32 + 27, x1 - x0, 3);
+        for (let k = 0; k < 12; k++) { g.fillStyle = R() < 0.5 ? 'rgba(255,240,220,.06)' : 'rgba(0,0,0,.18)'; g.fillRect(x0 + R() * (x1 - x0), r * 32 + 2 + R() * 28, 2, 2); }
+      }
+      x += w;
+    }
+    return c;
+  }
+  const brickTex = new THREE.CanvasTexture(brickCanvas(false)), topTex = new THREE.CanvasTexture(brickCanvas(true));
+  [brickTex, topTex].forEach((t) => { t.colorSpace = THREE.SRGBColorSpace; t.wrapS = t.wrapT = THREE.RepeatWrapping; t.anisotropy = renderer.capabilities.getMaxAnisotropy(); });
+  const wallMats = [new THREE.MeshStandardMaterial({ map: brickTex, bumpMap: brickTex, bumpScale: 3.5, roughness: 0.92, vertexColors: true }), new THREE.MeshStandardMaterial({ map: topTex, roughness: 1, color: 0xd0c8c0, vertexColors: true })];
+  // Стены одной сеткой: грани только наружу, кладка идёт сплошной лентой через клетки (а не повторяется в каждой)
+  let wallMesh = null, wallSig = '';
+  function buildWalls() {
+    const cells = Object.entries(S.map).filter(([k, t]) => t === 'wall' && S.shade(k) >= 0);
+    const sig = cells.map(([k]) => `${k}:${S.shade(k)}`).join(',');
+    if (sig === wallSig) return; wallSig = sig;
+    if (wallMesh) { scene.remove(wallMesh); wallMesh.geometry.dispose(); wallMesh = null; }
+    if (!cells.length) return;
+    const pos = [], nor = [], uv = [], col = [], side = [], top = [], vis = new Set(cells.map(([k]) => k)), Hh = WALL_H;
+    const quad = (v, n, uvs, c, into) => { const i = pos.length / 3; v.forEach((p, j) => { pos.push(...p); nor.push(...n); uv.push(...uvs[j]); col.push(c, c, c); }); into.push(i, i + 1, i + 2, i, i + 2, i + 3); };
+    cells.forEach(([k]) => {
+      const [x, y] = k.split('_').map(Number), c = S.shade(k) * (0.92 + rnd(x, y, 3) * 0.16), open = (dx, dy) => !vis.has(`${x + dx}_${y + dy}`), u0 = x / 2, u1 = (x + 1) / 2, w0 = y / 2, w1 = (y + 1) / 2, V = 0.5;
+      if (open(0, -1)) quad([[x + 1, 0, y], [x, 0, y], [x, Hh, y], [x + 1, Hh, y]], [0, 0, -1], [[u1, 0], [u0, 0], [u0, V], [u1, V]], c, side);
+      if (open(0, 1)) quad([[x, 0, y + 1], [x + 1, 0, y + 1], [x + 1, Hh, y + 1], [x, Hh, y + 1]], [0, 0, 1], [[u0, 0], [u1, 0], [u1, V], [u0, V]], c, side);
+      if (open(1, 0)) quad([[x + 1, 0, y + 1], [x + 1, 0, y], [x + 1, Hh, y], [x + 1, Hh, y + 1]], [1, 0, 0], [[w1, 0], [w0, 0], [w0, V], [w1, V]], c, side);
+      if (open(-1, 0)) quad([[x, 0, y], [x, 0, y + 1], [x, Hh, y + 1], [x, Hh, y]], [-1, 0, 0], [[w0, 0], [w1, 0], [w1, V], [w0, V]], c, side);
+      quad([[x, Hh, y + 1], [x + 1, Hh, y + 1], [x + 1, Hh, y], [x, Hh, y]], [0, 1, 0], [[u0, w1], [u1, w1], [u1, w0], [u0, w0]], c, top);
+    });
+    const geo = new THREE.BufferGeometry();
+    geo.setAttribute('position', new THREE.Float32BufferAttribute(pos, 3)); geo.setAttribute('normal', new THREE.Float32BufferAttribute(nor, 3));
+    geo.setAttribute('uv', new THREE.Float32BufferAttribute(uv, 2)); geo.setAttribute('color', new THREE.Float32BufferAttribute(col, 3));
+    geo.setIndex(side.concat(top)); geo.addGroup(0, side.length, 0); geo.addGroup(side.length, top.length, 1);
+    wallMesh = new THREE.Mesh(geo, wallMats); wallMesh.castShadow = wallMesh.receiveShadow = true; scene.add(wallMesh);
+  }
   const propBox = new THREE.Group(), doorBox = new THREE.Group(), lampBox = new THREE.Group(); scene.add(propBox, doorBox, lampBox);
   let propSig = '', doorSig = '', lampSig = '', stale = true, S = null;
   const rnd = (x, y, n) => { const v = Math.sin(x * 127.1 + y * 311.7 + n * 74.7) * 43758.5453; return v - Math.floor(v); };
@@ -203,8 +385,11 @@ export function create(wrap, api) {
   }
   function pull() {
     stale = false; S = api.state();
-    Object.values(layers).forEach((L) => { L.mesh.scale.set(S.w, 1, S.h); L.mesh.position.x = S.w / 2; L.mesh.position.z = S.h / 2; });
-    bumpTex.repeat.set(S.w / 3, S.h / 3); slab.scale.set(S.w + 0.7, 1, S.h + 0.7); slab.position.x = S.w / 2; slab.position.z = S.h / 2;
+    [groundMesh, ...Object.values(layers).map((L) => L.mesh)].forEach((m) => { m.scale.set(S.w, 1, S.h); m.position.x = S.w / 2; m.position.z = S.h / 2; });
+    terr.mesh.material = S.bg ? terrLit : terrMarks; terr.mesh.position.y = S.bg ? 0 : 0.004; groundMesh.visible = !S.bg;
+    if (S.bg) Object.values(liquids).forEach((L) => { if (L.mesh) L.mesh.visible = false; }); else paintGround();
+    buildWalls();
+    slab.scale.set(S.w + 0.7, 1, S.h + 0.7); slab.position.x = S.w / 2; slab.position.z = S.h / 2;
     const a = AMB[S.amb] || AMB.bright;
     hemi.intensity = a.hemi; sun.intensity = a.sun; sun.color.set(a.col);
     buildProps(); buildDoors(); buildLoot(); buildLamps();
@@ -382,5 +567,5 @@ export function create(wrap, api) {
   }
   // Для проверок: прогнать кадры без requestAnimationFrame (в скрытой вкладке он стоит)
   function step(k = 1, dt = 1 / 30) { resize(); for (let i = 0; i < k; i++) update(dt); renderer.render(scene, camera); }
-  return { setOn, tokens, tex, ground, pick, project, tokTop, dragTo, hit, kick, step, fx: fxBox, refresh() { stale = true; kick(); }, info: () => ({ toks: toks.size, props: propBox.children.reduce((a, m) => a + m.count, 0), doors: doorBox.children.length, lamps: LAMPS.filter((L) => L.intensity > 0).length, calls: renderer.info.render.calls, tris: renderer.info.render.triangles, cam: { ...cur } }) };
+  return { setOn, tokens, tex, ground, pick, project, tokTop, dragTo, hit, kick, step, fx: fxBox, refresh() { stale = true; kick(); }, info: () => ({ toks: toks.size, props: propBox.children.reduce((a, m) => a + m.count, 0), walls: wallMesh ? wallMesh.geometry.index.count / 3 : 0, ground: [groundCv.width, groundCv.height], liquids: Object.keys(liquids).filter((k) => liquids[k].mesh && liquids[k].mesh.visible), doors: doorBox.children.length, lamps: LAMPS.filter((L) => L.intensity > 0).length, calls: renderer.info.render.calls, tris: renderer.info.render.triangles, cam: { ...cur } }) };
 }
