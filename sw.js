@@ -1,6 +1,6 @@
 'use strict';
 // Увеличивайте версию при изменении файлов, чтобы обновить кэш у пользователей.
-const CACHE = 'dnd55-v89';
+const CACHE = 'dnd55-v90';
 const FILES = ['./', 'index.html', 'style.css', 'app.js', 'data.js', 'data2.js', 'bestiary.js', 'mapgen.js', 'spellmech.js', 'table.js', 'table3d.js', 'sync.js', 'firebase-config.js', 'manifest.webmanifest', 'icon.svg'];
 // Кроме своих файлов кэшируем только шрифты и SDK Firebase; запросы к базе Firestore и входу не трогаем.
 const CACHE_HOSTS = ['fonts.googleapis.com', 'fonts.gstatic.com', 'www.gstatic.com', 'cdn.jsdelivr.net'];
@@ -20,7 +20,8 @@ self.addEventListener('fetch', (e) => {
   const url = new URL(req.url);
   if (url.origin !== self.location.origin && !CACHE_HOSTS.includes(url.hostname)) return;
   e.respondWith(
-    fetch(req).then((res) => {
+    // Свои файлы всегда сверяем с сервером: иначе после обновления страница бывает новой, а скрипт — ещё старым из кэша браузера
+    fetch(url.origin === self.location.origin && req.mode !== 'navigate' ? new Request(req, { cache: 'no-cache' }) : req).then((res) => {
       if (res.ok || res.type === 'opaque') { const copy = res.clone(); caches.open(CACHE).then((c) => c.put(req, copy)); }
       return res;
     }).catch(() => caches.match(req).then((r) => r || (req.mode === 'navigate' ? caches.match('index.html') : Response.error())))
