@@ -8,6 +8,7 @@ const MODEL_DIR = 'lab/models/';
 // Имя существа → файл модели и рост в клетках (для размера «Средний»)
 const MODELS = [[/гоблин/i, 'goblin', 0.9]];
 const PITCH = (55 * Math.PI) / 180, FOV = 35, WALL_H = 0.9, BASE_H = 0.07;
+const BLOOM = [0.7, 0.5, 0.95]; // свечение: сила, радиус, порог яркости
 const AMB = { bright: { hemi: 1.15, sun: 2.3, col: 0xffe6c4 }, dim: { hemi: 0.6, sun: 1.0, col: 0xc9b6d6 }, dark: { hemi: 0.5, sun: 0.6, col: 0x7f94d6 } };
 
 export function create(wrap, api) {
@@ -240,7 +241,7 @@ export function create(wrap, api) {
   // Блестящая плёнка над водой, болотом, льдом и лавой — одной плоскостью по маске пятна
   const LIQ = { water: { color: 0x3a86aa, opacity: 0.5, rough: 0.1, ripple: 1 }, bog: { color: 0x3c4c26, opacity: 0.45, rough: 0.2, ripple: 1 }, ice: { color: 0xe2f4ff, opacity: 0.3, rough: 0.05 }, lava: { lava: 1, opacity: 0.8 } };
   const liquids = {}, tmpCv = document.createElement('canvas');
-  let groundSig = '', mapRev = 0;
+  let groundSig = '', mapRev = 0, glowK = 0; // glowK — включено ли свечение
   function paintGround() {
     const map = S.map, sig = `${S.w}x${S.h}|${S.ground}|` + Object.entries(map).map(([k, t]) => k + t).join(',');
     if (sig === groundSig) return; groundSig = sig; mapRev++;
@@ -273,6 +274,7 @@ export function create(wrap, api) {
         L.cv = document.createElement('canvas'); L.tex = new THREE.CanvasTexture(L.cv);
         const mat = P.lava ? new THREE.MeshBasicMaterial({ map: lavaTex, toneMapped: false }) : new THREE.MeshStandardMaterial({ color: P.color, roughness: P.rough, metalness: 0.3, normalMap: P.ripple ? rippleTex : null, normalScale: new THREE.Vector2(0.55, 0.55) });
         if (P.ripple) flowing(mat);
+        if (P.lava && glowK) mat.color.setScalar(1.9);
         mat.alphaMap = L.tex; mat.transparent = true; mat.opacity = P.opacity; mat.depthWrite = false;
         L.mesh = new THREE.Mesh(unit, mat); L.mesh.position.y = 0.002; L.mesh.renderOrder = -0.5; L.mesh.receiveShadow = !P.lava; scene.add(L.mesh);
         if (kind === 'water') { L.glint = new THREE.Mesh(unit, new THREE.MeshBasicMaterial({ map: glintTex, alphaMap: L.tex, transparent: true, depthWrite: false, blending: THREE.AdditiveBlending, opacity: 0.09 })); L.glint.position.y = 0.003; L.glint.renderOrder = -0.4; L.mesh.add(L.glint); L.glint.position.set(0, 0.001, 0); }
@@ -617,12 +619,12 @@ export function create(wrap, api) {
   const rr = (a, b) => a + Math.random() * (b - a), pickOf = (a) => a[Math.floor(Math.random() * a.length)], ease = (t) => 1 - Math.pow(1 - t, 3), clamp = (v, a, b) => Math.max(a, Math.min(b, v));
   const dotTex = (stops) => { const c = document.createElement('canvas'); c.width = c.height = 128; const g = c.getContext('2d'), gr = g.createRadialGradient(64, 64, 0, 64, 64, 64); stops.forEach(([p, a]) => gr.addColorStop(p, `rgba(255,255,255,${a})`)); g.fillStyle = gr; g.fillRect(0, 0, 128, 128); return new THREE.CanvasTexture(c); };
   const PVS = 'attribute float size; attribute float alpha; attribute vec3 pcol; uniform float scale; varying vec3 vC; varying float vA; void main(){ vC=pcol; vA=alpha; vec4 mv=modelViewMatrix*vec4(position,1.); gl_PointSize=size*scale/-mv.z; gl_Position=projectionMatrix*mv; }';
-  const PFS = 'uniform sampler2D map; varying vec3 vC; varying float vA; void main(){ vec4 t=texture2D(map,gl_PointCoord); gl_FragColor=vec4(vC*t.rgb,t.a*vA); }';
+  const PFS = 'uniform sampler2D map; uniform float lin; uniform float gain; varying vec3 vC; varying float vA; void main(){ vec4 t=texture2D(map,gl_PointCoord); vec3 c=vC*t.rgb; if(lin>.5) c=c*c*gain; gl_FragColor=vec4(c,t.a*vA); }';
   // Частицы: одна сетка точек на всё; у частицы скорость, тяжесть, торможение, рост и время жизни
   function psys(max, map, additive, order) {
     const ps = [], g = new THREE.BufferGeometry(), A = (n) => { const a = new THREE.BufferAttribute(new Float32Array(max * n), n); a.setUsage(THREE.DynamicDrawUsage); return a; };
     const pos = A(3), col = A(3), sz = A(1), al = A(1);
-    const mat = new THREE.ShaderMaterial({ uniforms: { map: { value: map }, scale: { value: 500 } }, vertexShader: PVS, fragmentShader: PFS, blending: additive ? THREE.AdditiveBlending : THREE.NormalBlending, depthWrite: false, transparent: true });
+    const mat = new THREE.ShaderMaterial({ uniforms: { map: { value: map }, scale: { value: 500 }, lin: { value: 0 }, gain: { value: additive ? 2.2 : 1 } }, vertexShader: PVS, fragmentShader: PFS, blending: additive ? THREE.AdditiveBlending : THREE.NormalBlending, depthWrite: false, transparent: true });
     g.setAttribute('position', pos); g.setAttribute('pcol', col); g.setAttribute('size', sz); g.setAttribute('alpha', al); g.setDrawRange(0, 0);
     const pts = new THREE.Points(g, mat); pts.frustumCulled = false; pts.renderOrder = order; scene.add(pts);
     const sys = { ps, mat, dim: 1,
@@ -657,7 +659,7 @@ export function create(wrap, api) {
   const hot = (c, k) => new THREE.Color(c[0] * k, c[1] * k, c[2] * k);
   const addM = (geo, color, opacity) => { const m = new THREE.Mesh(geo, new THREE.MeshBasicMaterial({ color, transparent: true, opacity, depthWrite: false, side: THREE.DoubleSide, blending: THREE.AdditiveBlending, toneMapped: false })); m.renderOrder = 4; scene.add(m); return m; };
   const dropM = (m) => { scene.remove(m); m.material.dispose(); };
-  function ringWave(x, z, r, c, dur = 0.55, delay = 0) { const m = addM(ringG, hot(c, 3), 0); m.position.set(x, 0.07, z); addFx({ dur, delay, update() { const f = this.t / dur; m.scale.setScalar(0.2 + r * 1.1 * ease(f)); m.material.opacity = 1 - f; }, end() { dropM(m); } }); }
+  function ringWave(x, z, r, c, dur = 0.55, delay = 0) { const m = addM(ringG, hot(c, 1.8), 0); m.position.set(x, 0.07, z); addFx({ dur, delay, update() { const f = this.t / dur; m.scale.setScalar(0.2 + r * 1.1 * ease(f)); m.material.opacity = 0.75 * (1 - f); }, end() { dropM(m); } }); }
   function flashBall(x, y, z, r, c, dur = 0.3) { const m = addM(ballG, hot(c, 3), 0.7); m.position.set(x, y, z); addFx({ dur, update() { const f = this.t / dur; m.scale.setScalar(r * (0.2 + 0.8 * ease(f))); m.material.opacity = Math.pow(1 - f, 2) * 0.7; }, end() { dropM(m); } }); }
   // След на полу (гарь, иней, кислота) — прямо в рисунок пола; исчезнет при перерисовке карты
   function scorch(x, z, r, rgb, a) {
@@ -891,20 +893,35 @@ export function create(wrap, api) {
     // …а где видна вода или лава — каждого второго
     if (!(busyLast || now < until || stale) && n % (Object.values(liquids).some((L) => L.mesh && L.mesh.visible) ? 2 : 3)) return;
     busyLast = update(acc); acc = 0;
-    renderer.render(scene, camera);
+    draw();
   }
   function resize() {
     const w = wrap.clientWidth, h = wrap.clientHeight; if (!w || !h) return;
     renderer.setSize(w, h, false); camera.aspect = w / h; camera.updateProjectionMatrix(); kick();
     SPARK.mat.uniforms.scale.value = SMOKE.mat.uniforms.scale.value = canvas.height / (2 * tan);
+    if (composer) composer.setSize(canvas.width, canvas.height);
   }
   const ro = window.ResizeObserver ? new ResizeObserver(resize) : null; if (ro) ro.observe(wrap);
+  // Свечение (bloom): всё яркое — пламя факелов, заклинания, молнии, лава — даёт мягкий ореол, как в образце стиля.
+  // Сцена рисуется в буфер, яркие места размываются и накладываются обратно. Только на компьютерах: телефонам это тяжело
+  let composer = null;
+  const draw = () => (composer ? composer.render() : renderer.render(scene, camera));
+  if (fine) Promise.all(['EffectComposer', 'RenderPass', 'UnrealBloomPass', 'OutputPass'].map((n) => import(`three/addons/postprocessing/${n}.js`))).then(([A, B, C, D]) => {
+    const sz = renderer.getDrawingBufferSize(new THREE.Vector2());
+    const c = new A.EffectComposer(renderer, new THREE.WebGLRenderTarget(Math.max(1, sz.x), Math.max(1, sz.y), { type: THREE.HalfFloatType, samples: 4 }));
+    c.addPass(new B.RenderPass(scene, camera)); c.addPass(new C.UnrealBloomPass(new THREE.Vector2(sz.x / 2, sz.y / 2), BLOOM[0], BLOOM[1], BLOOM[2])); c.addPass(new D.OutputPass());
+    composer = c; glowK = 1;
+    // Частицы теперь пишутся в линейный буфер; источники огня — ярче порога свечения
+    SPARK.mat.uniforms.lin.value = SMOKE.mat.uniforms.lin.value = 1; flameMat.color.setScalar(2.4); coreMat.color.setRGB(3, 2.8, 2.4);
+    if (liquids.lava && liquids.lava.mesh) liquids.lava.mesh.material.color.setScalar(1.9);
+    resize(); kick(600);
+  }).catch(() => { /* без свечения — как раньше */ });
   function setOn(v) {
     on = v; canvas.hidden = over.hidden = fxBox.hidden = !v;
     if (v) { resize(); cur.ok = false; stale = true; Object.keys(layers).forEach(tex); last = performance.now(); if (!raf) raf = requestAnimationFrame(frame); kick(1000); }
     else { cancelAnimationFrame(raf); raf = 0; }
   }
   // Для проверок: прогнать кадры без requestAnimationFrame (в скрытой вкладке он стоит)
-  function step(k = 1, dt = 1 / 30) { resize(); for (let i = 0; i < k; i++) update(dt); renderer.render(scene, camera); }
+  function step(k = 1, dt = 1 / 30) { resize(); for (let i = 0; i < k; i++) update(dt); draw(); }
   return { setOn, tokens, tex, ground, pick, project, tokTop, dragTo, hit, kick, step, attack, burst, fx: fxBox, refresh() { stale = true; kick(); }, info: () => ({ toks: toks.size, props: propBox.children.reduce((a, m) => a + m.count, 0), walls: wallMesh ? wallMesh.geometry.index.count / 3 : 0, ground: [groundCv.width, groundCv.height], liquids: Object.keys(liquids).filter((k) => liquids[k].mesh && liquids[k].mesh.visible), doors: doorBox.children.length, lamps: LAMPS.filter((L) => L.intensity > 0).length, sparks: SPARK.ps.length, smoke: SMOKE.ps.length, fx: FX.length, zones: zones.map((z) => z.kind), zoneMeshes: zoneBox.children.length, calls: renderer.info.render.calls, tris: renderer.info.render.triangles, cam: { ...cur } }) };
 }
