@@ -115,32 +115,100 @@ export function create(wrap, api) {
   const firTier = (r, h) => { const g = new THREE.ConeGeometry(r, h, 14, 1, true), p = g.attributes.position; for (let i = 0; i < p.count; i++) if (p.getY(i) < 0) { const k = (Math.round(Math.atan2(p.getZ(i), p.getX(i)) / (Math.PI / 7)) & 1) ? 0.7 : 1.06; p.setX(i, p.getX(i) * k); p.setZ(i, p.getZ(i) * k); } g.computeVertexNormals(); return g; };
   const blob = (r, seed = 1) => { const g = new THREE.SphereGeometry(r, 12, 9), p = g.attributes.position; for (let i = 0; i < p.count; i++) { const x = p.getX(i), y = p.getY(i), z = p.getZ(i), v = Math.sin(x * 31.7 * seed + y * 47.3 + z * 23.1) * 43758.5453, k = 0.86 + (v - Math.floor(v)) * 0.3; p.setXYZ(i, x * k, y * k * 0.88, z * k); } g.computeVertexNormals(); return g; };
   const box = (w, h, d) => new THREE.BoxGeometry(w, h, d);
-  // Бесшовные рисунки из синусов: карта нормалей ряби и корка лавы (сдвигаются со временем)
-  const wave = (u, v) => Math.sin(u * 6.283 * 2 + Math.sin(v * 6.283) * 1.3) * 0.5 + Math.sin(v * 6.283 * 3 + u * 6.283) * 0.3 + Math.sin((u + v) * 6.283 * 5) * 0.2;
-  const sinTex = (paint) => {
-    const N = 128, c = document.createElement('canvas'); c.width = c.height = N; const g = c.getContext('2d'), d = g.createImageData(N, N);
-    for (let y = 0; y < N; y++) for (let x = 0; x < N; x++) { const [r, gg, b] = paint(x / N, y / N), i = (y * N + x) * 4; d.data[i] = r; d.data[i + 1] = gg; d.data[i + 2] = b; d.data[i + 3] = 255; }
-    g.putImageData(d, 0, 0); const t = new THREE.CanvasTexture(c); t.wrapS = t.wrapT = THREE.RepeatWrapping; return t;
-  };
-  // Рябь: волны разных направлений со случайной фазой (плитка бесшовная, полос не видно)
-  const WV = (() => { const R = mulberry(77), a = []; while (a.length < 14) { const fx = Math.round((R() - 0.5) * 10), fy = Math.round((R() - 0.5) * 10); if (fx || fy) a.push([fx, fy, R() * 6.283, 1 / Math.hypot(fx, fy)]); } return a; })();
-  const swell = (u, v) => WV.reduce((h, [fx, fy, ph, am]) => h + Math.sin((u * fx + v * fy) * 6.283 + ph) * am, 0);
-  const rippleTex = sinTex((u, v) => { const e = 1 / 128, dx = (swell(u + e, v) - swell(u - e, v)) * 1.6, dy = (swell(u, v + e) - swell(u, v - e)) * 1.6, l = Math.hypot(dx, dy, 1); return [(-dx / l * 0.5 + 0.5) * 255, (-dy / l * 0.5 + 0.5) * 255, (1 / l * 0.5 + 0.5) * 255]; });
-  // Блики на воде: светлая сетка по гребням
-  const glintTex = sinTex((u, v) => { const k = Math.pow(1 - Math.abs(Math.sin(swell(u, v) * 1.7)), 5) * 255; return [k, k, k]; }); glintTex.colorSpace = THREE.SRGBColorSpace;
-  const waterTime = { value: 0 };
-  // Три слоя ряби разного размера, плывущие в разные стороны, — рисунок не повторяется и не стоит на месте
-  function flowing(mat) {
+  // ---------- Вода, болото и лава: шейдеры в мировых координатах — рисунок один на всю реку, без швов по клеткам ----------
+  // Общий шум: значение по решётке, фрактальный (FBM) и ячеистый (Вороной, точки ячеек плавают со временем)
+  const waterTime = { value: 0 }, fieldSize = { value: new THREE.Vector2(1, 1) };
+  const GLSL_NOISE = `
+    vec2 h22(vec2 p){ p = vec2(dot(p, vec2(127.1, 311.7)), dot(p, vec2(269.5, 183.3))); return fract(sin(p) * 43758.5453); }
+    float vnoise(vec2 p){ vec2 i = floor(p), f = fract(p); f = f * f * (3.0 - 2.0 * f);
+      return mix(mix(h22(i).x, h22(i + vec2(1.0, 0.0)).x, f.x), mix(h22(i + vec2(0.0, 1.0)).x, h22(i + vec2(1.0, 1.0)).x, f.x), f.y); }
+    float fbm(vec2 p){ float s = 0.0, a = 0.5; for (int i = 0; i < OCT; i++) { s += a * vnoise(p); p = p * 2.03 + vec2(17.3, 9.1); a *= 0.5; } return s; }
+    float vor(vec2 p, float t){ vec2 i = floor(p), f = fract(p); float d = 1.0;
+      for (int y = -1; y <= 1; y++) for (int x = -1; x <= 1; x++) { vec2 g = vec2(float(x), float(y)), o = 0.5 + 0.38 * sin(t + 6.2831 * h22(i + g)), r = g + o - f; d = min(d, dot(r, r)); }
+      return sqrt(d); }
+    float swellH(vec2 p, float t){ return vnoise(p * 1.6 + t * vec2(0.12, 0.07)) + 0.5 * vnoise(p * 3.4 - t * vec2(0.09, -0.13)); }`;
+  // Вода: обычный материал сцены (свет факелов, тени, дымка работают), в который вписаны цвет по глубине, блики, рябь и пена
+  function waterMat(P, L) {
+    const mat = new THREE.MeshStandardMaterial({ color: 0xffffff, roughness: P.rough, metalness: 0.05, transparent: true, depthWrite: false });
     mat.onBeforeCompile = (sh) => {
-      const from = 'texture2D( normalMap, vNormalMapUv ).xyz * 2.0 - 1.0', chunk = THREE.ShaderChunk.normal_fragment_maps;
-      if (!chunk.includes(from)) return;
-      sh.uniforms.uT = waterTime;
-      sh.fragmentShader = 'uniform float uT;\n' + sh.fragmentShader.replace('#include <normal_fragment_maps>', chunk.replace(from,
-        '( texture2D( normalMap, vNormalMapUv + uT * vec2( 0.021, 0.013 ) ).xyz + texture2D( normalMap, vNormalMapUv * 0.43 + uT * vec2( -0.011, 0.017 ) ).xyz + texture2D( normalMap, vNormalMapUv * 1.9 + uT * vec2( 0.006, -0.03 ) ).xyz ) * 0.6667 - 1.0'));
+      Object.assign(sh.uniforms, { uTime: waterTime, uSize: fieldSize, tMask: { value: L.tex }, tDepth: L.depthU, uShallow: { value: new THREE.Color(P.shallow) }, uDeep: { value: new THREE.Color(P.deep) },
+        uGlint: { value: P.glint }, uFoam: { value: P.foam }, uAlpha: { value: new THREE.Vector2(P.alpha[0], P.alpha[1]) } });
+      sh.vertexShader = 'varying vec3 vWp;\n' + sh.vertexShader.replace('#include <begin_vertex>', '#include <begin_vertex>\n vWp = (modelMatrix * vec4(transformed, 1.0)).xyz;');
+      sh.fragmentShader = `#define OCT 4\n${fine ? '' : '#define LITE\n'}uniform float uTime, uGlint, uFoam; uniform vec2 uSize, uAlpha; uniform vec3 uShallow, uDeep; uniform sampler2D tMask, tDepth; varying vec3 vWp;\n${GLSL_NOISE}\n` + sh.fragmentShader
+        .replace('#include <color_fragment>', `#include <color_fragment>
+        {
+          vec2 wp = vWp.xz, guv = wp / uSize;
+          float msk = texture2D(tMask, vec2(guv.x, 1.0 - guv.y)).r;
+          float dep = texture2D(tDepth, guv).r; // 0 — у берега, 1 — глубина
+          // Близость кромки: маска, усреднённая по кругу (0 — далеко от берега, около 0.5 — на самой кромке)
+          float e = 0.0;
+          for (int i = 0; i < 8; i++) { float a = float(i) * 0.7854; vec2 o = vec2(cos(a), sin(a)) * (mod(float(i), 2.0) < 0.5 ? 0.13 : 0.3) / uSize; e += texture2D(tMask, vec2(guv.x + o.x, 1.0 - guv.y - o.y)).r; }
+          float edge = 1.0 - e / 8.0, t = uTime;
+          // Два слоя ячеистого шума плывут в разные стороны — там, где их границы сходятся, вспыхивают блики
+          float v1 = vor(wp * 1.25 + t * vec2(0.07, 0.04), t * 0.7), v2 = vor(wp * 2.3 + t * vec2(-0.05, 0.06) + 11.0, t * 0.9 + 2.0);
+          float caust = smoothstep(0.52, 0.95, v1 * v2 * 2.6);
+          vec3 wcol = mix(uShallow, uDeep, smoothstep(0.0, 0.85, dep)) * (0.9 + 0.2 * vnoise(wp * 0.55 + t * 0.03));
+          wcol += uGlint * caust * mix(1.0, 0.35, dep);
+          // Пена: полоса у берега, набегает и отступает, рвётся шумом
+          float lap = 0.5 + 0.5 * sin(t * 1.3 + vnoise(wp * 1.1) * 6.2831);
+          float foam = smoothstep(0.4, 0.62, edge * (1.15 + 0.6 * lap) * (0.5 + 1.0 * vnoise(wp * 4.5 + t * vec2(0.3, -0.2)))) * uFoam;
+          wcol = mix(wcol, vec3(0.86, 0.94, 0.98), foam * 0.8);
+          diffuseColor.rgb = wcol;
+          diffuseColor.a = msk * max(mix(uAlpha.x, uAlpha.y, smoothstep(0.0, 0.7, dep)), foam * 0.85);
+        }`)
+        .replace('#include <normal_fragment_maps>', `#include <normal_fragment_maps>
+        #ifndef LITE
+        { // рябь: наклон поверхности по плывущему шуму — от него играют отблески солнца и факелов
+          vec2 wq = vWp.xz; float h0 = swellH(wq, uTime), hx = swellH(wq + vec2(0.06, 0.0), uTime), hz = swellH(wq + vec2(0.0, 0.06), uTime);
+          normal = normalize((viewMatrix * vec4(normalize(vec3(-(hx - h0) * 3.2, 1.0, -(hz - h0) * 3.2)), 0.0)).xyz);
+        }
+        #endif`);
     };
     return mat;
   }
-  const lavaTex = sinTex((u, v) => { const k = Math.max(0, Math.min(1, wave(u, v) * 0.8 + 0.5)); return [70 + 185 * k, 12 + 150 * k * k, 4 + 40 * k * k * k]; }); lavaTex.colorSpace = THREE.SRGBColorSpace;
+  // Лава светится сама: тёмная остывающая корка и раскалённые трещины. Рисунок — фрактальный шум, искажённый сам собой
+  // (domain warping) и медленно текущий; трещины пульсируют. uGlow — запас яркости для ореола (когда включено свечение)
+  function lavaMat(L) {
+    const mat = new THREE.ShaderMaterial({
+      uniforms: { ...THREE.UniformsUtils.clone(THREE.UniformsLib.fog), uTime: waterTime, uSize: fieldSize, tMask: { value: L.tex }, tDepth: L.depthU, uGlow: { value: glowK ? 1.2 : 0 } },
+      fog: true, transparent: true, depthWrite: false, toneMapped: false,
+      vertexShader: `varying vec3 vWp;
+        #include <fog_pars_vertex>
+        void main(){ vec4 wpos = modelMatrix * vec4(position, 1.0); vWp = wpos.xyz; vec4 mvPosition = viewMatrix * wpos; gl_Position = projectionMatrix * mvPosition;
+          #include <fog_vertex>
+        }`,
+      fragmentShader: `#define OCT ${fine ? 5 : 3}
+        uniform float uTime, uGlow; uniform vec2 uSize; uniform sampler2D tMask, tDepth; varying vec3 vWp;
+        #include <fog_pars_fragment>
+        ${GLSL_NOISE}
+        void main(){
+          vec2 wp = vWp.xz, guv = wp / uSize;
+          float msk = texture2D(tMask, vec2(guv.x, 1.0 - guv.y)).r; if (msk < 0.01) discard;
+          float dep = texture2D(tDepth, guv).r, t = uTime * 0.05;
+          vec2 p = wp * 0.55;
+          vec2 q = vec2(fbm(p + vec2(0.0, t)), fbm(p + vec2(5.2, 1.3) - vec2(t * 0.7, 0.0)));
+          vec2 r = vec2(fbm(p + 2.6 * q + vec2(1.7, 9.2) + t * 0.6), fbm(p + 2.6 * q + vec2(8.3, 2.8) - t * 0.5));
+          float f = fbm(p + 2.4 * r + vec2(t, -t * 0.4));
+          // Корка — плиты (ячейки, смятые тем же потоком), между ними раскалённые трещины; ещё трещины — где шум проходит
+          // через середину; широкие тёплые пятна — где поток «мнётся»
+          float plate = vor(p * 1.8 + 1.4 * r + vec2(t * 0.5, 0.0), 0.0);
+          float crack = max(smoothstep(0.42, 0.66, plate), 0.8 * smoothstep(0.9, 0.995, 1.0 - abs(2.0 * f - 1.0)));
+          float warm = smoothstep(0.6, 1.0, length(r) * 1.25);
+          float pulse = 0.8 + 0.2 * sin(uTime * 1.1 + f * 9.0 + wp.x * 0.7);
+          float heat = clamp(crack + warm * 0.35, 0.0, 1.0) * pulse * mix(0.55, 1.0, smoothstep(0.0, 0.5, dep));
+          vec3 col = mix(vec3(0.02, 0.006, 0.005), vec3(0.11, 0.014, 0.01), vnoise(wp * 3.1));
+          col = mix(col, vec3(0.62, 0.05, 0.008), smoothstep(0.04, 0.42, heat));
+          col = mix(col, vec3(1.0, 0.33, 0.03), smoothstep(0.34, 0.72, heat));
+          col = mix(col, vec3(1.0, 0.8, 0.28), smoothstep(0.72, 1.0, heat));
+          col *= 1.0 + uGlow * smoothstep(0.3, 1.0, heat);
+          gl_FragColor = vec4(col, msk);
+          #include <tonemapping_fragment>
+          #include <colorspace_fragment>
+          #include <fog_fragment>
+        }`,
+    });
+    return mat;
+  }
   // Столешница: поле лежит на тёмной каменной плите
   const slab = new THREE.Mesh(box(1, 0.5, 1), new THREE.MeshStandardMaterial({ map: noise, color: 0x3a332c, roughness: 0.9 })); slab.position.y = -0.26; slab.receiveShadow = true; scene.add(slab);
   const ico = (r) => new THREE.IcosahedronGeometry(r, 1);
@@ -262,9 +330,11 @@ export function create(wrap, api) {
     ['bog', ['bog'], 0.12, 'rgba(8,12,6,.75)', 0.16, 1], ['water', ['water'], 0.12, 'rgba(8,12,10,.8)', 0.18, 1], ['ice', ['ice'], 0.1, 'rgba(220,240,255,.4)', 0.1, 1],
     ['lava', ['lava'], 0.1, 'rgba(255,110,20,.95)', 0.28, 1], ['chasm', ['chasm'], 0.06, 'rgba(0,0,0,.95)', 0.22, 1]];
   // Блестящая плёнка над водой, болотом, льдом и лавой — одной плоскостью по маске пятна
-  const LIQ = { water: { color: 0x3a86aa, opacity: 0.5, rough: 0.1, ripple: 1 }, bog: { color: 0x3c4c26, opacity: 0.45, rough: 0.2, ripple: 1 }, ice: { color: 0xe2f4ff, opacity: 0.3, rough: 0.05 }, lava: { lava: 1, opacity: 0.8 } };
+  // Вода и болото: цвет у берега и в глубине, сила бликов и пены, непрозрачность у берега и в глубине
+  const LIQ = { water: { flow: 1, shallow: 0x58b8c4, deep: 0x0d3a66, glint: 0.3, foam: 1, alpha: [0.5, 0.94], rough: 0.36 }, bog: { flow: 1, shallow: 0x5c6a30, deep: 0x1a2410, glint: 0.05, foam: 0.3, alpha: [0.55, 0.9], rough: 0.45 },
+    ice: { color: 0xe2f4ff, opacity: 0.3, rough: 0.05 }, lava: { lava: 1 } };
   const liquids = {}, tmpCv = document.createElement('canvas');
-  let groundSig = '', mapRev = 0, glowK = 0; // glowK — включено ли свечение
+  let groundSig = '', mapRev = 0, glowK = 0, lavaGlow = []; // glowK — включено ли свечение; lavaGlow — откуда лава светит на берега
   function paintGround() {
     const map = S.map, sig = `${S.w}x${S.h}|${S.ground}${S.rocky ? 'r' : ''}|` + Object.entries(map).map(([k, t]) => k + t).join(',');
     if (sig === groundSig) return; groundSig = sig; mapRev++; planRev = mapRev; classify();
@@ -284,6 +354,7 @@ export function create(wrap, api) {
       if (LIQ[kind]) cells = cells.concat((by.bridge || []).filter(([x, y]) => [[0, -1], [1, 0], [0, 1], [-1, 0]].some(([dx, dy]) => at(x + dx, y + dy) === kind)));
       const L = LIQ[kind] && (liquids[kind] = liquids[kind] || {});
       if (L && L.mesh) L.mesh.visible = cells.length > 0;
+      if (kind === 'lava') lavaGlow = [];
       if (!cells.length) return;
       const set = new Set(cells.map(([x, y]) => `${x}_${y}`)), has = (x, y) => set.has(`${x}_${y}`);
       const xs = cells.map((c) => c[0]), ys = cells.map((c) => c[1]), x0 = (Math.min(...xs) - 1) * s, y0 = (Math.min(...ys) - 1) * s, w = (Math.max(...xs) + 2) * s - x0, h = (Math.max(...ys) + 2) * s - y0;
@@ -295,13 +366,22 @@ export function create(wrap, api) {
       // Маска для блестящей плёнки — те же пятна (то же зерно), вдвое мельче
       const ms = s / 2, P = LIQ[kind];
       if (!L.mesh) {
-        L.cv = document.createElement('canvas'); L.tex = new THREE.CanvasTexture(L.cv);
-        const mat = P.lava ? new THREE.MeshBasicMaterial({ map: lavaTex, toneMapped: false }) : new THREE.MeshStandardMaterial({ color: P.color, roughness: P.rough, metalness: 0.3, normalMap: P.ripple ? rippleTex : null, normalScale: new THREE.Vector2(0.55, 0.55) });
-        if (P.ripple) flowing(mat);
-        if (P.lava && glowK) mat.color.setScalar(1.9);
-        mat.alphaMap = L.tex; mat.transparent = true; mat.opacity = P.opacity; mat.depthWrite = false;
+        L.cv = document.createElement('canvas'); L.tex = new THREE.CanvasTexture(L.cv); L.depthU = { value: null };
+        let mat;
+        if (P.lava) mat = lavaMat(L); else if (P.flow) mat = waterMat(P, L);
+        else { mat = new THREE.MeshStandardMaterial({ color: P.color, roughness: P.rough, metalness: 0.3 }); mat.alphaMap = L.tex; mat.transparent = true; mat.opacity = P.opacity; mat.depthWrite = false; }
         L.mesh = new THREE.Mesh(unit, mat); L.mesh.position.y = 0.002; L.mesh.renderOrder = -0.5; L.mesh.receiveShadow = !P.lava; scene.add(L.mesh);
-        if (kind === 'water') { L.glint = new THREE.Mesh(unit, new THREE.MeshBasicMaterial({ map: glintTex, alphaMap: L.tex, transparent: true, depthWrite: false, blending: THREE.AdditiveBlending, opacity: 0.09 })); L.glint.position.y = 0.003; L.glint.renderOrder = -0.4; L.mesh.add(L.glint); L.glint.position.set(0, 0.001, 0); }
+      }
+      // Глубина: расстояние клетки до берега (за краем поля вода продолжается) — по нему вода темнеет, а лава раскаляется
+      {
+        const dw = S.w, dh = S.h, d = new Float32Array(dw * dh), da = (x, y) => (x < 0 || y < 0 || x >= dw || y >= dh ? 1e3 : d[y * dw + x]);
+        cells.forEach(([x, y]) => { d[y * dw + x] = 1e3; });
+        for (let y = 0; y < dh; y++) for (let x = 0; x < dw; x++) if (d[y * dw + x]) d[y * dw + x] = Math.min(d[y * dw + x], da(x - 1, y) + 1, da(x, y - 1) + 1, da(x - 1, y - 1) + 1.41, da(x + 1, y - 1) + 1.41);
+        for (let y = dh - 1; y >= 0; y--) for (let x = dw - 1; x >= 0; x--) if (d[y * dw + x]) d[y * dw + x] = Math.min(d[y * dw + x], da(x + 1, y) + 1, da(x, y + 1) + 1, da(x + 1, y + 1) + 1.41, da(x - 1, y + 1) + 1.41);
+        const px = new Uint8Array(dw * dh); for (let i = 0; i < px.length; i++) px[i] = Math.max(0, Math.min(255, ((d[i] - 0.5) / 2.5) * 255));
+        if (L.depthU.value) L.depthU.value.dispose();
+        const dt = new THREE.DataTexture(px, dw, dh, THREE.RedFormat); dt.magFilter = dt.minFilter = THREE.LinearFilter; dt.needsUpdate = true; L.depthU.value = dt;
+        if (kind === 'lava') lavaGlow = cells.filter(([x, y]) => (x * 7 + y * 13) % 4 === 0 && D4.some(([dx, dy]) => !has(x + dx, y + dy))).slice(0, 60).map(([x, y]) => ({ x: x + 0.5, y: y + 0.5, px: x + 0.5, pz: y + 0.5, py: 0.4, r: 3.4, lava: 1 }));
       }
       if (L.cv.width !== S.w * ms || L.cv.height !== S.h * ms) { L.tex.dispose(); L.cv.width = S.w * ms; L.cv.height = S.h * ms; }
       const mg = L.cv.getContext('2d'); mg.fillStyle = '#000'; mg.fillRect(0, 0, L.cv.width, L.cv.height);
@@ -328,7 +408,7 @@ export function create(wrap, api) {
       }
       if ((PROPS[t] || t === 'furn' || t === 'board') && t !== 'bridge' && t !== 'snow') { const gr = g.createRadialGradient(X + s / 2, Y + s / 2, 0, X + s / 2, Y + s / 2, s * 0.6); gr.addColorStop(0, 'rgba(0,0,0,.5)'); gr.addColorStop(1, 'rgba(0,0,0,0)'); g.fillStyle = gr; g.fillRect(X - s * 0.1, Y - s * 0.1, s * 1.2, s * 1.2); }
     }
-    rippleTex.repeat.set(S.w / 1.6, S.h / 1.6); glintTex.repeat.set(S.w / 2.7, S.h / 2.7); lavaTex.repeat.set(S.w / 2, S.h / 2);
+    fieldSize.value.set(S.w, S.h);
     groundTex.needsUpdate = true;
   }
   // Кладка стен: камни рядами со сдвигом; верх стены — тёмный срез
@@ -671,12 +751,12 @@ export function create(wrap, api) {
       });
     }
     // Настоящих источников — не больше шести, ближайшие к центру экрана
-    const near = S.lights.slice().sort((a, b) => Math.hypot(a.x - cur.x, a.y - cur.z) - Math.hypot(b.x - cur.x, b.y - cur.z));
+    const near = S.lights.concat(S.bg ? [] : lavaGlow.filter((g) => S.shade(`${Math.floor(g.x)}_${Math.floor(g.y)}`) >= 0)).sort((a, b) => Math.hypot(a.x - cur.x, a.y - cur.z) - Math.hypot(b.x - cur.x, b.y - cur.z));
     const power = S.amb === 'bright' ? 0.35 : 1;
     LAMPS.forEach((L, i) => {
       const s = near[i];
       if (!s) { L.intensity = 0; L.userData.base = 0; return; }
-      L.position.set(s.px, s.py, s.pz); L.distance = Math.max(3, s.r * 1.25); L.userData.base = 6.5 * power; L.userData.seed = s.x * 7 + s.y * 13; L.intensity = L.userData.base;
+      L.position.set(s.px, s.py, s.pz); L.distance = Math.max(3, s.r * 1.25); L.userData.base = s.lava ? 5 * Math.max(power, 0.6) : 6.5 * power; L.color.set(s.lava ? 0xff4a14 : 0xff9a4a); L.userData.seed = s.x * 7 + s.y * 13; L.intensity = L.userData.base;
     });
   }
   function pull() {
@@ -689,7 +769,6 @@ export function create(wrap, api) {
     const a = AMB[S.amb] || AMB.bright;
     hemi.intensity = a.hemi; sun.intensity = a.sun; sun.color.set(a.col);
     SMOKE.dim = S.amb === 'bright' ? 1 : S.amb === 'dim' ? 0.75 : 0.5; // дым не светится в темноте
-    if (liquids.water && liquids.water.glint) liquids.water.glint.material.opacity = S.amb === 'bright' ? 0.09 : S.amb === 'dim' ? 0.05 : 0.025;
     if (planRev !== mapRev) { planRev = mapRev; classify(); }
     buildRocks(); buildFurn(); buildProps(); buildDoors(); buildLoot(); buildLamps();
   }
@@ -1079,7 +1158,7 @@ export function create(wrap, api) {
       const p = project(T.pos.x, T.pos.z, (T.top + BASE_H) * (1 - T.lie * 0.6) + 0.12 + hop + lift), lx = Math.round(p.x), ly = Math.round(p.y);
       if (lx !== T.lx || ly !== T.ly) { T.lx = lx; T.ly = ly; T.lab.style.transform = `translate(${lx}px, ${ly}px) translate(-50%, -100%)`; }
     });
-    waterTime.value = time; glintTex.offset.set(time * 0.016, time * 0.011); lavaTex.offset.set(time * 0.012, -time * 0.008);
+    waterTime.value = time;
     LAMPS.forEach((L) => { if (L.userData.base) L.intensity = L.userData.base * (0.88 + 0.12 * Math.sin(time * 9 + L.userData.seed) * Math.sin(time * 5.3 + L.userData.seed * 2)); });
     lampBox.children.forEach((o) => { const f = o.userData.flame; if (!f) return; const ph = o.position.x * 5 + o.position.z * 3, k = Math.sin(time * 11 + ph) * Math.sin(time * 7.3 + ph); o.scale.set(f[0] * (1 - 0.1 * k), f[1] * (1 + 0.16 * k + 0.06 * Math.sin(time * 23 + ph)), 1); });
     if (zoneStale) pullZones();
@@ -1117,7 +1196,7 @@ export function create(wrap, api) {
     composer = c; glowK = 1;
     // Частицы теперь пишутся в линейный буфер; источники огня — ярче порога свечения
     SPARK.mat.uniforms.lin.value = SMOKE.mat.uniforms.lin.value = 1; flameMat.color.setScalar(1.7);
-    if (liquids.lava && liquids.lava.mesh) liquids.lava.mesh.material.color.setScalar(1.9);
+    if (liquids.lava && liquids.lava.mesh) liquids.lava.mesh.material.uniforms.uGlow.value = 1.2;
     resize(); kick(600);
   }).catch(() => { /* без свечения — как раньше */ });
   function setOn(v) {

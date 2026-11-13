@@ -718,8 +718,15 @@ function drawTerrain() {
   if (!bgImg || bg.grid) {
     g.strokeStyle = bgImg ? 'rgba(0,0,0,.35)' : 'rgba(255,255,255,.07)';
     g.beginPath();
-    for (let x = 0; x <= W(); x++) { g.moveTo(x * CELL + 0.5, 0); g.lineTo(x * CELL + 0.5, cv.height); }
-    for (let y = 0; y <= H(); y++) { g.moveTo(0, y * CELL + 0.5); g.lineTo(cv.width, y * CELL + 0.5); }
+    // В объёмном виде вода, болото и лава — сплошная живая поверхность: линии сетки по ним не идут
+    const M = game.map || {}, wet = (x, y) => { const t = M[`${x}_${y}`]; return t === 'water' || t === 'bog' || t === 'lava'; };
+    if (own3 && Object.values(M).some((t) => t === 'water' || t === 'bog' || t === 'lava')) {
+      for (let x = 0; x <= W(); x++) for (let y = 0, y0 = -1; y <= H(); y++) { const skip = y === H() || wet(x - 1, y) || wet(x, y); if (!skip && y0 < 0) y0 = y; else if (skip && y0 >= 0) { g.moveTo(x * CELL + 0.5, y0 * CELL); g.lineTo(x * CELL + 0.5, y * CELL); y0 = -1; } }
+      for (let y = 0; y <= H(); y++) for (let x = 0, x0 = -1; x <= W(); x++) { const skip = x === W() || wet(x, y - 1) || wet(x, y); if (!skip && x0 < 0) x0 = x; else if (skip && x0 >= 0) { g.moveTo(x0 * CELL, y * CELL + 0.5); g.lineTo(x * CELL, y * CELL + 0.5); x0 = -1; } }
+    } else {
+      for (let x = 0; x <= W(); x++) { g.moveTo(x * CELL + 0.5, 0); g.lineTo(x * CELL + 0.5, cv.height); }
+      for (let y = 0; y <= H(); y++) { g.moveTo(0, y * CELL + 0.5); g.lineTo(cv.width, y * CELL + 0.5); }
+    }
     g.stroke();
   }
 }
