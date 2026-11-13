@@ -715,18 +715,12 @@ function drawTerrain() {
   // Брошенные вещи — маленький мешок в углу клетки (под токеном тоже видно)
   if (!g3on) Object.values(game.drops || {}).forEach((D) => { g.font = '15px system-ui'; g.fillText('🎒', D.x * CELL + CELL - 18, D.y * CELL + CELL - 4); });
   drawPois(g);
-  if (!bgImg || bg.grid) {
+  // В объёмном виде сетка не рисуется: клетки остаются (ход, дальность, области считаются по ним), но линий на поле нет
+  if ((!bgImg || bg.grid) && !g3on) {
     g.strokeStyle = bgImg ? 'rgba(0,0,0,.35)' : 'rgba(255,255,255,.07)';
     g.beginPath();
-    // В объёмном виде вода, болото и лава — сплошная живая поверхность: линии сетки по ним не идут
-    const M = game.map || {}, wet = (x, y) => { const t = M[`${x}_${y}`]; return t === 'water' || t === 'bog' || t === 'lava'; };
-    if (own3 && Object.values(M).some((t) => t === 'water' || t === 'bog' || t === 'lava')) {
-      for (let x = 0; x <= W(); x++) for (let y = 0, y0 = -1; y <= H(); y++) { const skip = y === H() || wet(x - 1, y) || wet(x, y); if (!skip && y0 < 0) y0 = y; else if (skip && y0 >= 0) { g.moveTo(x * CELL + 0.5, y0 * CELL); g.lineTo(x * CELL + 0.5, y * CELL); y0 = -1; } }
-      for (let y = 0; y <= H(); y++) for (let x = 0, x0 = -1; x <= W(); x++) { const skip = x === W() || wet(x, y - 1) || wet(x, y); if (!skip && x0 < 0) x0 = x; else if (skip && x0 >= 0) { g.moveTo(x0 * CELL, y * CELL + 0.5); g.lineTo(x * CELL, y * CELL + 0.5); x0 = -1; } }
-    } else {
-      for (let x = 0; x <= W(); x++) { g.moveTo(x * CELL + 0.5, 0); g.lineTo(x * CELL + 0.5, cv.height); }
-      for (let y = 0; y <= H(); y++) { g.moveTo(0, y * CELL + 0.5); g.lineTo(cv.width, y * CELL + 0.5); }
-    }
+    for (let x = 0; x <= W(); x++) { g.moveTo(x * CELL + 0.5, 0); g.lineTo(x * CELL + 0.5, cv.height); }
+    for (let y = 0; y <= H(); y++) { g.moveTo(0, y * CELL + 0.5); g.lineTo(cv.width, y * CELL + 0.5); }
     g.stroke();
   }
 }
@@ -6549,7 +6543,9 @@ function populate(L, o) {
       const s = SIZE_N[m.size] || 1;
       for (let j = 0; j < k; j++) {
         // Большим существам ищем место шире — в комнате, рядом с ней или в любом свободном углу карты
-        const p = F.near(c[0], c[1], s, room, room ? 6 : 10) || F.near(c[0], c[1], s, null, 14) || (() => { const f = F.far(L.start, 6, []); return f && F.near(f[0], f[1], s, null, 8); })();
+        const seat = s === 1 && room && room.seats ? room.seats.slice().sort(() => Math.random() - 0.5).find(([sx, sy]) => F.free(sx, sy)) : null;
+        if (seat) F.take(seat[0], seat[1]);
+        const p = seat || F.near(c[0], c[1], s, room, room ? 6 : 10) || F.near(c[0], c[1], s, null, 14) || (() => { const f = F.far(L.start, 6, []); return f && F.near(f[0], f[1], s, null, 8); })();
         if (!p) continue;
         tokens[key()] = monToken(m, `${m.n} ${num(m.n)}`, p[0], p[1], { hidden: !!o.hidden });
         placed.push(m);
@@ -6607,15 +6603,23 @@ function peacefulNpcs(L, F, tokens, notes, key) {
     : T === 'fair' ? roomsOf('stall').slice(0, 5).map((r, i) => ['Commoner', ['торговец', 'оружейник', 'алхимик', 'торговец', 'знахарь'][i], 1, r, ['general', 'smith', 'alchemist', 'general', 'alchemist'][i]])
     : T === 'temple' ? [['Acolyte', 'торговец святынями', 1, 'nave', 'alchemist']]
       : chance(0.4) ? [['Commoner', 'бродячий торговец', 1, 'hall', 'general']] : [];
+  // Место у мебели (стол, стойка, кровать) в комнате — люди стоят у столов, а не кучей посередине
+  const byTable = (r) => {
+    const list = [];
+    for (let y = r.y; y < r.y + r.h; y++) for (let x = r.x; x < r.x + r.w; x++) if (F.free(x, y) && [[0, -1], [1, 0], [0, 1], [-1, 0]].some(([dx, dy]) => (L.cells || {})[`${x + dx}_${y + dy}`] === 'furn')) list.push([x, y]);
+    const p = list.length ? pickOne(list) : null;
+    if (p) F.take(p[0], p[1]);
+    return p;
+  };
   const big = T === 'city', place = (where, s) => {
     const room = typeof where === 'object' ? where : null;
-    if (room) return F.near(room.x + Math.floor(room.w / 2), room.y + Math.floor(room.h / 2), s, room, 6);
+    if (room) return (s === 1 && byTable(room)) || F.near(room.x + Math.floor(room.w / 2), room.y + Math.floor(room.h / 2), s, room, 6);
     if (where === 'gate') return F.near(L.start.x, L.start.y, s, null, 9);
     if (['road', 'any'].includes(where)) { const list = F.cells(where === 'road' ? (v) => v === 'road' : (v) => !v || ['road', 'floor', 'sand', 'bridge'].includes(v)); const p = list.length ? pickOne(list) : null; if (p) F.take(p[0], p[1]); return p; }
     const rs = roomsOf(where);
     if (!rs.length) return null;
     const r = pickOne(rs);
-    return F.near(r.x + Math.floor(r.w / 2), r.y + Math.floor(r.h / 2), s, r, 6);
+    return (s === 1 && byTable(r)) || F.near(r.x + Math.floor(r.w / 2), r.y + Math.floor(r.h / 2), s, r, 6);
   };
   const who = [], usedNames = new Set();
   [...plan, ...shops].forEach(([e, role, k, where, shop]) => {

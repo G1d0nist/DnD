@@ -229,11 +229,19 @@ export function create(wrap, api) {
       { g: blob(0.3, 3), m: leafMat, c: 0x55963c, y: 0.92, dx: 0.22, dz: -0.12, v: 0.15, spin: true }, { g: blob(0.25, 4), m: leafMat, c: 0x5fa044, y: 1.36, dx: 0.04, dz: 0.08, v: 0.15, spin: true }],
     crate: [{ g: box(0.5, 0.5, 0.5), m: plainMat, c: 0x8a5a2b, y: 0.25, dx: -0.16, dz: 0.14 },
       { g: new THREE.CylinderGeometry(0.17, 0.17, 0.46, 12), m: plainMat, c: 0x6e4a26, y: 0.23, dx: 0.24, dz: -0.2 }],
-    grave: [{ g: box(0.42, 0.6, 0.13), m: stoneMat, c: 0x9a9aa2, y: 0.3 }],
+    // Надгробия разного вида (выбор — в buildProps): плита с круглым верхом, крест, обелиск, старый покосившийся камень; перед каждым — холмик
+    grave: [{ g: box(0.5, 0.07, 0.22), m: cragMat, c: 0x77777c, y: 0.035, dz: -0.22 }, { g: box(0.4, 0.4, 0.11), m: cragMat, c: 0x9a9aa2, y: 0.27, dz: -0.22 },
+      { g: new THREE.CylinderGeometry(0.2, 0.2, 0.11, 14).rotateX(Math.PI / 2), m: cragMat, c: 0x9a9aa2, y: 0.47, dz: -0.22 }, { g: ico(0.3), m: plainMat, c: 0x4a3a28, y: 0, dz: 0.2, s: [0.75, 0.2, 0.75] }],
+    grave2: [{ g: box(0.34, 0.1, 0.24), m: cragMat, c: 0x77777c, y: 0.05, dz: -0.22 }, { g: box(0.1, 0.72, 0.1), m: cragMat, c: 0xa2a2a8, y: 0.46, dz: -0.22 },
+      { g: box(0.42, 0.1, 0.1), m: cragMat, c: 0xa2a2a8, y: 0.6, dz: -0.22 }, { g: ico(0.3), m: plainMat, c: 0x4a3a28, y: 0, dz: 0.2, s: [0.75, 0.2, 0.75] }],
+    grave3: [{ g: box(0.4, 0.12, 0.4), m: cragMat, c: 0x77777c, y: 0.06, dz: -0.12 }, { g: new THREE.CylinderGeometry(0.09, 0.16, 0.7, 4).rotateY(Math.PI / 4), m: cragMat, c: 0x8f8f96, y: 0.47, dz: -0.12 },
+      { g: new THREE.ConeGeometry(0.127, 0.16, 4).rotateY(Math.PI / 4), m: cragMat, c: 0x8f8f96, y: 0.9, dz: -0.12 }],
+    grave4: [{ g: box(0.38, 0.34, 0.1), m: cragMat, c: 0x84887c, y: 0.15, dz: -0.15 }, { g: crag(0.1, 3), m: cragMat, c: 0x7a7d72, y: 0.05, dx: 0.26, dz: 0.05 }, { g: crag(0.07, 4), m: cragMat, c: 0x8a8d82, y: 0.04, dx: -0.2, dz: 0.2 }],
     mushroom: [{ g: new THREE.CylinderGeometry(0.08, 0.11, 0.6, 8), m: plainMat, c: 0xd8cfc0, y: 0.3 },
       { g: new THREE.SphereGeometry(0.46, 14, 8, 0, Math.PI * 2, 0, Math.PI / 2), m: plainMat, c: 0x8a4fb0, y: 0.55, s: [1, 0.6, 1] }],
-    bridge: [{ g: box(1, 0.06, 1), m: plainMat, c: 0x7a5230, y: 0.04 }, { g: box(1, 0.1, 0.06), m: plainMat, c: 0x4a2e18, y: 0.12, dz: -0.47 }, { g: box(1, 0.1, 0.06), m: plainMat, c: 0x4a2e18, y: 0.12, dz: 0.47 }],
-    bush: [{ g: blob(0.25, 5), m: leafMat, c: 0x5a9a40, y: 0.18, dx: -0.14, dz: 0.1, v: 0.2, spin: true }, { g: blob(0.2, 6), m: leafMat, c: 0x68aa4a, y: 0.15, dx: 0.2, dz: -0.12, v: 0.2, spin: true }],
+    // Кусты: от одного до трёх в клетке, разного размера и оттенка, где придётся (skip — доля клеток без этого куста, jit — разброс места)
+    bush: [{ g: blob(0.27, 5), m: leafMat, c: 0x5a9a40, y: 0.2, v: 0.4, vi: 1, jit: 0.4, spin: true }, { g: blob(0.2, 6), m: leafMat, c: 0x6aac4a, y: 0.15, v: 0.4, vi: 1, jit: 0.62, skip: 0.4, spin: true },
+      { g: blob(0.15, 9), m: leafMat, c: 0x4a8636, y: 0.11, v: 0.4, vi: 1, jit: 0.7, skip: 0.6, spin: true }],
     thicket: [{ g: firTier(0.26, 0.5), m: firMat, c: 0x2a5e2a, y: 0.27, dx: -0.2, dz: -0.18, v: 0.25, spin: true },
       { g: blob(0.24, 7), m: leafMat, c: 0x356e30, y: 0.2, dx: 0.2, dz: -0.05, v: 0.25, spin: true }, { g: blob(0.2, 8), m: leafMat, c: 0x2c6228, y: 0.15, dx: -0.03, dz: 0.24, v: 0.2, spin: true }],
     rubble: [{ g: ico(0.17), m: stoneMat, c: 0x8a8274, y: 0.1, dx: -0.2, dz: 0.16, s: [1, 0.7, 1], v: 0.3, spin: true }, { g: ico(0.13), m: stoneMat, c: 0x7a7366, y: 0.08, dx: 0.18, dz: -0.2, s: [1, 0.7, 1], v: 0.3, spin: true },
@@ -468,21 +476,28 @@ export function create(wrap, api) {
   const propBox = new THREE.Group(), doorBox = new THREE.Group(), lampBox = new THREE.Group(); scene.add(propBox, doorBox, lampBox);
   let propSig = '', doorSig = '', lampSig = '', stale = true, S = null;
   const rnd = (x, y, n) => { const v = Math.sin(x * 127.1 + y * 311.7 + n * 74.7) * 43758.5453; return v - Math.floor(v); };
+  const GRAVES = ['grave', 'grave', 'grave2', 'grave2', 'grave3', 'grave4'], RIG = { grave: [0.14, 0.5], grave2: [0.12, 0.5], grave3: [0.05, 0.7], grave4: [0.55, 0.9] }; // наклон и поворот
   function buildProps() {
     const cells = Object.entries(S.map).filter(([k, t]) => PROPS[t] && S.shade(k) >= 0 && !massif.has(k));
     const sig = `${S.w}x${S.h}|${mapRev}|` + cells.map(([k, t]) => `${k}${t}${S.shade(k)}`).join(',');
     if (sig === propSig) return; propSig = sig;
     propBox.children.slice().forEach((m) => { propBox.remove(m); m.dispose(); });
     const leafy = !['snow', 'sand'].includes(S.ground), by = {};
-    cells.forEach(([k, t]) => { const [x, y] = k.split('_').map(Number), v = t === 'tree' && leafy && rnd(x, y, 5) > 0.6 ? 'tree2' : t === 'rock' && hearth.has(k) ? 'hearth' : t; (by[v] = by[v] || []).push(k); });
+    cells.forEach(([k, t]) => { const [x, y] = k.split('_').map(Number), v = t === 'tree' && leafy && rnd(x, y, 5) > 0.6 ? 'tree2' : t === 'rock' && hearth.has(k) ? 'hearth' : t === 'grave' ? GRAVES[Math.floor(rnd(x, y, 6) * GRAVES.length)] : t; (by[v] = by[v] || []).push(k); });
+    const GM = new THREE.Matrix4(), ZERO = new THREE.Vector3(), ONE = new THREE.Vector3(1, 1, 1);
     const M = new THREE.Matrix4(), P = new THREE.Vector3(), Q = new THREE.Quaternion(), SC = new THREE.Vector3(), E = new THREE.Euler(), C = new THREE.Color();
     Object.entries(by).forEach(([t, ks]) => PROPS[t].forEach((p, pi) => {
       const im = new THREE.InstancedMesh(p.g, p.m, ks.length); im.receiveShadow = !p.glow; im.castShadow = !p.flat && !p.glow; if (p.flat) im.renderOrder = 0.5;
       ks.forEach((k, i) => {
-        const [x, y] = k.split('_').map(Number), r = rnd(x, y, pi), k1 = 1 + (p.v ? (rnd(x, y, 77) - 0.5) * 2 * p.v : 0), s = p.s || [1, 1, 1];
-        P.set(x + 0.5 + (p.dx || 0), p.y * (p.v ? k1 : 1), y + 0.5 + (p.dz || 0)); Q.setFromEuler(E.set(0, p.spin ? r * 6.28 : 0, 0)); SC.set(s[0] * k1, s[1] * k1, s[2] * k1);
-        im.setMatrixAt(i, M.compose(P, Q, SC));
-        im.setColorAt(i, C.set(p.c).offsetHSL((rnd(x, y, 11) - 0.5) * 0.06, 0, 0).multiplyScalar(S.shade(k) * (0.88 + rnd(x, y, 9) * 0.24)));
+        const [x, y] = k.split('_').map(Number), r = rnd(x, y, pi), k1 = 1 + (p.v ? (rnd(x, y, p.vi ? 77 + pi : 77) - 0.5) * 2 * p.v : 0), s = p.s || [1, 1, 1], rig = RIG[t];
+        const jx = p.jit ? (rnd(x, y, 91 + pi) - 0.5) * p.jit : 0, jz = p.jit ? (rnd(x, y, 92 + pi) - 0.5) * p.jit : 0;
+        P.set((rig ? 0 : x + 0.5) + (p.dx || 0) + jx, p.y * (p.v ? k1 : 1), (rig ? 0 : y + 0.5) + (p.dz || 0) + jz); Q.setFromEuler(E.set(0, p.spin ? r * 6.28 : 0, 0)); SC.set(s[0] * k1, s[1] * k1, s[2] * k1);
+        if (p.skip && rnd(x, y, 90 + pi) < p.skip) SC.set(0, 0, 0);
+        M.compose(P, Q, SC);
+        // Предмет из нескольких частей (надгробие) наклоняется и поворачивается целиком
+        if (rig) { Q.setFromEuler(E.set((rnd(x, y, 93) - 0.5) * rig[0], (rnd(x, y, 94) - 0.5) * rig[1], (rnd(x, y, 95) - 0.5) * rig[0])); M.premultiply(GM.compose(P.set(x + 0.5, 0, y + 0.5), Q, ONE)); }
+        im.setMatrixAt(i, M);
+        im.setColorAt(i, C.set(p.c).offsetHSL((rnd(x, y, p.vi ? 11 + pi * 3 : 11) - 0.5) * (p.vi ? 0.1 : 0.06), 0, 0).multiplyScalar(S.shade(k) * (0.88 + rnd(x, y, 9 + (p.vi ? pi : 0)) * 0.24)));
       });
       im.instanceMatrix.needsUpdate = true; if (im.instanceColor) im.instanceColor.needsUpdate = true;
       propBox.add(im);
@@ -565,10 +580,25 @@ export function create(wrap, api) {
     rockMesh = meshOf(B, rockMat);
   }
   // ---------- Мебель одной сеткой: столы с посудой, стойки, кровати, полки, доска заказов ----------
-  function pbox(B, x, y, z, w, h, d, c) {
+  // Четырёхугольник с плоской гранью; смотрит наружу от точки o
+  function pquad(B, a, b, c, d, col, o) {
+    let nx = (b[1] - a[1]) * (c[2] - a[2]) - (b[2] - a[2]) * (c[1] - a[1]), ny = (b[2] - a[2]) * (c[0] - a[0]) - (b[0] - a[0]) * (c[2] - a[2]), nz = (b[0] - a[0]) * (c[1] - a[1]) - (b[1] - a[1]) * (c[0] - a[0]);
+    const l = Math.hypot(nx, ny, nz) || 1; nx /= l; ny /= l; nz /= l;
+    const m = [(a[0] + b[0] + c[0]) / 3, (a[1] + b[1] + c[1]) / 3, (a[2] + b[2] + c[2]) / 3], flip = nx * (m[0] - o[0]) + ny * (m[1] - o[1]) + nz * (m[2] - o[2]) < 0;
+    if (flip) { nx = -nx; ny = -ny; nz = -nz; }
+    (flip ? [a, c, b, a, d, c] : [a, b, c, a, c, d]).forEach((p) => { B.pos.push(p[0], p[1], p[2]); B.nor.push(nx, ny, nz); B.uv.push(p[0] + p[1] * 0.5, p[2] + p[1] * 0.5); B.col.push(col[0], col[1], col[2]); });
+  }
+  // Бревно: восьмигранник вдоль оси X (ax = 0) или Z (ax = 1), кора и светлый спил на торцах
+  function plog(B, cx, cy, cz, len, r, ax, bark, cut) {
+    const pt = (t, i) => { const a = i * 0.7854 + 0.39, u = Math.cos(a) * r, v = Math.sin(a) * r; return ax ? [cx + u, cy + v, cz + t] : [cx + t, cy + v, cz + u]; }, o = [cx, cy, cz];
+    for (let i = 0; i < 8; i++) pquad(B, pt(-len / 2, i), pt(len / 2, i), pt(len / 2, i + 1), pt(-len / 2, i + 1), bark, o);
+    [-len / 2, len / 2].forEach((t) => [[0, 1, 2, 3], [0, 3, 4, 7], [7, 4, 5, 6]].forEach(([a, b, c, d]) => pquad(B, pt(t, a), pt(t, b), pt(t, c), pt(t, d), cut, o)));
+  }
+  // sw — доски на верхней грани идут вдоль Z (иначе — вдоль длинной стороны)
+  function pbox(B, x, y, z, w, h, d, c, sw = w < d) {
     const x0 = x - w / 2, x1 = x + w / 2, y0 = y - h / 2, y1 = y + h / 2, z0 = z - d / 2, z1 = z + d / 2;
     const f = (p, n, t) => [0, 1, 2, 0, 2, 3].forEach((i) => { B.pos.push(p[i][0], p[i][1], p[i][2]); B.nor.push(n[0], n[1], n[2]); B.uv.push(t[i][0], t[i][1]); B.col.push(c[0], c[1], c[2]); });
-    f([[x0, y1, z1], [x1, y1, z1], [x1, y1, z0], [x0, y1, z0]], [0, 1, 0], w >= d ? [[x0, z1], [x1, z1], [x1, z0], [x0, z0]] : [[z1, x0], [z1, x1], [z0, x1], [z0, x0]]);
+    f([[x0, y1, z1], [x1, y1, z1], [x1, y1, z0], [x0, y1, z0]], [0, 1, 0], !sw ? [[x0, z1], [x1, z1], [x1, z0], [x0, z0]] : [[z1, x0], [z1, x1], [z0, x1], [z0, x0]]);
     f([[x0, y0, z1], [x1, y0, z1], [x1, y1, z1], [x0, y1, z1]], [0, 0, 1], [[x0, y0], [x1, y0], [x1, y1], [x0, y1]]);
     f([[x1, y0, z0], [x0, y0, z0], [x0, y1, z0], [x1, y1, z0]], [0, 0, -1], [[x1, y0], [x0, y0], [x0, y1], [x1, y1]]);
     f([[x1, y0, z1], [x1, y0, z0], [x1, y1, z0], [x1, y1, z1]], [1, 0, 0], [[z1, y0], [z0, y0], [z0, y1], [z1, y1]]);
@@ -576,13 +606,22 @@ export function create(wrap, api) {
   }
   const BEDS = ['room', 'bedroom', 'barracks', 'chamber', 'cell'], SHELVES = ['archive', 'library', 'shop'], DESKS = ['bar', 'reception', 'shop', 'stall'];
   const WOODS = [0x8a5a2e, 0x7a4c26, 0x94683a, 0x6e4623], BLANKETS = [0x8a2f2a, 0x2f4f7a, 0x3d6b3a, 0x6a3f7a, 0x8a6a2a], BOOKS = [0x7a2a24, 0x2a4a6a, 0x34582e, 0x6a5a2a, 0x4a2e5a, 0x8a7a5a], PAPERS = [0xefe4c4, 0xe2d3a8, 0xf4ecd6, 0xd9c797];
+  const TENTS = [0xb9a47a, 0x9c8f6c, 0x8a8f6a, 0xa8926a], HAZ = ['water', 'bog', 'lava', 'chasm'], STONE_B = ['castle', 'city', 'dungeon', 'crypt', 'sewer', 'temple', 'ruins', 'lair', 'volcano', 'graveyard'];
+  const masonMat = new THREE.MeshStandardMaterial({ map: brickTex, bumpMap: brickTex, bumpScale: 3, roughness: 0.92, vertexColors: true });
+  let masonMesh = null, fires = [];
   function buildFurn() {
-    const cells = Object.entries(S.map).filter(([k, t]) => (t === 'furn' || t === 'board') && S.shade(k) >= 0);
-    const sig = `${mapRev}|${S.rooms.length}|` + cells.map(([k]) => k + S.shade(k)).join(',');
+    const cells = Object.entries(S.map).filter(([k, t]) => (t === 'furn' || t === 'board' || t === 'bridge') && S.shade(k) >= 0);
+    const sig = `${mapRev}|${S.rooms.length}|${S.tpl}|` + cells.map(([k]) => k + S.shade(k)).join(',') + '|' + Object.keys(S.doors).length;
     if (sig === furnSig) return; furnSig = sig;
     if (furnMesh) { scene.remove(furnMesh); furnMesh.geometry.dispose(); furnMesh = null; }
+    if (masonMesh) { scene.remove(masonMesh); masonMesh.geometry.dispose(); masonMesh = null; }
+    fires = [];
     if (!cells.length) return;
-    const B = { pos: [], nor: [], uv: [], col: [] }, at = (x, y) => S.map[`${x}_${y}`], isF = (x, y) => at(x, y) === 'furn';
+    const B = { pos: [], nor: [], uv: [], col: [] }, B2 = { pos: [], nor: [], uv: [], col: [] }, at = (x, y) => S.map[`${x}_${y}`], isF = (x, y) => at(x, y) === 'furn';
+    const inb = (x, y) => x >= 0 && y >= 0 && x < S.w && y < S.h, stoneB = STONE_B.includes(S.tpl) || Object.values(S.map).includes('lava');
+    // Свободная клетка рядом (туда можно поставить стул): не препятствие, не вода, не дверь
+    const open = (x, y) => inb(x, y) && [undefined, '', 'floor', 'road', 'sand'].includes(at(x, y)) && !S.doors[`${x}_${y}`] && S.shade(`${x}_${y}`) >= 0;
+    const camps = S.rooms.filter((r) => r.kind === 'camp').map((r) => ({ cx: r.x + Math.floor(r.w / 2), cy: r.y + Math.floor(r.h / 2), r: Math.max(r.w, r.h) / 2 + 2.5 }));
     // Самая тесная комната, в которой стоит клетка, — по ней видно, кровать это или стол
     const roomAt = (x, y) => S.rooms.filter((r) => x >= r.x && y >= r.y && x < r.x + r.w && y < r.y + r.h).sort((a, b) => a.w * a.h - b.w * b.h)[0];
     const nearKind = (x0, y0, x1, y1, kinds) => S.rooms.some((r) => kinds.includes(r.kind) && r.x <= x1 + 1 && r.x + r.w - 1 >= x0 - 1 && r.y <= y1 + 1 && r.y + r.h - 1 >= y0 - 1);
@@ -605,6 +644,22 @@ export function create(wrap, api) {
     const done = new Set();
     cells.forEach(([key, t]) => {
       const [x, y] = key.split('_').map(Number), sh = S.shade(key);
+      if (t === 'bridge') {
+        // Мост: настил сливается в одно полотно; перила — только там, где за краем вода, лава или пропасть.
+        // Каменный — в замках, городах и подземельях, над лавой; в остальных местах — деревянный
+        const hz = D4.map(([dx, dy]) => !inb(x + dx, y + dy) || HAZ.includes(at(x + dx, y + dy)));
+        const alongX = (hz[0] || hz[2]) !== (hz[1] || hz[3]) ? hz[0] || hz[2] : at(x - 1, y) === 'bridge' || at(x + 1, y) === 'bridge';
+        const BB = stoneB ? B2 : B, tone = 0.9 + rnd(x, y, 71) * 0.2;
+        pbox(BB, x + 0.5, 0.03, y + 0.5, 1, 0.06, 1, C3(stoneB ? 0xb4aca0 : [0x8a6238, 0x7c5730, 0x93693c][Math.floor(rnd(x, y, 72) * 3)], sh * tone * (stoneB ? 1.9 : 1)), alongX);
+        hz.forEach((h, d) => {
+          if (!h) return;
+          const [dx, dy] = D4[d], ex = x + 0.5 + dx * 0.46, ez = y + 0.5 + dy * 0.46, lw = dx ? 0 : 1, ld = dx ? 1 : 0; // перила идут вдоль края
+          if (stoneB) { pbox(B2, ex, 0.22, ez, lw || 0.16, 0.36, ld || 0.16, C3(0xa39b8f, sh * 1.8)); pbox(B2, ex, 0.42, ez, lw || 0.22, 0.05, ld || 0.22, C3(0xc4bcb0, sh * 2)); return; }
+          pbox(B, ex, 0.45, ez, lw || 0.06, 0.05, ld || 0.06, C3(0x5a3a1c, sh)); pbox(B, ex, 0.27, ez, lw || 0.04, 0.04, ld || 0.04, C3(0x5a3a1c, sh));
+          [-0.46, 0.46].forEach((o) => pbox(B, ex + (dx ? 0 : o), 0.26, ez + (dx ? o : 0), 0.07, 0.46, 0.07, C3(0x4a3018, sh)));
+        });
+        return;
+      }
       if (t === 'board') { // доска заказов: щит на столбах у стены, листы с печатями
         const r = wallSide(x, y), P = part(x, y, r < 0 ? 0 : r, sh), z = r < 0 ? 0 : -0.38;
         P(-0.43, 0.5, z, 0.08, 1, 0.08, 0x4a3018); P(0.43, 0.5, z, 0.08, 1, 0.08, 0x4a3018);
@@ -622,7 +677,39 @@ export function create(wrap, api) {
       while (q.length) { const [cx, cy] = q.pop(); comp.push([cx, cy]); D4.forEach(([dx, dy]) => { const k = `${cx + dx}_${cy + dy}`; if (isF(cx + dx, cy + dy) && !done.has(k)) { done.add(k); q.push([cx + dx, cy + dy]); } }); }
       const xs = comp.map((c) => c[0]), ys = comp.map((c) => c[1]), x0 = Math.min(...xs), y0 = Math.min(...ys), w = Math.max(...xs) - x0 + 1, h = Math.max(...ys) - y0 + 1;
       const rect = comp.length === w * h, room = roomAt(x, y), kind = room ? room.kind : '', wood = WOODS[Math.floor(rnd(x0, y0, 61) * 4)];
-      if (BEDS.includes(kind) && comp.length <= 2) {
+      const camp = camps.find((c) => Math.abs(x0 + w / 2 - 0.5 - c.cx) <= c.r && Math.abs(y0 + h / 2 - 0.5 - c.cy) <= c.r);
+      if (camp) {
+        // Лагерь: посередине костёр, вокруг брёвна (на них сидят), дальше — палатки, повозка, ящики
+        const mx = x0 + w / 2, mz = y0 + h / 2, tx = camp.cx + 0.5 - mx, tz = camp.cy + 0.5 - mz, dist = Math.hypot(tx, tz);
+        if (comp.some(([cx, cy]) => cx === camp.cx && cy === camp.cy)) {
+          for (let i = 0; i < 8; i++) { const a = i * 0.7854; pbox(B, mx + Math.cos(a) * 0.34, 0.05, mz + Math.sin(a) * 0.34, 0.14 + rnd(x + i, y, 81) * 0.06, 0.1, 0.14 + rnd(x, y + i, 82) * 0.06, C3(0x8a857c, sh)); }
+          plog(B, mx, 0.08, mz, 0.5, 0.055, 0, C3(0x2a1c12, sh), C3(0x3a2a1a, sh)); plog(B, mx, 0.11, mz, 0.5, 0.055, 1, C3(0x2a1c12, sh), C3(0x3a2a1a, sh));
+          pbox(B, mx, 0.03, mz, 0.34, 0.05, 0.34, C3(0xe0561a, 1));
+          fires.push({ x: mx, y: mz });
+        } else if (rect && w === 2 && h === 2) {
+          // Палатка: скат на две стороны, вход — к костру
+          const ax = Math.abs(tx) >= Math.abs(tz) ? 0 : 1, hw = 0.84, hl = 0.9, H = 1.05, o = [mx, 0.3, mz], col = C3(TENTS[Math.floor(rnd(x0, y0, 83) * 4)], sh);
+          const Pt = (t, u, v) => (ax ? [mx + u, v, mz + t] : [mx + t, v, mz + u]), face = (ax ? tz : tx) >= 0 ? 1 : -1;
+          [-1, 1].forEach((s) => pquad(B, Pt(-hl, s * hw, 0), Pt(hl, s * hw, 0), Pt(hl, 0, H), Pt(-hl, 0, H), col, o));
+          [-1, 1].forEach((s) => {
+            pquad(B, Pt(s * hl, -hw, 0), Pt(s * hl, hw, 0), Pt(s * hl, 0, H), Pt(s * hl, 0, H), [col[0] * 0.8, col[1] * 0.8, col[2] * 0.8], o);
+            if (s === face) pquad(B, Pt(s * (hl + 0.012), -hw * 0.42, 0), Pt(s * (hl + 0.012), hw * 0.42, 0), Pt(s * (hl + 0.012), 0, H * 0.6), Pt(s * (hl + 0.012), 0, H * 0.6), C3(0x15100c, sh), o);
+          });
+          plog(B, mx, H + 0.01, mz, hl * 2 + 0.16, 0.025, ax ? 1 : 0, C3(0x4a3018, sh), C3(0x4a3018, sh));
+        } else if (rect && Math.min(w, h) === 1 && comp.length <= 3 && dist <= 3.9) {
+          // Бревно лежит поперёк взгляда на костёр
+          const ax = w > h ? 0 : h > w ? 1 : Math.abs(tx) >= Math.abs(tz) ? 1 : 0, len = Math.max(w, h) - 0.12;
+          plog(B, mx, 0.17, mz, len, 0.17, ax, C3(0x4e3722, sh), C3(0xb8905a, sh));
+          [-1, 1].forEach((s) => { const q = s * (len / 2 - 0.25 - rnd(x0, y0 + s, 84) * 0.3); plog(B, mx + (ax ? 0 : q), 0.3, mz + (ax ? q : 0), 0.14, 0.035, ax ? 0 : 1, C3(0x4e3722, sh), C3(0xb8905a, sh)); });
+        } else if (rect && comp.length === 2) {
+          // Повозка: кузов с бортами на колёсах, в нём мешки
+          const lx = w > h, L2 = 1.7, W2 = 0.74, bw = lx ? L2 : W2, bd = lx ? W2 : L2;
+          pbox(B, mx, 0.4, mz, bw, 0.08, bd, C3(0x7a5230, sh), !lx);
+          [-1, 1].forEach((s) => { pbox(B, mx + (lx ? 0 : s * W2 / 2), 0.55, mz + (lx ? s * W2 / 2 : 0), lx ? L2 : 0.05, 0.24, lx ? 0.05 : L2, C3(0x5e3d1f, sh)); pbox(B, mx + (lx ? s * L2 / 2 : 0), 0.55, mz + (lx ? 0 : s * L2 / 2), lx ? 0.05 : W2, 0.24, lx ? W2 : 0.05, C3(0x5e3d1f, sh)); });
+          [-1, 1].forEach((a) => [-1, 1].forEach((b) => pbox(B, mx + (lx ? a * 0.55 : b * (W2 / 2 + 0.05)), 0.22, mz + (lx ? b * (W2 / 2 + 0.05) : a * 0.55), lx ? 0.42 : 0.07, 0.42, lx ? 0.07 : 0.42, C3(0x3a2614, sh))));
+          pbox(B, mx - (lx ? 0.3 : 0), 0.56, mz - (lx ? 0 : 0.3), 0.4, 0.22, 0.4, C3(0xb8a070, sh)); pbox(B, mx + (lx ? 0.3 : 0.05), 0.53, mz + (lx ? 0.05 : 0.3), 0.36, 0.18, 0.36, C3(0x9c8a5c, sh));
+        } else comp.forEach(([cx, cy]) => { pbox(B, cx + 0.42, 0.26, cy + 0.5, 0.52, 0.52, 0.52, C3(0x8a5a2b, sh)); pbox(B, cx + 0.72, 0.16, cy + 0.3, 0.32, 0.32, 0.32, C3(0x7a4c26, sh)); });
+      } else if (BEDS.includes(kind) && comp.length <= 2) {
         comp.forEach(([cx, cy]) => { // кровать: изголовьем к стене
           const r = wallSide(cx, cy), P = part(cx, cy, r < 0 ? 0 : r, sh);
           P(0, 0.14, 0, 0.84, 0.2, 0.94, 0x5e3d1f); P(0, 0.29, 0.02, 0.76, 0.1, 0.84, 0xd9cfb8);
@@ -641,14 +728,31 @@ export function create(wrap, api) {
           pbox(B, (bx0 + bx1) / 2, 0.25, (bz0 + bz1) / 2, bx1 - bx0, 0.5, bz1 - bz0, C3(0x5a3a1c, s1));
           pbox(B, (bx0 + bx1) / 2, 0.53, (bz0 + bz1) / 2, bx1 - bx0 + 0.14 * (n[3] + n[1]), 0.06, bz1 - bz0 + 0.14 * (n[0] + n[2]), C3(0x8a5a2e, s1));
           things(cx, cy, 1, 1, 0.56, s1, rnd(cx, cy, 65) < 0.6 ? 1 : 2);
+          // Табуреты — со стороны посетителей (не за стойкой)
+          D4.forEach(([dx, dy], d) => {
+            const nx = cx + dx, ny = cy + dy, nr = roomAt(nx, ny);
+            if (!n[d] || !open(nx, ny) || (nr && DESKS.includes(nr.kind)) || rnd(nx, ny, 67 + d) < 0.45) return;
+            const P = part(nx, ny, (d + 2) % 4, S.shade(`${nx}_${ny}`));
+            P(0, 0.33, -0.3, 0.24, 0.045, 0.24, 0x7a4c26); P(0, 0.16, -0.3, 0.07, 0.32, 0.07, 0x4a3018); P(0, 0.02, -0.3, 0.2, 0.03, 0.2, 0x4a3018);
+          });
         });
       } else { // стол: столешница на ножках, на ней посуда
         pbox(B, x0 + w / 2, 0.43, y0 + h / 2, w - 0.16, 0.06, h - 0.16, C3(wood, sh));
         [[0.17, 0.17], [w - 0.17, 0.17], [0.17, h - 0.17], [w - 0.17, h - 0.17]].forEach(([dx, dz]) => pbox(B, x0 + dx, 0.2, y0 + dz, 0.08, 0.4, 0.08, C3(wood, sh * 0.7)));
         things(x0, y0, w, h, 0.46, sh, Math.round(w * h * (0.8 + rnd(x0, y0, 66) * 1.4)));
+        // Стулья вокруг стола: стоят у края соседней свободной клетки, спинкой наружу
+        comp.forEach(([cx, cy]) => D4.forEach(([dx, dy], d) => {
+          const nx = cx + dx, ny = cy + dy;
+          if (!open(nx, ny) || rnd(nx, ny, 68 + d) < 0.25) return;
+          const P = part(nx, ny, (d + 2) % 4, S.shade(`${nx}_${ny}`)), cw = wood, z = -0.33;
+          P(0, 0.25, z, 0.27, 0.04, 0.27, cw);
+          [[-0.11, -0.11], [0.11, -0.11], [-0.11, 0.11], [0.11, 0.11]].forEach(([a, b]) => P(a, 0.115, z + b, 0.04, 0.23, 0.04, cw, 0.7));
+          P(0, 0.44, z + 0.12, 0.27, 0.34, 0.035, cw, 0.85);
+        }));
       }
     });
-    furnMesh = meshOf(B, woodMat);
+    if (B.pos.length) furnMesh = meshOf(B, woodMat);
+    if (B2.pos.length) masonMesh = meshOf(B2, masonMat);
   }
   const doorGeo = box(0.96, 0.84, 0.1), lockGeo = box(0.12, 0.14, 0.14), jambGeo = box(0.09, 0.9, 0.2);
   const doorTex = (() => {
@@ -730,15 +834,18 @@ export function create(wrap, api) {
       let cx = Math.floor(L.x), cy = Math.floor(L.y), dir = null;
       if (wall(cx, cy)) { const o = [[0, 1], [1, 0], [-1, 0], [0, -1]].find(([dx, dy]) => inb(cx + dx, cy + dy) && !wall(cx + dx, cy + dy)); if (o) { dir = [-o[0], -o[1]]; cx += o[0]; cy += o[1]; } }
       else dir = [[0, -1], [-1, 0], [1, 0], [0, 1]].find(([dx, dy]) => wall(cx + dx, cy + dy)) || null;
-      if (dir) { L.dir = dir; L.cx = cx; L.cy = cy; L.px = cx + 0.5 + dir[0] * 0.22; L.pz = cy + 0.5 + dir[1] * 0.22; L.py = 0.92; } else L.py = 0.98;
+      const fire = fires.find((f) => Math.abs(f.x - L.x) <= 1.6 && Math.abs(f.y - L.y) <= 1.6);
+      if (fire) { L.fire = 1; L.px = fire.x; L.pz = fire.y; L.py = 0.55; }
+      else if (dir) { L.dir = dir; L.cx = cx; L.cy = cy; L.px = cx + 0.5 + dir[0] * 0.22; L.pz = cy + 0.5 + dir[1] * 0.22; L.py = 0.92; } else L.py = 0.98;
     });
     const sig = JSON.stringify(S.lights) + S.amb;
     if (sig !== lampSig) {
       lampSig = sig; lampBox.clear();
       const add = (geo, mat, x, y, z) => { const m = new THREE.Mesh(geo, mat); m.position.set(x, y, z); lampBox.add(m); return m; };
-      const flame = (x, y, z) => { const a = new THREE.Sprite(flameMat); a.center.set(0.5, 0.08); a.position.set(x, y - 0.07, z); a.userData.flame = [0.17, 0.27]; const b = new THREE.Sprite(coreMat); b.position.set(x, y, z); b.userData.flame = [0.42, 0.42]; lampBox.add(a, b); };
+      const flame = (x, y, z, k = 1) => { const a = new THREE.Sprite(flameMat); a.center.set(0.5, 0.08); a.position.set(x, y - 0.07, z); a.userData.flame = [0.17 * k, 0.27 * k]; const b = new THREE.Sprite(coreMat); b.position.set(x, y, z); b.userData.flame = [0.42 * k, 0.42 * k]; lampBox.add(a, b); };
       S.lights.filter((L) => L.fix).forEach((L) => {
-        if (L.dir) {
+        if (L.fire) { flame(L.px, 0.2, L.pz, 2.4); flame(L.px + 0.09, 0.17, L.pz - 0.06, 1.5); flame(L.px - 0.1, 0.17, L.pz + 0.05, 1.3); }
+        else if (L.dir) {
           const [dx, dy] = L.dir, wx = L.cx + 0.5 + dx * 0.5, wz = L.cy + 0.5 + dy * 0.5;
           add(plateGeo, ironMat, wx - dx * 0.03, 0.58, wz - dy * 0.03).rotation.y = dx ? Math.PI / 2 : 0;
           const st = add(stickGeo, stickMat, wx - dx * 0.11, 0.66, wz - dy * 0.11); st.rotation.set(-dy * 0.5, 0, dx * 0.5);

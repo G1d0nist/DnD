@@ -168,8 +168,15 @@ const MAPGEN = (() => {
           if (Math.abs(Math.atan2(Math.sin(a - gapA), Math.cos(a - gapA))) < 0.45 || Math.abs(Math.atan2(Math.sin(a - gapA - Math.PI), Math.cos(a - gapA - Math.PI))) < 0.35) continue;
           G.set(Math.round(cx + Math.cos(a) * (r + 1)), Math.round(cy + Math.sin(a) * (r + 1)), 'wall');
         }
-      } else { fillRect(G, cx - r + 1, cy + 2, 1, 2, 'furn'); G.set(cx + 2, cy - 2, 'furn'); }
-      out.rooms.push({ x: cx - r + 2, y: cy - r + 2, w: 2 * r - 3, h: 2 * r - 3, kind: 'camp', faction });
+      } else { fillRect(G, cx - r + 1, cy + 2, 1, 2, 'furn'); G.set(cx + 2, cy - 2, 'crate'); }
+      // Брёвна вокруг костра — на них сидят; seats — места между бревном и огнём (туда встают хозяева лагеря)
+      const seats = [];
+      [[0, -1], [1, 0], [0, 1], [-1, 0]].forEach(([dx, dy]) => {
+        const log = [-1, 0, 1].map((i) => [cx + dx * 3 + (dx ? 0 : i), cy + dy * 3 + (dy ? 0 : i)]), own = (x, y) => log.some(([a, b]) => a === x && b === y);
+        if (R.ch(0.2) || !log.every(([x, y]) => G.get(x, y) === '' && [[0, -1], [1, 0], [0, 1], [-1, 0]].every(([ex, ey]) => own(x + ex, y + ey) || G.get(x + ex, y + ey) !== 'furn'))) return;
+        log.forEach(([x, y]) => { G.set(x, y, 'furn'); if (G.get(x - dx, y - dy) === '') seats.push([x - dx, y - dy]); });
+      });
+      out.rooms.push({ x: cx - r + 2, y: cy - r + 2, w: 2 * r - 3, h: 2 * r - 3, kind: 'camp', faction, seats });
       if (o.chests || R.ch(0.7)) out.chests.push({ x: cx + 1, y: cy - 1 });
       return;
     }
