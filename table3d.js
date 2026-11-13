@@ -77,6 +77,23 @@ export function create(wrap, api) {
   })();
   const stoneMat = new THREE.MeshStandardMaterial({ map: noise, roughness: 0.95 });
   const plainMat = new THREE.MeshStandardMaterial({ roughness: 0.9 });
+  // Серые рисунки (цвет дают вершины): скала — слои и трещины, дерево — волокна вдоль доски
+  const grey = (paint) => { const c = document.createElement('canvas'); c.width = c.height = 256; const g = c.getContext('2d'); paint(g, mulberry(19)); const t = new THREE.CanvasTexture(c); t.colorSpace = THREE.SRGBColorSpace; t.wrapS = t.wrapT = THREE.RepeatWrapping; return t; };
+  const rockTex = grey((g, R) => {
+    g.fillStyle = '#cfcfcf'; g.fillRect(0, 0, 256, 256);
+    for (let i = 0; i < 1400; i++) { const v = 150 + R() * 105; g.fillStyle = `rgba(${v},${v},${v},.5)`; const s = 2 + R() * 9; g.fillRect(R() * 256, R() * 256, s * (1 + R() * 2), s); }
+    g.strokeStyle = 'rgba(0,0,0,.4)';
+    for (let i = 0; i < 26; i++) { let x = R() * 256, y = R() * 256; g.lineWidth = 0.6 + R() * 1.6; g.beginPath(); g.moveTo(x, y); for (let k = 0; k < 5; k++) { x += (R() - 0.3) * 40; y += (R() - 0.5) * 22; g.lineTo(x, y); } g.stroke(); }
+    g.strokeStyle = 'rgba(255,255,255,.25)'; g.lineWidth = 1; for (let i = 0; i < 14; i++) { const y = R() * 256; g.beginPath(); g.moveTo(0, y); g.bezierCurveTo(80, y + (R() - 0.5) * 30, 170, y + (R() - 0.5) * 30, 256, y); g.stroke(); }
+  });
+  const woodTex = grey((g, R) => {
+    g.fillStyle = '#d8d8d8'; g.fillRect(0, 0, 256, 256);
+    for (let i = 0; i < 240; i++) { const y = R() * 256, v = R() < 0.5 ? 0 : 255; g.strokeStyle = `rgba(${v},${v},${v},${0.05 + R() * 0.13})`; g.lineWidth = 0.6 + R() * 1.8; g.beginPath(); g.moveTo(0, y); g.bezierCurveTo(70, y + (R() - 0.5) * 9, 180, y + (R() - 0.5) * 9, 256, y); g.stroke(); }
+    for (let y = 0; y < 256; y += 64) { g.fillStyle = 'rgba(0,0,0,.4)'; g.fillRect(0, y, 256, 2); g.fillStyle = 'rgba(255,255,255,.18)'; g.fillRect(0, y + 2, 256, 1.5); }
+  });
+  const rockMat = new THREE.MeshStandardMaterial({ map: rockTex, bumpMap: rockTex, bumpScale: 2.5, roughness: 1, vertexColors: true });
+  const cragMat = new THREE.MeshStandardMaterial({ map: rockTex, bumpMap: rockTex, bumpScale: 2.5, roughness: 1, flatShading: true });
+  const woodMat = new THREE.MeshStandardMaterial({ map: woodTex, roughness: 0.85, vertexColors: true });
   // Листва: серый рисунок (цвет даёт сама крона) — хвоя штрихами вниз с зубцами по краю яруса и пёстрые листья
   const foliage = (broad) => {
     const N = 256, c = document.createElement('canvas'); c.width = c.height = N; const g = c.getContext('2d'), R = mulberry(broad ? 21 : 22);
@@ -128,8 +145,14 @@ export function create(wrap, api) {
   const slab = new THREE.Mesh(box(1, 0.5, 1), new THREE.MeshStandardMaterial({ map: noise, color: 0x3a332c, roughness: 0.9 })); slab.position.y = -0.26; slab.receiveShadow = true; scene.add(slab);
   const ico = (r) => new THREE.IcosahedronGeometry(r, 1);
   // Часть препятствия: геометрия, материал, цвет, высота центра, сдвиг в клетке, v — доля случайного разброса размера
+  // Валун: гранёный камень неровной формы (вершины сдвинуты, грани плоские)
+  const crag = (r, seed) => { const g = new THREE.IcosahedronGeometry(r, 1), p = g.attributes.position; for (let i = 0; i < p.count; i++) { const x = p.getX(i), y = p.getY(i), z = p.getZ(i), v = Math.sin(Math.round(x * 40) * 12.9 + Math.round(y * 40) * 78.2 + Math.round(z * 40) * 37.7 + seed) * 43758.5453, k = 0.74 + (v - Math.floor(v)) * 0.46; p.setXYZ(i, x * k, y * k, z * k); } g.computeVertexNormals(); return g; };
+  const hearthMat = new THREE.MeshStandardMaterial({ map: noise, roughness: 0.95 }), emberMat = new THREE.MeshBasicMaterial({ color: 0xff7a22, toneMapped: false });
   const PROPS = {
-    rock: [{ g: new THREE.IcosahedronGeometry(0.5, 1), m: stoneMat, c: 0x8d867c, y: 0.3, s: [0.92, 0.75, 0.92], v: 0.2, spin: true }],
+    rock: [{ g: crag(0.5, 1), m: cragMat, c: 0x8d867c, y: 0.26, s: [0.95, 0.9, 0.95], v: 0.2, spin: true }, { g: crag(0.2, 2), m: cragMat, c: 0x7d766c, y: 0.1, dx: 0.3, dz: 0.28, v: 0.3, spin: true }],
+    // Очаг или печь в доме: каменная кладка с топкой и трубой
+    hearth: [{ g: box(0.94, 0.6, 0.94), m: hearthMat, c: 0x9a8c7c, y: 0.3 }, { g: box(0.46, 0.5, 0.46), m: hearthMat, c: 0x857869, y: 0.85 },
+      { g: box(0.5, 0.24, 0.96), m: emberMat, c: 0xffffff, y: 0.2, glow: true }, { g: box(0.96, 0.24, 0.5), m: emberMat, c: 0xffffff, y: 0.2, glow: true }],
     tree: [{ g: new THREE.CylinderGeometry(0.06, 0.09, 0.5, 7), m: barkMat, c: 0x6a4a30, y: 0.25 },
       { g: firTier(0.5, 0.62), m: firMat, c: 0x2f6e2c, y: 0.56, v: 0.15, spin: true }, { g: firTier(0.4, 0.56), m: firMat, c: 0x357632, y: 0.9, v: 0.15, spin: true },
       { g: firTier(0.3, 0.5), m: firMat, c: 0x3d8038, y: 1.22, v: 0.15, spin: true }, { g: firTier(0.18, 0.44), m: firMat, c: 0x488c42, y: 1.52, v: 0.15, spin: true }],
@@ -138,7 +161,6 @@ export function create(wrap, api) {
       { g: blob(0.3, 3), m: leafMat, c: 0x55963c, y: 0.92, dx: 0.22, dz: -0.12, v: 0.15, spin: true }, { g: blob(0.25, 4), m: leafMat, c: 0x5fa044, y: 1.36, dx: 0.04, dz: 0.08, v: 0.15, spin: true }],
     crate: [{ g: box(0.5, 0.5, 0.5), m: plainMat, c: 0x8a5a2b, y: 0.25, dx: -0.16, dz: 0.14 },
       { g: new THREE.CylinderGeometry(0.17, 0.17, 0.46, 12), m: plainMat, c: 0x6e4a26, y: 0.23, dx: 0.24, dz: -0.2 }],
-    furn: [{ g: box(0.8, 0.42, 0.8), m: plainMat, c: 0x6e4623, y: 0.21 }],
     grave: [{ g: box(0.42, 0.6, 0.13), m: stoneMat, c: 0x9a9aa2, y: 0.3 }],
     mushroom: [{ g: new THREE.CylinderGeometry(0.08, 0.11, 0.6, 8), m: plainMat, c: 0xd8cfc0, y: 0.3 },
       { g: new THREE.SphereGeometry(0.46, 14, 8, 0, Math.PI * 2, 0, Math.PI / 2), m: plainMat, c: 0x8a4fb0, y: 0.55, s: [1, 0.6, 1] }],
@@ -162,8 +184,9 @@ export function create(wrap, api) {
     shade: ['#1f3019', ['#27391f', '#182613', '#2d4223'], '#3a5a2c'], bog: ['#27321d', ['#324024', '#1c2616', '#3b4a26'], '#6f8a45'],
     water: ['#1c4d6b', ['#235d7e', '#143a54', '#2a6a8c'], ''], ice: ['#93bbd2', ['#b4d8ea', '#7fa9c2', '#cfe8f4'], ''],
     lava: ['#8a2207', ['#c9480d', '#4a1205', '#e8731a'], ''], chasm: ['#050404', ['#0a0807', '#000000', '#0d0b09'], ''],
+    stone: ['#59544c', ['#69635a', '#4a453e', '#746d62'], ''],
   };
-  const PEBBLES = { road: 3, difficult: 9, rubble: 16, dirt: 1.5, sand: 0.6 };
+  const PEBBLES = { road: 3, difficult: 9, rubble: 16, dirt: 1.5, sand: 0.6, stone: 7 };
   function pebble(g, x, y, r, R) {
     const p = [], n = 5 + Math.floor(R() * 3);
     for (let i = 0; i < n; i++) { const a = (i * 6.283) / n + R() * 0.5, rr = r * (0.7 + R() * 0.4); p.push([x + Math.cos(a) * rr, y + Math.sin(a) * rr * 0.8]); }
@@ -235,7 +258,7 @@ export function create(wrap, api) {
   }
   // [грунт, типы клеток, раздутие, цвет каймы, ширина каймы, плотность]
   const PATCH = [['road', ['road'], 0.1, 'rgba(0,0,0,.3)', 0.1, 1], ['sand', ['sand'], 0.14, '', 0, 1], ['snow', ['snow'], 0.14, 'rgba(255,255,255,.3)', 0.12, 1],
-    ['difficult', ['difficult'], 0.1, 'rgba(0,0,0,.35)', 0.1, 0.92], ['rubble', ['rubble'], 0.1, 'rgba(0,0,0,.35)', 0.1, 0.88], ['shade', ['tree', 'thicket', 'bush', 'mushroom'], 0.16, '', 0, 0.72],
+    ['difficult', ['difficult'], 0.1, 'rgba(0,0,0,.35)', 0.1, 0.92], ['rubble', ['rubble'], 0.1, 'rgba(0,0,0,.35)', 0.1, 0.88], ['rubble', ['massif'], 0.2, 'rgba(0,0,0,.4)', 0.14, 1], ['shade', ['tree', 'thicket', 'bush', 'mushroom'], 0.16, '', 0, 0.72],
     ['bog', ['bog'], 0.12, 'rgba(8,12,6,.75)', 0.16, 1], ['water', ['water'], 0.12, 'rgba(8,12,10,.8)', 0.18, 1], ['ice', ['ice'], 0.1, 'rgba(220,240,255,.4)', 0.1, 1],
     ['lava', ['lava'], 0.1, 'rgba(255,110,20,.95)', 0.28, 1], ['chasm', ['chasm'], 0.06, 'rgba(0,0,0,.95)', 0.22, 1]];
   // Блестящая плёнка над водой, болотом, льдом и лавой — одной плоскостью по маске пятна
@@ -243,15 +266,16 @@ export function create(wrap, api) {
   const liquids = {}, tmpCv = document.createElement('canvas');
   let groundSig = '', mapRev = 0, glowK = 0; // glowK — включено ли свечение
   function paintGround() {
-    const map = S.map, sig = `${S.w}x${S.h}|${S.ground}|` + Object.entries(map).map(([k, t]) => k + t).join(',');
-    if (sig === groundSig) return; groundSig = sig; mapRev++;
+    const map = S.map, sig = `${S.w}x${S.h}|${S.ground}${S.rocky ? 'r' : ''}|` + Object.entries(map).map(([k, t]) => k + t).join(',');
+    if (sig === groundSig) return; groundSig = sig; mapRev++; planRev = mapRev; classify();
     const s = Math.max(24, Math.min(64, Math.floor(4096 / Math.max(S.w, S.h)))), W = S.w * s, H = S.h * s;
     if (groundCv.width !== W || groundCv.height !== H) { groundTex.dispose(); groundCv.width = W; groundCv.height = H; }
     tmpCv.width = W; tmpCv.height = H; gs = s;
     const g = groundCv.getContext('2d'), tg = tmpCv.getContext('2d'), R = mulberry(S.w * 31 + S.h), at = (x, y) => map[`${x}_${y}`];
-    const by = {}; Object.entries(map).forEach(([k, t]) => { const [x, y] = k.split('_').map(Number); if (x >= 0 && y >= 0 && x < S.w && y < S.h) (by[t] = by[t] || []).push([x, y]); });
+    const by = {}; Object.entries(map).forEach(([k, t]) => { const [x, y] = k.split('_').map(Number); if (x >= 0 && y >= 0 && x < S.w && y < S.h) (by[massif.has(k) ? 'massif' : t] = by[massif.has(k) ? 'massif' : t] || []).push([x, y]); });
     // Основа: грунт по виду местности, доски или каменные плиты
-    if (SOIL[S.ground]) soil(g, S.ground, 0, 0, W, H, s, R);
+    const gk = S.ground === 'stone' && !S.rocky ? '' : S.ground; // каменная земля гор — не плиты подземелья
+    if (SOIL[gk]) soil(g, gk, 0, 0, W, H, s, R);
     else if (S.ground === 'wood') { g.fillStyle = '#1a120b'; g.fillRect(0, 0, W, H); planks(g, W, H, s, R); }
     else for (let y = 0; y < S.h; y++) for (let x = 0; x < S.w; x++) flag(g, x, y, s, false);
     PATCH.forEach(([kind, types, grow, rim, rimW, alpha], pi) => {
@@ -286,6 +310,12 @@ export function create(wrap, api) {
     });
     // Пол в доме — тёплые плиты ровно по клеткам
     (by.floor || []).forEach(([x, y]) => flag(g, x, y, s, true));
+    // …и под мебелью, ящиками, лестницей и очагом, которые стоят на этом полу
+    const inside = new Set(), fq = (by.floor || []).slice();
+    while (fq.length) {
+      const [x, y] = fq.pop();
+      D4.forEach(([dx, dy]) => { const k = `${x + dx}_${y + dy}`, t = map[k]; if (inside.has(k) || !(['furn', 'board', 'crate', 'stairs'].includes(t) || (t === 'rock' && hearth.has(k)))) return; inside.add(k); flag(g, x + dx, y + dy, s, true); fq.push([x + dx, y + dy]); });
+    }
     (by.wall || []).forEach(([x, y]) => { g.fillStyle = '#100d0b'; g.fillRect(x * s, y * s, s, s); });
     // Тень у основания стен и под предметами
     for (let y = 0; y < S.h; y++) for (let x = 0; x < S.w; x++) {
@@ -296,7 +326,7 @@ export function create(wrap, api) {
         const gr = dy === -1 ? g.createLinearGradient(0, Y, 0, Y + d * s) : dy === 1 ? g.createLinearGradient(0, Y + s, 0, Y + s - d * s) : dx === -1 ? g.createLinearGradient(X, 0, X + d * s, 0) : g.createLinearGradient(X + s, 0, X + s - d * s, 0);
         gr.addColorStop(0, `rgba(0,0,0,${a})`); gr.addColorStop(1, 'rgba(0,0,0,0)'); g.fillStyle = gr; g.fillRect(X, Y, s, s);
       }
-      if (PROPS[t] && t !== 'bridge' && t !== 'snow') { const gr = g.createRadialGradient(X + s / 2, Y + s / 2, 0, X + s / 2, Y + s / 2, s * 0.6); gr.addColorStop(0, 'rgba(0,0,0,.5)'); gr.addColorStop(1, 'rgba(0,0,0,0)'); g.fillStyle = gr; g.fillRect(X - s * 0.1, Y - s * 0.1, s * 1.2, s * 1.2); }
+      if ((PROPS[t] || t === 'furn' || t === 'board') && t !== 'bridge' && t !== 'snow') { const gr = g.createRadialGradient(X + s / 2, Y + s / 2, 0, X + s / 2, Y + s / 2, s * 0.6); gr.addColorStop(0, 'rgba(0,0,0,.5)'); gr.addColorStop(1, 'rgba(0,0,0,0)'); g.fillStyle = gr; g.fillRect(X - s * 0.1, Y - s * 0.1, s * 1.2, s * 1.2); }
     }
     rippleTex.repeat.set(S.w / 1.6, S.h / 1.6); glintTex.repeat.set(S.w / 2.7, S.h / 2.7); lavaTex.repeat.set(S.w / 2, S.h / 2);
     groundTex.needsUpdate = true;
@@ -359,15 +389,15 @@ export function create(wrap, api) {
   let propSig = '', doorSig = '', lampSig = '', stale = true, S = null;
   const rnd = (x, y, n) => { const v = Math.sin(x * 127.1 + y * 311.7 + n * 74.7) * 43758.5453; return v - Math.floor(v); };
   function buildProps() {
-    const cells = Object.entries(S.map).filter(([k, t]) => PROPS[t] && S.shade(k) >= 0);
-    const sig = `${S.w}x${S.h}|` + cells.map(([k, t]) => `${k}${t}${S.shade(k)}`).join(',');
+    const cells = Object.entries(S.map).filter(([k, t]) => PROPS[t] && S.shade(k) >= 0 && !massif.has(k));
+    const sig = `${S.w}x${S.h}|${mapRev}|` + cells.map(([k, t]) => `${k}${t}${S.shade(k)}`).join(',');
     if (sig === propSig) return; propSig = sig;
     propBox.children.slice().forEach((m) => { propBox.remove(m); m.dispose(); });
     const leafy = !['snow', 'sand'].includes(S.ground), by = {};
-    cells.forEach(([k, t]) => { const [x, y] = k.split('_').map(Number), v = t === 'tree' && leafy && rnd(x, y, 5) > 0.6 ? 'tree2' : t; (by[v] = by[v] || []).push(k); });
+    cells.forEach(([k, t]) => { const [x, y] = k.split('_').map(Number), v = t === 'tree' && leafy && rnd(x, y, 5) > 0.6 ? 'tree2' : t === 'rock' && hearth.has(k) ? 'hearth' : t; (by[v] = by[v] || []).push(k); });
     const M = new THREE.Matrix4(), P = new THREE.Vector3(), Q = new THREE.Quaternion(), SC = new THREE.Vector3(), E = new THREE.Euler(), C = new THREE.Color();
     Object.entries(by).forEach(([t, ks]) => PROPS[t].forEach((p, pi) => {
-      const im = new THREE.InstancedMesh(p.g, p.m, ks.length); im.receiveShadow = true; im.castShadow = !p.flat; if (p.flat) im.renderOrder = 0.5;
+      const im = new THREE.InstancedMesh(p.g, p.m, ks.length); im.receiveShadow = !p.glow; im.castShadow = !p.flat && !p.glow; if (p.flat) im.renderOrder = 0.5;
       ks.forEach((k, i) => {
         const [x, y] = k.split('_').map(Number), r = rnd(x, y, pi), k1 = 1 + (p.v ? (rnd(x, y, 77) - 0.5) * 2 * p.v : 0), s = p.s || [1, 1, 1];
         P.set(x + 0.5 + (p.dx || 0), p.y * (p.v ? k1 : 1), y + 0.5 + (p.dz || 0)); Q.setFromEuler(E.set(0, p.spin ? r * 6.28 : 0, 0)); SC.set(s[0] * k1, s[1] * k1, s[2] * k1);
@@ -377,6 +407,168 @@ export function create(wrap, api) {
       im.instanceMatrix.needsUpdate = true; if (im.instanceColor) im.instanceColor.needsUpdate = true;
       propBox.add(im);
     }));
+  }
+  // ---------- Горы: скалы, стоящие сплошным пятном, — один массив с гребнями; чем дальше от края пятна, тем выше ----------
+  const D4 = [[0, -1], [1, 0], [0, 1], [-1, 0]], NOROOF = ['dungeon', 'cave', 'crypt', 'mine', 'sewer', 'underdark', 'lair'];
+  let planRev = -1, massif = new Set(), hearth = new Set(), deep = null, rockMesh = null, rockSig = '', furnMesh = null, furnSig = '';
+  function classify() {
+    massif = new Set(); hearth = new Set();
+    const seen = new Set(), homes = !NOROOF.includes(S.tpl);
+    Object.entries(S.map).forEach(([k, t]) => {
+      if (t !== 'rock' || seen.has(k)) return;
+      const comp = [], q = [k]; let house = false; seen.add(k);
+      while (q.length) {
+        const c = q.pop(), [x, y] = c.split('_').map(Number); comp.push(c);
+        for (const [dx, dy] of D4) { const n = `${x + dx}_${y + dy}`, nt = S.map[n]; if (nt === 'rock') { if (!seen.has(n)) { seen.add(n); q.push(n); } } else if (nt === 'floor' || nt === 'wall') house = true; }
+      }
+      if (comp.length <= 3 && house && homes) comp.forEach((c) => hearth.add(c)); else if (comp.length >= 4) comp.forEach((c) => massif.add(c));
+    });
+    // Расстояние до края пятна (в клетках); за краем поля массив продолжается
+    const W = S.w, H = S.h, d = deep = new Float32Array(W * H), at = (x, y) => (x < 0 || y < 0 || x >= W || y >= H ? 1e3 : d[y * W + x]);
+    for (let y = 0; y < H; y++) for (let x = 0; x < W; x++) d[y * W + x] = massif.has(`${x}_${y}`) ? 1e3 : 0;
+    for (let y = 0; y < H; y++) for (let x = 0; x < W; x++) if (d[y * W + x]) d[y * W + x] = Math.min(d[y * W + x], at(x - 1, y) + 1, at(x, y - 1) + 1, at(x - 1, y - 1) + 1.41, at(x + 1, y - 1) + 1.41);
+    for (let y = H - 1; y >= 0; y--) for (let x = W - 1; x >= 0; x--) if (d[y * W + x]) d[y * W + x] = Math.min(d[y * W + x], at(x + 1, y) + 1, at(x, y + 1) + 1, at(x + 1, y + 1) + 1.41, at(x - 1, y + 1) + 1.41);
+  }
+  const C3 = (hex, k = 1) => { const c = new THREE.Color(hex); return [c.r * k, c.g * k, c.b * k]; };
+  const meshOf = (B, mat) => { const g = new THREE.BufferGeometry(); g.setAttribute('position', new THREE.Float32BufferAttribute(B.pos, 3)); g.setAttribute('normal', new THREE.Float32BufferAttribute(B.nor, 3)); g.setAttribute('uv', new THREE.Float32BufferAttribute(B.uv, 2)); g.setAttribute('color', new THREE.Float32BufferAttribute(B.col, 3)); const m = new THREE.Mesh(g, mat); m.castShadow = m.receiveShadow = true; scene.add(m); return m; };
+  function buildRocks() {
+    const cells = [...massif].filter((k) => S.shade(k) >= 0);
+    const sig = `${mapRev}|${S.ground}|` + cells.map((k) => k + S.shade(k)).join(',');
+    if (sig === rockSig) return; rockSig = sig;
+    if (rockMesh) { scene.remove(rockMesh); rockMesh.geometry.dispose(); rockMesh = null; }
+    if (!cells.length) return;
+    const W = S.w, H = S.h, B = { pos: [], nor: [], uv: [], col: [] }, cache = new Map();
+    // Вершины — через полклетки. На границе пятна высота 0 (подножие ровно по краю клетки), дальше — круто вверх
+    const vert = (i, j) => {
+      const id = i * (2 * H + 1) + j; let v = cache.get(id); if (v) return v;
+      const xs = i & 1 ? [(i - 1) >> 1] : [i / 2 - 1, i / 2], ys = j & 1 ? [(j - 1) >> 1] : [j / 2 - 1, j / 2]; let e = 99;
+      for (const y of ys) for (const x of xs) { if (x < 0 || y < 0 || x >= W || y >= H) continue; e = Math.min(e, deep[y * W + x]); }
+      if (e > 0 && (i & 1) && (j & 1)) e -= 0.5;
+      let h = 0, jx = 0, jz = 0;
+      if (e > 0) {
+        const lf = 0.5 + 0.5 * Math.sin(i * 0.19 + 1.3) * Math.sin(j * 0.23 + 0.7), n = rnd(i, j, 21);
+        h = Math.min(3.6, 3 * (1 - Math.exp(-Math.min(e, 6) * 0.6)) * (0.7 + 0.36 * n + 0.32 * lf) * ((i & 1) && (j & 1) ? 1.16 : 1));
+        if (i > 0 && i < 2 * W) jx = (rnd(i, j, 22) - 0.5) * 0.3; if (j > 0 && j < 2 * H) jz = (rnd(i, j, 23) - 0.5) * 0.3;
+      } else if (i > 0 && j > 0 && i < 2 * W && j < 2 * H) {
+        // Подножие: наружные углы и края пятна втянуты внутрь — контур горы не идёт по клеткам
+        let sx = 0, sz = 0, n = 0, m = 0;
+        for (const y of ys) for (const x of xs) { m++; if (deep[y * W + x] > 0) { n++; sx += x + 0.5 - i / 2; sz += y + 0.5 - j / 2; } }
+        if (n && n * 2 <= m) { const f = 0.3 + 0.5 * rnd(i, j, 24); jx = (sx / n) * f; jz = (sz / n) * f; }
+      }
+      v = [i / 2 + jx, h, j / 2 + jz]; cache.set(id, v); return v;
+    };
+    const lo = C3(0x6a645b), hi = C3(0xa9a296), snow = C3(0xe9eef5), moss = C3(0x586a3a), dark = C3(0x4a453f);
+    const snowLine = S.ground === 'snow' ? 0.9 : 2.15, mossy = S.ground === 'grass' || S.ground === 'swamp';
+    // Треугольник с плоской гранью; (ox, oy, oz) — куда грань должна смотреть
+    const tri = (a, b, c, sh, ox, oy, oz, seed, flat) => {
+      let ux = b[0] - a[0], uy = b[1] - a[1], uz = b[2] - a[2], vx = c[0] - a[0], vy = c[1] - a[1], vz = c[2] - a[2];
+      let nx = uy * vz - uz * vy, ny = uz * vx - ux * vz, nz = ux * vy - uy * vx; const l = Math.hypot(nx, ny, nz) || 1; nx /= l; ny /= l; nz /= l;
+      if (nx * ox + ny * oy + nz * oz < 0) { const t = b; b = c; c = t; nx = -nx; ny = -ny; nz = -nz; }
+      const hA = (a[1] + b[1] + c[1]) / 3, k = Math.min(1, hA / 2.4);
+      let col = flat ? dark : [lo[0] + (hi[0] - lo[0]) * k, lo[1] + (hi[1] - lo[1]) * k, lo[2] + (hi[2] - lo[2]) * k];
+      if (!flat && hA > snowLine && ny > 0.5) col = snow; else if (!flat && mossy && hA < 0.55 && ny > 0.45) col = [(col[0] + moss[0]) / 2, (col[1] + moss[1]) / 2, (col[2] + moss[2]) / 2];
+      const m = sh * (flat ? 1 : (0.9 + 0.2 * ny) * (0.9 + 0.2 * seed));
+      [a, b, c].forEach((p) => { B.pos.push(p[0], p[1], p[2]); B.nor.push(nx, ny, nz); B.uv.push(p[0] * 0.45 + p[1] * 0.3, p[2] * 0.45 + p[1] * 0.3); B.col.push(col[0] * m, col[1] * m, col[2] * m); });
+    };
+    cells.forEach((key) => {
+      const [x, y] = key.split('_').map(Number), sh = S.shade(key), c = vert(2 * x + 1, 2 * y + 1);
+      // Восемь граней веером от середины клетки
+      const ring = [[0, 0], [1, 0], [2, 0], [2, 1], [2, 2], [1, 2], [0, 2], [0, 1]].map(([a, b]) => vert(2 * x + a, 2 * y + b));
+      ring.forEach((p, i) => tri(c, p, ring[(i + 1) % 8], sh, 0, 1, 0, rnd(x * 8 + i, y, 31)));
+      // Срез по краю поля
+      const cut = (i0, j0, i1, j1, ox, oz) => { const a = vert(i0, j0), b = vert(i1, j1); if (a[1] + b[1] <= 0) return; const a0 = [a[0], 0, a[2]], b0 = [b[0], 0, b[2]]; tri(a0, b0, b, sh * 0.8, ox, 0, oz, 0, true); tri(a0, b, a, sh * 0.8, ox, 0, oz, 0, true); };
+      for (let q = 0; q < 2; q++) {
+        if (x === 0) cut(0, 2 * y + q, 0, 2 * y + q + 1, -1, 0); if (x === W - 1) cut(2 * W, 2 * y + q, 2 * W, 2 * y + q + 1, 1, 0);
+        if (y === 0) cut(2 * x + q, 0, 2 * x + q + 1, 0, 0, -1); if (y === H - 1) cut(2 * x + q, 2 * H, 2 * x + q + 1, 2 * H, 0, 1);
+      }
+    });
+    rockMesh = meshOf(B, rockMat);
+  }
+  // ---------- Мебель одной сеткой: столы с посудой, стойки, кровати, полки, доска заказов ----------
+  function pbox(B, x, y, z, w, h, d, c) {
+    const x0 = x - w / 2, x1 = x + w / 2, y0 = y - h / 2, y1 = y + h / 2, z0 = z - d / 2, z1 = z + d / 2;
+    const f = (p, n, t) => [0, 1, 2, 0, 2, 3].forEach((i) => { B.pos.push(p[i][0], p[i][1], p[i][2]); B.nor.push(n[0], n[1], n[2]); B.uv.push(t[i][0], t[i][1]); B.col.push(c[0], c[1], c[2]); });
+    f([[x0, y1, z1], [x1, y1, z1], [x1, y1, z0], [x0, y1, z0]], [0, 1, 0], w >= d ? [[x0, z1], [x1, z1], [x1, z0], [x0, z0]] : [[z1, x0], [z1, x1], [z0, x1], [z0, x0]]);
+    f([[x0, y0, z1], [x1, y0, z1], [x1, y1, z1], [x0, y1, z1]], [0, 0, 1], [[x0, y0], [x1, y0], [x1, y1], [x0, y1]]);
+    f([[x1, y0, z0], [x0, y0, z0], [x0, y1, z0], [x1, y1, z0]], [0, 0, -1], [[x1, y0], [x0, y0], [x0, y1], [x1, y1]]);
+    f([[x1, y0, z1], [x1, y0, z0], [x1, y1, z0], [x1, y1, z1]], [1, 0, 0], [[z1, y0], [z0, y0], [z0, y1], [z1, y1]]);
+    f([[x0, y0, z0], [x0, y0, z1], [x0, y1, z1], [x0, y1, z0]], [-1, 0, 0], [[z0, y0], [z1, y0], [z1, y1], [z0, y1]]);
+  }
+  const BEDS = ['room', 'bedroom', 'barracks', 'chamber', 'cell'], SHELVES = ['archive', 'library', 'shop'], DESKS = ['bar', 'reception', 'shop', 'stall'];
+  const WOODS = [0x8a5a2e, 0x7a4c26, 0x94683a, 0x6e4623], BLANKETS = [0x8a2f2a, 0x2f4f7a, 0x3d6b3a, 0x6a3f7a, 0x8a6a2a], BOOKS = [0x7a2a24, 0x2a4a6a, 0x34582e, 0x6a5a2a, 0x4a2e5a, 0x8a7a5a], PAPERS = [0xefe4c4, 0xe2d3a8, 0xf4ecd6, 0xd9c797];
+  function buildFurn() {
+    const cells = Object.entries(S.map).filter(([k, t]) => (t === 'furn' || t === 'board') && S.shade(k) >= 0);
+    const sig = `${mapRev}|${S.rooms.length}|` + cells.map(([k]) => k + S.shade(k)).join(',');
+    if (sig === furnSig) return; furnSig = sig;
+    if (furnMesh) { scene.remove(furnMesh); furnMesh.geometry.dispose(); furnMesh = null; }
+    if (!cells.length) return;
+    const B = { pos: [], nor: [], uv: [], col: [] }, at = (x, y) => S.map[`${x}_${y}`], isF = (x, y) => at(x, y) === 'furn';
+    // Самая тесная комната, в которой стоит клетка, — по ней видно, кровать это или стол
+    const roomAt = (x, y) => S.rooms.filter((r) => x >= r.x && y >= r.y && x < r.x + r.w && y < r.y + r.h).sort((a, b) => a.w * a.h - b.w * b.h)[0];
+    const nearKind = (x0, y0, x1, y1, kinds) => S.rooms.some((r) => kinds.includes(r.kind) && r.x <= x1 + 1 && r.x + r.w - 1 >= x0 - 1 && r.y <= y1 + 1 && r.y + r.h - 1 >= y0 - 1);
+    // Сторона стены у клетки: 0 — север, 1 — восток, 2 — юг, 3 — запад (−1 — стены рядом нет)
+    const wallSide = (x, y) => [0, 1, 2, 3].find((r) => at(x + D4[r][0], y + D4[r][1]) === 'wall') ?? -1;
+    // Часть предмета в своих осях: «голова» предмета смотрит на сторону r
+    const part = (x, y, r, sh) => (lx, ly, lz, w, h, d, hex, k = 1) => {
+      const [ox, oz] = r === 1 ? [-lz, lx] : r === 2 ? [-lx, -lz] : r === 3 ? [lz, -lx] : [lx, lz];
+      pbox(B, x + 0.5 + ox, ly, y + 0.5 + oz, r & 1 ? d : w, h, r & 1 ? w : d, C3(hex, sh * k));
+    };
+    const things = (x0, y0, w, h, top, sh, n) => { // посуда на столешнице
+      for (let i = 0; i < n; i++) {
+        const px = x0 + 0.22 + rnd(x0 + i, y0, 41) * (w - 0.44), pz = y0 + 0.22 + rnd(x0, y0 + i, 42) * (h - 0.44), q = rnd(x0 + i, y0 + i, 43);
+        if (q < 0.4) pbox(B, px, top + 0.045, pz, 0.07, 0.09, 0.07, C3(q < 0.2 ? 0xb9a07a : 0x9aa0a8, sh));
+        else if (q < 0.7) pbox(B, px, top + 0.012, pz, 0.17, 0.024, 0.17, C3(0xd8cdb4, sh));
+        else if (q < 0.87) pbox(B, px, top + 0.085, pz, 0.05, 0.17, 0.05, C3(0x3f6a3a, sh));
+        else { pbox(B, px, top + 0.05, pz, 0.035, 0.1, 0.035, C3(0xe8dcc0, sh)); }
+      }
+    };
+    const done = new Set();
+    cells.forEach(([key, t]) => {
+      const [x, y] = key.split('_').map(Number), sh = S.shade(key);
+      if (t === 'board') { // доска заказов: щит на столбах у стены, листы с печатями
+        const r = wallSide(x, y), P = part(x, y, r < 0 ? 0 : r, sh), z = r < 0 ? 0 : -0.38;
+        P(-0.43, 0.5, z, 0.08, 1, 0.08, 0x4a3018); P(0.43, 0.5, z, 0.08, 1, 0.08, 0x4a3018);
+        P(0, 0.62, z, 0.94, 0.62, 0.05, 0x6b4826); P(0, 0.97, z + 0.02, 1, 0.07, 0.16, 0x4a3018);
+        for (let i = 0; i < 6; i++) {
+          if (rnd(x * 6 + i, y, 51) < 0.2) continue;
+          const pw = 0.17 + rnd(x + i, y, 52) * 0.08, ph = 0.19 + rnd(x, y + i, 53) * 0.08, px = -0.3 + (i % 3) * 0.3 + (rnd(x + i, y, 54) - 0.5) * 0.06, py = 0.47 + Math.floor(i / 3) * 0.29 + (rnd(x, y + i, 55) - 0.5) * 0.04;
+          P(px, py, z + 0.032, pw, ph, 0.014, PAPERS[Math.floor(rnd(x + i, y + i, 56) * 4)]); P(px, py + ph / 2 - 0.03, z + 0.044, 0.03, 0.03, 0.012, 0xa03020);
+        }
+        return;
+      }
+      if (done.has(key)) return;
+      // Предмет — связное пятно клеток мебели
+      const comp = [], q = [[x, y]]; done.add(key);
+      while (q.length) { const [cx, cy] = q.pop(); comp.push([cx, cy]); D4.forEach(([dx, dy]) => { const k = `${cx + dx}_${cy + dy}`; if (isF(cx + dx, cy + dy) && !done.has(k)) { done.add(k); q.push([cx + dx, cy + dy]); } }); }
+      const xs = comp.map((c) => c[0]), ys = comp.map((c) => c[1]), x0 = Math.min(...xs), y0 = Math.min(...ys), w = Math.max(...xs) - x0 + 1, h = Math.max(...ys) - y0 + 1;
+      const rect = comp.length === w * h, room = roomAt(x, y), kind = room ? room.kind : '', wood = WOODS[Math.floor(rnd(x0, y0, 61) * 4)];
+      if (BEDS.includes(kind) && comp.length <= 2) {
+        comp.forEach(([cx, cy]) => { // кровать: изголовьем к стене
+          const r = wallSide(cx, cy), P = part(cx, cy, r < 0 ? 0 : r, sh);
+          P(0, 0.14, 0, 0.84, 0.2, 0.94, 0x5e3d1f); P(0, 0.29, 0.02, 0.76, 0.1, 0.84, 0xd9cfb8);
+          P(0, 0.345, 0.18, 0.78, 0.03, 0.52, BLANKETS[Math.floor(rnd(cx, cy, 62) * 5)]); P(0, 0.37, -0.28, 0.5, 0.07, 0.2, 0xf0ebe0); P(0, 0.33, -0.45, 0.84, 0.56, 0.06, 0x4a3018);
+        });
+      } else if (SHELVES.includes(kind)) {
+        comp.forEach(([cx, cy]) => { // полки с книгами и свитками у стены
+          const r = wallSide(cx, cy), P = part(cx, cy, r < 0 ? 0 : r, sh);
+          P(0, 0.5, -0.26, 0.96, 1, 0.42, 0x4a3018);
+          [0.2, 0.5, 0.8].forEach((py, row) => { for (let i = 0; i < 5; i++) { const bh = 0.15 + rnd(cx * 5 + i, cy + row, 63) * 0.08; P(-0.36 + i * 0.18, py - 0.11 + bh / 2, -0.04, 0.14, bh, 0.05, BOOKS[Math.floor(rnd(cx + i, cy * 3 + row, 64) * 6)]); } P(0, py - 0.125, -0.04, 0.9, 0.025, 0.06, 0x6b4826); });
+        });
+      } else if ((rect && Math.min(w, h) === 1 && comp.length >= 3 && nearKind(x0, y0, x0 + w - 1, y0 + h - 1, DESKS)) || !rect) {
+        comp.forEach(([cx, cy]) => { // стойка: сплошной прилавок, клетки сливаются
+          const n = D4.map(([dx, dy]) => (comp.some(([a, b]) => a === cx + dx && b === cy + dy) ? 0 : 1)), k = S.shade(`${cx}_${cy}`), s1 = k >= 0 ? k : sh;
+          const bx0 = cx + 0.15 * n[3], bx1 = cx + 1 - 0.15 * n[1], bz0 = cy + 0.15 * n[0], bz1 = cy + 1 - 0.15 * n[2];
+          pbox(B, (bx0 + bx1) / 2, 0.25, (bz0 + bz1) / 2, bx1 - bx0, 0.5, bz1 - bz0, C3(0x5a3a1c, s1));
+          pbox(B, (bx0 + bx1) / 2, 0.53, (bz0 + bz1) / 2, bx1 - bx0 + 0.14 * (n[3] + n[1]), 0.06, bz1 - bz0 + 0.14 * (n[0] + n[2]), C3(0x8a5a2e, s1));
+          things(cx, cy, 1, 1, 0.56, s1, rnd(cx, cy, 65) < 0.6 ? 1 : 2);
+        });
+      } else { // стол: столешница на ножках, на ней посуда
+        pbox(B, x0 + w / 2, 0.43, y0 + h / 2, w - 0.16, 0.06, h - 0.16, C3(wood, sh));
+        [[0.17, 0.17], [w - 0.17, 0.17], [0.17, h - 0.17], [w - 0.17, h - 0.17]].forEach(([dx, dz]) => pbox(B, x0 + dx, 0.2, y0 + dz, 0.08, 0.4, 0.08, C3(wood, sh * 0.7)));
+        things(x0, y0, w, h, 0.46, sh, Math.round(w * h * (0.8 + rnd(x0, y0, 66) * 1.4)));
+      }
+    });
+    furnMesh = meshOf(B, woodMat);
   }
   const doorGeo = box(0.96, 0.84, 0.1), lockGeo = box(0.12, 0.14, 0.14), jambGeo = box(0.09, 0.9, 0.2);
   const doorTex = (() => {
@@ -440,8 +632,15 @@ export function create(wrap, api) {
   const stickGeo = new THREE.CylinderGeometry(0.022, 0.03, 0.34, 6), cupGeo = new THREE.CylinderGeometry(0.055, 0.03, 0.07, 8), plateGeo = box(0.13, 0.2, 0.05);
   const postGeo = new THREE.CylinderGeometry(0.03, 0.045, 0.75, 6), footGeo = new THREE.CylinderGeometry(0.13, 0.16, 0.05, 8);
   const ironMat = new THREE.MeshStandardMaterial({ color: 0x2a2420, roughness: 0.5, metalness: 0.8 }), stickMat = new THREE.MeshStandardMaterial({ color: 0x4a3220, roughness: 0.9 });
-  const flameMat = new THREE.SpriteMaterial({ map: glowTex, blending: THREE.AdditiveBlending, depthWrite: false, toneMapped: false });
-  const coreMat = new THREE.SpriteMaterial({ map: glowTex, color: 0xfff4d0, blending: THREE.AdditiveBlending, depthWrite: false, toneMapped: false });
+  // Пламя: язычок (широкий снизу, острый сверху) и слабый ореол вокруг — факел, а не фонарь
+  const tongueTex = (() => {
+    const c = document.createElement('canvas'); c.width = 64; c.height = 96; const g = c.getContext('2d');
+    const shape = (w, h, col, blur) => { g.filter = `blur(${blur}px)`; g.fillStyle = col; g.beginPath(); g.moveTo(32, 88 - h); g.bezierCurveTo(32 + w * 0.8, 88 - h * 0.5, 32 + w, 88 - h * 0.12, 32, 88); g.bezierCurveTo(32 - w, 88 - h * 0.12, 32 - w * 0.8, 88 - h * 0.5, 32, 88 - h); g.fill(); };
+    shape(22, 80, 'rgba(255,96,20,.8)', 4); shape(15, 58, 'rgba(255,170,50,.95)', 2.5); shape(8, 32, 'rgba(255,240,190,1)', 1.5);
+    return new THREE.CanvasTexture(c);
+  })();
+  const flameMat = new THREE.SpriteMaterial({ map: tongueTex, blending: THREE.AdditiveBlending, depthWrite: false, toneMapped: false });
+  const coreMat = new THREE.SpriteMaterial({ map: glowTex, color: 0xff8a3a, opacity: 0.28, blending: THREE.AdditiveBlending, depthWrite: false, toneMapped: false });
   function buildLamps() {
     const wall = (x, y) => S.map[`${x}_${y}`] === 'wall', inb = (x, y) => x >= 0 && y >= 0 && x < S.w && y < S.h;
     // Где висит каждый источник: у стены — на держателе (сначала дальняя от камеры стена), иначе — на стойке посреди клетки
@@ -457,7 +656,7 @@ export function create(wrap, api) {
     if (sig !== lampSig) {
       lampSig = sig; lampBox.clear();
       const add = (geo, mat, x, y, z) => { const m = new THREE.Mesh(geo, mat); m.position.set(x, y, z); lampBox.add(m); return m; };
-      const flame = (x, y, z) => { const a = new THREE.Sprite(flameMat); a.position.set(x, y, z); a.scale.setScalar(0.5); a.userData.flame = 0.5; const b = new THREE.Sprite(coreMat); b.position.set(x, y - 0.03, z); b.scale.setScalar(0.17); b.userData.flame = 0.17; lampBox.add(a, b); };
+      const flame = (x, y, z) => { const a = new THREE.Sprite(flameMat); a.center.set(0.5, 0.08); a.position.set(x, y - 0.07, z); a.userData.flame = [0.17, 0.27]; const b = new THREE.Sprite(coreMat); b.position.set(x, y, z); b.userData.flame = [0.42, 0.42]; lampBox.add(a, b); };
       S.lights.filter((L) => L.fix).forEach((L) => {
         if (L.dir) {
           const [dx, dy] = L.dir, wx = L.cx + 0.5 + dx * 0.5, wz = L.cy + 0.5 + dy * 0.5;
@@ -477,7 +676,7 @@ export function create(wrap, api) {
     LAMPS.forEach((L, i) => {
       const s = near[i];
       if (!s) { L.intensity = 0; L.userData.base = 0; return; }
-      L.position.set(s.px, s.py, s.pz); L.distance = Math.max(3, s.r * 1.25); L.userData.base = 8 * power; L.userData.seed = s.x * 7 + s.y * 13; L.intensity = L.userData.base;
+      L.position.set(s.px, s.py, s.pz); L.distance = Math.max(3, s.r * 1.25); L.userData.base = 6.5 * power; L.userData.seed = s.x * 7 + s.y * 13; L.intensity = L.userData.base;
     });
   }
   function pull() {
@@ -491,7 +690,8 @@ export function create(wrap, api) {
     hemi.intensity = a.hemi; sun.intensity = a.sun; sun.color.set(a.col);
     SMOKE.dim = S.amb === 'bright' ? 1 : S.amb === 'dim' ? 0.75 : 0.5; // дым не светится в темноте
     if (liquids.water && liquids.water.glint) liquids.water.glint.material.opacity = S.amb === 'bright' ? 0.09 : S.amb === 'dim' ? 0.05 : 0.025;
-    buildProps(); buildDoors(); buildLoot(); buildLamps();
+    if (planRev !== mapRev) { planRev = mapRev; classify(); }
+    buildRocks(); buildFurn(); buildProps(); buildDoors(); buildLoot(); buildLamps();
   }
 
   // ---------- Существа ----------
@@ -592,15 +792,16 @@ export function create(wrap, api) {
   function hit(id, miss) { const T = toks.get(id); if (!T) return; if (miss) T.miss = 0.32; else T.hit = 0.34; kick(500); }
 
   // ---------- Камера ----------
-  const cur = { x: 0, z: 0, d: 0, yaw: 0, ok: false }, tan = Math.tan((FOV * Math.PI) / 360);
+  const cur = { x: 0, z: 0, d: 0, yaw: 0, pitch: PITCH, ok: false }, tan = Math.tan((FOV * Math.PI) / 360);
   function camStep(dt) {
     const v = api.view(), d = v.vh / (CELL * v.zoom) / (2 * tan), k = cur.ok ? 1 - Math.exp(-dt * 16) : 1;
     // Поворот — вокруг точки, на которую смотрит камера; к новому углу идём кратчайшей дугой
     const turn = Math.atan2(Math.sin((v.yaw || 0) - cur.yaw), Math.cos((v.yaw || 0) - cur.yaw));
-    const moved = Math.abs(v.cx - cur.x) + Math.abs(v.cy - cur.z) + Math.abs(d - cur.d) / Math.max(1, d) + Math.abs(turn) > 0.002;
-    cur.x += (v.cx - cur.x) * k; cur.z += (v.cy - cur.z) * k; cur.d += (d - cur.d) * k; cur.yaw += turn * k; cur.ok = true;
-    const flat = cur.d * Math.cos(PITCH);
-    camera.position.set(cur.x + flat * Math.sin(cur.yaw), cur.d * Math.sin(PITCH), cur.z + flat * Math.cos(cur.yaw)); camera.lookAt(cur.x, 0, cur.z);
+    const tilt = (v.pitch || PITCH) - cur.pitch;
+    const moved = Math.abs(v.cx - cur.x) + Math.abs(v.cy - cur.z) + Math.abs(d - cur.d) / Math.max(1, d) + Math.abs(turn) + Math.abs(tilt) > 0.002;
+    cur.x += (v.cx - cur.x) * k; cur.z += (v.cy - cur.z) * k; cur.d += (d - cur.d) * k; cur.yaw += turn * k; cur.pitch += tilt * k; cur.ok = true;
+    const flat = cur.d * Math.cos(cur.pitch);
+    camera.position.set(cur.x + flat * Math.sin(cur.yaw), cur.d * Math.sin(cur.pitch), cur.z + flat * Math.cos(cur.yaw)); camera.lookAt(cur.x, 0, cur.z);
     if (shake > 0) { const q = shake * cur.d * 0.012; camera.position.x += rr(-q, q); camera.position.y += rr(-q, q); camera.position.z += rr(-q, q); } // встряска от взрыва
     camera.far = cur.d * 4 + 100; camera.updateProjectionMatrix(); camera.updateMatrixWorld();
     scene.fog.near = cur.d * 1.15; scene.fog.far = cur.d * 3.4; // даль тонет в дымке
@@ -880,7 +1081,7 @@ export function create(wrap, api) {
     });
     waterTime.value = time; glintTex.offset.set(time * 0.016, time * 0.011); lavaTex.offset.set(time * 0.012, -time * 0.008);
     LAMPS.forEach((L) => { if (L.userData.base) L.intensity = L.userData.base * (0.88 + 0.12 * Math.sin(time * 9 + L.userData.seed) * Math.sin(time * 5.3 + L.userData.seed * 2)); });
-    lampBox.children.forEach((o) => { if (o.userData.flame) o.scale.setScalar(o.userData.flame * (0.92 + 0.14 * Math.sin(time * 11 + o.position.x * 5) * Math.sin(time * 7.3))); });
+    lampBox.children.forEach((o) => { const f = o.userData.flame; if (!f) return; const ph = o.position.x * 5 + o.position.z * 3, k = Math.sin(time * 11 + ph) * Math.sin(time * 7.3 + ph); o.scale.set(f[0] * (1 - 0.1 * k), f[1] * (1 + 0.16 * k + 0.06 * Math.sin(time * 23 + ph)), 1); });
     if (zoneStale) pullZones();
     emitZones(dt); runFx(dt); SPARK.update(dt); SMOKE.update(dt);
     if (shake > 0) shake = Math.max(0, shake - dt * 1.3);
@@ -915,7 +1116,7 @@ export function create(wrap, api) {
     c.addPass(new B.RenderPass(scene, camera)); c.addPass(new C.UnrealBloomPass(new THREE.Vector2(sz.x / 2, sz.y / 2), BLOOM[0], BLOOM[1], BLOOM[2])); c.addPass(new D.OutputPass());
     composer = c; glowK = 1;
     // Частицы теперь пишутся в линейный буфер; источники огня — ярче порога свечения
-    SPARK.mat.uniforms.lin.value = SMOKE.mat.uniforms.lin.value = 1; flameMat.color.setScalar(2.4); coreMat.color.setRGB(3, 2.8, 2.4);
+    SPARK.mat.uniforms.lin.value = SMOKE.mat.uniforms.lin.value = 1; flameMat.color.setScalar(1.7);
     if (liquids.lava && liquids.lava.mesh) liquids.lava.mesh.material.color.setScalar(1.9);
     resize(); kick(600);
   }).catch(() => { /* без свечения — как раньше */ });
