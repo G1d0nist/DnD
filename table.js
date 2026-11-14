@@ -715,7 +715,7 @@ function drawTerrain() {
   // Сундуки: закрытый, открытый; мастер видит замок и ловушку
   Object.values(game.chests || {}).forEach((C) => {
     g.font = '22px system-ui'; if (!g3on) g.fillText(C.o ? '📭' : '🧰', C.x * CELL + 8, C.y * CELL + 29);
-    if (isDM() && !C.o) { g.font = '11px system-ui'; if (+C.lock && !C.lk) g.fillText('🔒', C.x * CELL + 1, C.y * CELL + 12); if (C.trap && !C.toff) g.fillText('⚠', C.x * CELL + CELL - 12, C.y * CELL + 12); }
+    if (isDM() && !C.o) { g.font = '11px system-ui'; if (+C.lock && !C.lk && !g3on) g.fillText('🔒', C.x * CELL + 1, C.y * CELL + 12); /* в объёмном виде замок висит на самом сундуке */ if (C.trap && !C.toff) g.fillText('⚠', C.x * CELL + CELL - 12, C.y * CELL + 12); }
   });
   // Брошенные вещи — маленький мешок в углу клетки (под токеном тоже видно)
   if (!g3on) Object.values(game.drops || {}).forEach((D) => { g.font = '15px system-ui'; g.fillText('🎒', D.x * CELL + CELL - 18, D.y * CELL + CELL - 4); });
@@ -8577,7 +8577,7 @@ function g3State() {
     ...Object.values(game.tokens || {}).filter((t) => t.lt && !(t.hidden && !isDM()) && !fogHides(t)).map((t) => ({ x: t.x + (t.size || 1) / 2, y: t.y + (t.size || 1) / 2, r: ((+t.lt.b || 0) + (+t.lt.d || 0)) / FT() }))];
   // rocky — каменная земля под открытым небом (горы, перевал), а не плиты подземелья; rooms — что за комнаты (кровати, стойки)
   const gen = (game.meta || {}).gen || {}, rocky = (game.meta || {}).ground === 'stone' && (gen.tpl ? ['mountains', 'pass', 'volcano'].includes(gen.tpl) : (f.amb || 'bright') !== 'dark');
-  return { rocky, rooms: gen.rooms || [], tpl: gen.tpl || '', flights: gen.flights || [], w: W(), h: H(), bg: !!bgImg, ground: (game.meta || {}).ground || '', map: bgImg ? {} : game.map || {}, doors: game.doors || {}, chests: Object.values(game.chests || {}).map((C) => ({ x: C.x, y: C.y, o: !!C.o })), drops: Object.values(game.drops || {}).map((D) => ({ x: D.x, y: D.y })), lights: lights.filter((L) => cellShade(`${Math.floor(L.x)}_${Math.floor(L.y)}`) >= 0), amb, shade: cellShade };
+  return { rocky, rooms: gen.rooms || [], tpl: gen.tpl || '', flights: gen.flights || [], w: W(), h: H(), bg: !!bgImg, ground: (game.meta || {}).ground || '', map: bgImg ? {} : game.map || {}, doors: game.doors || {}, chests: Object.values(game.chests || {}).map((C) => ({ x: C.x, y: C.y, o: !!C.o, l: +C.lock && !C.lk ? 1 : 0 })), drops: Object.values(game.drops || {}).map((D) => ({ x: D.x, y: D.y })), lights: lights.filter((L) => cellShade(`${Math.floor(L.x)}_${Math.floor(L.y)}`) >= 0), amb, shade: cellShade };
 }
 // Области, которые держатся на поле, и стены заклинаний — для частиц и объёмных стен; только видимые клетки
 function g3Zones() {

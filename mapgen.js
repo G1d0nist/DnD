@@ -76,6 +76,8 @@ const MAPGEN = (() => {
       const pc = i ? c : null;
       drift = Math.max(-1, Math.min(1, drift + (R.f() - 0.5) * 0.8));
       c = Math.max(1, Math.min(span - width - 1, Math.round(c + drift)));
+      // Ручей пересекает дорогу прямо: пока под ним дорога, вбок он не уходит — мост выходит коротким и ровным, без лишних кусков
+      if (t === 'water' && pc != null) { for (let j = 0; j < width; j++) if (['road', 'bridge'].includes(G.get(vertical ? pc + j : i, vertical ? i : pc + j))) { c = pc; drift = 0; break; } }
       path.push(c);
       // Сдвиг вбок закрывается клеткой-перемычкой (иначе ручей в одну клетку рвётся по диагонали);
       // дорога через воду и вода через дорогу — мост
@@ -673,7 +675,7 @@ const MAPGEN = (() => {
         for (let x = 0; x < G.w; x++) if (G.get(x, y) === 'water') xs.push(x);
         if (!xs.length) continue;
         const a = xs[0], b = xs.filter((x, i) => i === 0 || x - xs[i - 1] === 1).pop();
-        for (let x = Math.max(0, a - 2); x <= Math.min(G.w - 1, b + 2); x++) G.set(x, y, 'bridge');
+        for (let x = a; x <= b; x++) G.set(x, y, 'bridge'); // только над водой: концы настила сами ложатся на берег
         break;
       }
     }
@@ -1436,6 +1438,14 @@ const MAPGEN = (() => {
     out.cells = {};
     for (let y = 0; y < h; y++) for (let x = 0; x < w; x++) if (G.g[y][x]) out.cells[`${x}_${y}`] = G.g[y][x];
     Object.keys(out.doors).forEach((k) => { if (out.cells[k] === 'wall') delete out.doors[k]; });
+    // Мост, под которым и рядом с которым нет ни воды, ни пропасти, — просто дорога
+    { const hz = (k) => ['water', 'bog', 'lava', 'chasm'].includes(out.cells[k]), seen = new Set();
+      Object.keys(out.cells).forEach((k0) => {
+        if (out.cells[k0] !== 'bridge' || seen.has(k0)) return;
+        const comp = [], q = [k0]; let wet = false; seen.add(k0);
+        while (q.length) { const k = q.pop(), [x, y] = k.split('_').map(Number); comp.push(k); [[1, 0], [-1, 0], [0, 1], [0, -1]].forEach(([dx, dy]) => { const n = `${x + dx}_${y + dy}`; if (hz(n) || x + dx < 0 || y + dy < 0 || x + dx >= w || y + dy >= h) wet = true; else if (out.cells[n] === 'bridge' && !seen.has(n)) { seen.add(n); q.push(n); } }); }
+        if (!wet) comp.forEach((k) => { out.cells[k] = 'road'; });
+      }); }
     // Две двери подряд в одном проходе — вторая лишняя (двустворчатые ворота поперёк прохода остаются)
     Object.keys(out.doors).forEach((k) => {
       if (!out.doors[k]) return;
