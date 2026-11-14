@@ -119,7 +119,40 @@ export function create(wrap, api) {
   const firTex = foliage(false), broadTex = foliage(true);
   const firMat = new THREE.MeshStandardMaterial({ map: firTex, bumpMap: firTex, bumpScale: 2, roughness: 1 });
   const leafMat = new THREE.MeshStandardMaterial({ map: broadTex, bumpMap: broadTex, bumpScale: 2.5, roughness: 1 });
-  const barkMat = new THREE.MeshStandardMaterial({ map: noise, roughness: 1 });
+  // Кора. Высота рельефа считается шумом, вытянутым вдоль ствола: плиты коры и глубокие трещины между ними. Из неё получаются
+  // три бесшовные текстуры: цвет (в трещинах темно), карта нормалей (объём трещин под светом) и карта шероховатости (гребни чуть глаже)
+  const bark = (() => {
+    const N = 256, R = mulberry(57), L = [0, 1, 2, 3].map(() => Float32Array.from({ length: 4096 }, () => R()));
+    const vn = (l, x, y, fx, fy) => { x *= fx; y *= fy; const xi = Math.floor(x), yi = Math.floor(y), tx = x - xi, ty = y - yi, sx = tx * tx * (3 - 2 * tx), sy = ty * ty * (3 - 2 * ty), at = (a, b) => L[l][(b % fy) * 64 + (a % fx)]; return (at(xi, yi) * (1 - sx) + at(xi + 1, yi) * sx) * (1 - sy) + (at(xi, yi + 1) * (1 - sx) + at(xi + 1, yi + 1) * sx) * sy; };
+    const H = new Float32Array(N * N), h = (i, j) => H[((j + N) % N) * N + ((i + N) % N)];
+    for (let j = 0; j < N; j++) for (let i = 0; i < N; i++) {
+      const v = j / N, u0 = i / N, u = (((u0 + (vn(3, u0, v, 4, 3) - 0.5) * 0.09) % 1) + 1) % 1;
+      const c1 = Math.min(1, Math.abs(2 * vn(0, u, v, 18, 3) - 1) / 0.13), c2 = Math.min(1, Math.abs(2 * vn(1, u, v, 36, 7) - 1) / 0.16);
+      H[j * N + i] = Math.min(c1 * c1 * (3 - 2 * c1), 0.5 + 0.5 * c2) * (0.72 + 0.28 * vn(2, u0, v, 56, 10));
+    }
+    const mk = (fn) => { const c = document.createElement('canvas'); c.width = c.height = N; const g = c.getContext('2d'), d = g.createImageData(N, N); for (let j = 0; j < N; j++) for (let i = 0; i < N; i++) { const p = fn(i, j), q = (j * N + i) * 4; d.data[q] = p[0]; d.data[q + 1] = p[1]; d.data[q + 2] = p[2]; d.data[q + 3] = 255; } g.putImageData(d, 0, 0); const t = new THREE.CanvasTexture(c); t.wrapS = t.wrapT = THREE.RepeatWrapping; return t; };
+    const map = mk((i, j) => { const k = h(i, j), g2 = 0.9 + 0.2 * vn(2, i / N, j / N, 32, 32); return [(40 + 150 * k) * g2, (28 + 128 * k) * g2, (20 + 108 * k) * g2]; }); map.colorSpace = THREE.SRGBColorSpace;
+    const normal = mk((i, j) => { const dx = (h(i + 1, j) - h(i - 1, j)) * 3.4, dy = (h(i, j + 1) - h(i, j - 1)) * 3.4, l = Math.hypot(dx, dy, 1); return [((-dx / l) * 0.5 + 0.5) * 255, ((dy / l) * 0.5 + 0.5) * 255, ((1 / l) * 0.5 + 0.5) * 255]; });
+    const rough = mk((i, j) => { const k = h(i, j); return [0, (1 - 0.32 * k * k) * 255, 0]; });
+    return { map, normal, rough };
+  })();
+  const barkOpts = { map: bark.map, normalMap: bark.normal, normalScale: new THREE.Vector2(1.7, 1.7), roughnessMap: bark.rough, roughness: 1 };
+  const barkMat = new THREE.MeshStandardMaterial(barkOpts), logMat = new THREE.MeshStandardMaterial({ ...barkOpts, vertexColors: true });
+  // Пальма: листья-перья (каждый лист — согнутая вдоль жилки полоса, поднимается и свисает)
+  const palmMat = new THREE.MeshStandardMaterial({ map: firTex, roughness: 1, side: THREE.DoubleSide, emissive: 0x1c3a12 });
+  const fronds = (() => {
+    const pos = [], uv = [], NF = 9, SEG = 5;
+    for (let f = 0; f < NF; f++) {
+      const a = (f / NF) * 6.2832 + (f % 2) * 0.2, len = 0.72 + (f % 3) * 0.09, lift = 0.16 + (f % 2) * 0.1, ca = Math.cos(a), sa = Math.sin(a);
+      const P = (s, side) => { const d = len * s, y = lift * Math.sin(Math.PI * Math.min(1, s * 1.15)) - 0.62 * s * s - (side ? 0.035 : 0), w = side * 0.13 * Math.pow(Math.sin(Math.PI * (0.08 + 0.92 * s)), 0.6); return [ca * d - sa * w, y, sa * d + ca * w]; };
+      for (let i = 0; i < SEG; i++) for (const side of [-1, 1]) {
+        const s0 = i / SEG, s1 = (i + 1) / SEG, A = P(s0, 0), B1 = P(s1, 0), C1 = P(s1, side), D1 = P(s0, side);
+        [A, B1, C1, A, C1, D1].forEach((p) => pos.push(p[0], p[1], p[2]));
+        [[s0, 0.5], [s1, 0.5], [s1, 0.5 + side * 0.5], [s0, 0.5], [s1, 0.5 + side * 0.5], [s0, 0.5 + side * 0.5]].forEach((t) => uv.push(t[0] * 2, t[1]));
+      }
+    }
+    const g = new THREE.BufferGeometry(); g.setAttribute('position', new THREE.Float32BufferAttribute(pos, 3)); g.setAttribute('uv', new THREE.Float32BufferAttribute(uv, 2)); g.computeVertexNormals(); return g;
+  })();
   // Ярус ели: конус с зубчатым краем (лапы); крона лиственного: неровный шар
   const firTier = (r, h) => { const g = new THREE.ConeGeometry(r, h, 14, 1, true), p = g.attributes.position; for (let i = 0; i < p.count; i++) if (p.getY(i) < 0) { const k = (Math.round(Math.atan2(p.getZ(i), p.getX(i)) / (Math.PI / 7)) & 1) ? 0.7 : 1.06; p.setX(i, p.getX(i) * k); p.setZ(i, p.getZ(i) * k); } g.computeVertexNormals(); return g; };
   const blob = (r, seed = 1) => { const g = new THREE.SphereGeometry(r, 12, 9), p = g.attributes.position; for (let i = 0; i < p.count; i++) { const x = p.getX(i), y = p.getY(i), z = p.getZ(i), v = Math.sin(x * 31.7 * seed + y * 47.3 + z * 23.1) * 43758.5453, k = 0.86 + (v - Math.floor(v)) * 0.3; p.setXYZ(i, x * k, y * k * 0.88, z * k); } g.computeVertexNormals(); return g; };
@@ -224,20 +257,52 @@ export function create(wrap, api) {
   // Часть препятствия: геометрия, материал, цвет, высота центра, сдвиг в клетке, v — доля случайного разброса размера
   // Валун: гранёный камень неровной формы (вершины сдвинуты, грани плоские)
   const crag = (r, seed) => { const g = new THREE.IcosahedronGeometry(r, 1), p = g.attributes.position; for (let i = 0; i < p.count; i++) { const x = p.getX(i), y = p.getY(i), z = p.getZ(i), v = Math.sin(Math.round(x * 40) * 12.9 + Math.round(y * 40) * 78.2 + Math.round(z * 40) * 37.7 + seed) * 43758.5453, k = 0.74 + (v - Math.floor(v)) * 0.46; p.setXYZ(i, x * k, y * k, z * k); } g.computeVertexNormals(); return g; };
+  // Обкатанный водой валун (берег моря): гладкий, со светлым гранитом и тёмными потёками
+  const smooth = (r, seed) => { const g = new THREE.SphereGeometry(r, 18, 12), p = g.attributes.position; for (let i = 0; i < p.count; i++) { const x = p.getX(i), y = p.getY(i), z = p.getZ(i), k = 1 + 0.16 * Math.sin(x * 5.1 + seed * 1.7) * Math.cos(z * 4.3 + seed) + 0.1 * Math.sin(y * 6.3 + x * 3.1 + seed * 2.3); p.setXYZ(i, x * k, Math.max(-r * 0.45, y * k), z * k); } g.computeVertexNormals(); return g; };
+  const graniteTex = grey((g, R) => {
+    g.fillStyle = '#d6d6d6'; g.fillRect(0, 0, 256, 256);
+    for (let i = 0; i < 2600; i++) { const v = R() < 0.5 ? 60 : 255; g.fillStyle = `rgba(${v},${v},${v},${0.05 + R() * 0.1})`; g.fillRect(R() * 256, R() * 256, 1 + R() * 2.5, 1 + R() * 2.5); }
+    for (let i = 0; i < 12; i++) { const x = R() * 256, w = 6 + R() * 22, y0 = 40 + R() * 90, gr = g.createLinearGradient(0, y0, 0, 256); gr.addColorStop(0, "rgba(0,0,0,0)"); gr.addColorStop(0.3, `rgba(0,0,0,${0.05 + R() * 0.1})`); gr.addColorStop(1, 'rgba(0,0,0,0)'); g.fillStyle = gr; g.fillRect(x, y0, w, 256 - y0); }
+  });
+  const boulderMat = new THREE.MeshStandardMaterial({ map: graniteTex, roughness: 0.72 });
+  // Ящик (доски, рама, раскос) и бочка (клёпки, обручи)
+  const crateMat = new THREE.MeshStandardMaterial({ roughness: 0.85, map: grey((g) => {
+    g.fillStyle = '#c4c4c4'; g.fillRect(0, 0, 256, 256);
+    for (let i = 0; i < 5; i++) { g.fillStyle = `rgba(${i % 2 ? 0 : 255},${i % 2 ? 0 : 255},${i % 2 ? 0 : 255},.07)`; g.fillRect(0, i * 51.2, 256, 51.2); g.fillStyle = 'rgba(0,0,0,.45)'; g.fillRect(0, i * 51.2, 256, 3); }
+    g.strokeStyle = '#8a8a8a'; g.lineWidth = 26; g.beginPath(); g.moveTo(20, 236); g.lineTo(236, 20); g.stroke();
+    g.strokeStyle = '#9c9c9c'; g.lineWidth = 30; g.strokeRect(15, 15, 226, 226);
+    g.strokeStyle = 'rgba(0,0,0,.45)'; g.lineWidth = 2; g.strokeRect(30, 30, 196, 196); g.strokeRect(1, 1, 254, 254);
+    [[15, 15], [241, 15], [15, 241], [241, 241]].forEach(([x, y]) => { g.fillStyle = '#3a3a3a'; g.beginPath(); g.arc(x, y, 5, 0, 6.283); g.fill(); });
+  }) });
+  const barrelMat = new THREE.MeshStandardMaterial({ roughness: 0.8, map: grey((g, R) => {
+    g.fillStyle = '#c8c8c8'; g.fillRect(0, 0, 256, 256);
+    for (let x = 0; x < 256; x += 21.33) { const v = R() < 0.5 ? 0 : 255; g.fillStyle = `rgba(${v},${v},${v},${0.04 + R() * 0.1})`; g.fillRect(x, 0, 21.33, 256); g.fillStyle = 'rgba(0,0,0,.5)'; g.fillRect(x, 0, 2, 256); }
+  }) });
+  const hoopMat = new THREE.MeshStandardMaterial({ color: 0x4a4640, roughness: 0.5, metalness: 0.7 });
+  const barrelG = new THREE.LatheGeometry([[0.13, 0], [0.165, 0.1], [0.18, 0.23], [0.165, 0.36], [0.13, 0.46]].map(([x, y]) => new THREE.Vector2(x, y)), 14);
   const hearthMat = new THREE.MeshStandardMaterial({ map: noise, roughness: 0.95 }), emberMat = new THREE.MeshBasicMaterial({ color: 0xff7a22, toneMapped: false });
   const PROPS = {
     rock: [{ g: crag(0.5, 1), m: cragMat, c: 0x8d867c, y: 0.26, s: [0.95, 0.9, 0.95], v: 0.2, spin: true }, { g: crag(0.2, 2), m: cragMat, c: 0x7d766c, y: 0.1, dx: 0.3, dz: 0.28, v: 0.3, spin: true }],
     // Очаг или печь в доме: каменная кладка с топкой и трубой
     hearth: [{ g: box(0.94, 0.6, 0.94), m: hearthMat, c: 0x9a8c7c, y: 0.3 }, { g: box(0.46, 0.5, 0.46), m: hearthMat, c: 0x857869, y: 0.85 },
       { g: box(0.5, 0.24, 0.96), m: emberMat, c: 0xffffff, y: 0.2, glow: true }, { g: box(0.96, 0.24, 0.5), m: emberMat, c: 0xffffff, y: 0.2, glow: true }],
-    tree: [{ g: new THREE.CylinderGeometry(0.06, 0.09, 0.5, 7), m: barkMat, c: 0x6a4a30, y: 0.25 },
+    tree: [{ g: new THREE.CylinderGeometry(0.06, 0.09, 0.5, 7), m: barkMat, c: 0xb8a48c, y: 0.25 },
       { g: firTier(0.5, 0.62), m: firMat, c: 0x2f6e2c, y: 0.56, v: 0.15, spin: true }, { g: firTier(0.4, 0.56), m: firMat, c: 0x357632, y: 0.9, v: 0.15, spin: true },
       { g: firTier(0.3, 0.5), m: firMat, c: 0x3d8038, y: 1.22, v: 0.15, spin: true }, { g: firTier(0.18, 0.44), m: firMat, c: 0x488c42, y: 1.52, v: 0.15, spin: true }],
-    tree2: [{ g: new THREE.CylinderGeometry(0.07, 0.1, 0.75, 7), m: barkMat, c: 0x6a4a30, y: 0.37 },
+    tree2: [{ g: new THREE.CylinderGeometry(0.07, 0.1, 0.75, 7), m: barkMat, c: 0xb8a48c, y: 0.37 },
       { g: blob(0.42), m: leafMat, c: 0x4a8a34, y: 1.05, v: 0.15, spin: true }, { g: blob(0.3, 2), m: leafMat, c: 0x3f7c2c, y: 0.86, dx: -0.24, dz: 0.1, v: 0.15, spin: true },
       { g: blob(0.3, 3), m: leafMat, c: 0x55963c, y: 0.92, dx: 0.22, dz: -0.12, v: 0.15, spin: true }, { g: blob(0.25, 4), m: leafMat, c: 0x5fa044, y: 1.36, dx: 0.04, dz: 0.08, v: 0.15, spin: true }],
-    crate: [{ g: box(0.5, 0.5, 0.5), m: plainMat, c: 0x8a5a2b, y: 0.25, dx: -0.16, dz: 0.14 },
-      { g: new THREE.CylinderGeometry(0.17, 0.17, 0.46, 12), m: plainMat, c: 0x6e4a26, y: 0.23, dx: 0.24, dz: -0.2 }],
+    // Ящики и бочка: набор поворачивается целиком, часть предметов есть не в каждой клетке
+    crate: [{ g: box(0.5, 0.5, 0.5), m: crateMat, c: 0xb08650, y: 0.25, dx: -0.15, dz: 0.12 }, { g: box(0.3, 0.3, 0.3), m: crateMat, c: 0x9a7444, y: 0.65, dx: -0.12, dz: 0.09, skip: 0.55 },
+      { g: barrelG, m: barrelMat, c: 0xa87c48, y: 0, dx: 0.24, dz: -0.2 }, { g: new THREE.CylinderGeometry(0.128, 0.128, 0.02, 14), m: barrelMat, c: 0x8a6238, y: 0.45, dx: 0.24, dz: -0.2 },
+      { g: new THREE.CylinderGeometry(0.171, 0.171, 0.035, 14, 1, true), m: hoopMat, c: 0xffffff, y: 0.11, dx: 0.24, dz: -0.2 }, { g: new THREE.CylinderGeometry(0.171, 0.171, 0.035, 14, 1, true), m: hoopMat, c: 0xffffff, y: 0.35, dx: 0.24, dz: -0.2 },
+      { g: ico(0.16), m: plainMat, c: 0xb8a070, y: 0.1, dx: 0.12, dz: 0.3, s: [1, 0.75, 1], skip: 0.5 }],
+    // Пальма (пустыня, пляж): изогнутый ствол из пяти колен, крона из перьев, кокосы
+    palm: [...[0, 1, 2, 3, 4].map((i) => { const t = (i + 0.5) / 5; return { g: new THREE.CylinderGeometry(0.072 - i * 0.008, 0.082 - i * 0.008, 0.34, 7).rotateZ(-Math.atan((0.64 * t) / 1.5)), m: barkMat, c: 0xc8b494, y: 1.5 * t, dx: 0.32 * t * t }; }),
+      { g: fronds, m: palmMat, c: 0x86c858, y: 1.53, dx: 0.32 }, { g: new THREE.SphereGeometry(0.06, 8, 6), m: plainMat, c: 0x4a3420, y: 1.43, dx: 0.27, dz: 0.05 }, { g: new THREE.SphereGeometry(0.055, 8, 6), m: plainMat, c: 0x55402a, y: 1.41, dx: 0.36, dz: -0.05 }],
+    // Валуны у моря: один крупный и, бывает, пара поменьше; в глубине скопления — выше
+    boulder: [{ g: smooth(0.5, 1), m: boulderMat, c: 0xb6a38c, y: 0.3, s: [1.15, 0.85, 1.15], v: 0.3, vi: 1, jit: 0.25, spin: true }, { g: smooth(0.5, 2), m: boulderMat, c: 0xa39280, y: 0.2, s: [0.7, 0.6, 0.7], v: 0.35, vi: 1, jit: 0.7, skip: 0.35, spin: true },
+      { g: smooth(0.5, 3), m: boulderMat, c: 0xc2b29c, y: 0.12, s: [0.4, 0.35, 0.4], v: 0.4, vi: 1, jit: 0.8, skip: 0.5, spin: true }],
     // Надгробия разного вида (выбор — в buildProps): плита с круглым верхом, крест, обелиск, старый покосившийся камень; перед каждым — холмик
     grave: [{ g: box(0.5, 0.07, 0.22), m: cragMat, c: 0x77777c, y: 0.035, dz: -0.22 }, { g: box(0.4, 0.4, 0.11), m: cragMat, c: 0x9a9aa2, y: 0.27, dz: -0.22 },
       { g: new THREE.CylinderGeometry(0.2, 0.2, 0.11, 14).rotateX(Math.PI / 2), m: cragMat, c: 0x9a9aa2, y: 0.47, dz: -0.22 }, { g: ico(0.3), m: plainMat, c: 0x4a3a28, y: 0, dz: 0.2, s: [0.75, 0.2, 0.75] }],
@@ -253,8 +318,10 @@ export function create(wrap, api) {
       { g: blob(0.15, 9), m: leafMat, c: 0x4a8636, y: 0.11, v: 0.4, vi: 1, jit: 0.7, skip: 0.6, spin: true }],
     thicket: [{ g: firTier(0.26, 0.5), m: firMat, c: 0x2a5e2a, y: 0.27, dx: -0.2, dz: -0.18, v: 0.25, spin: true },
       { g: blob(0.24, 7), m: leafMat, c: 0x356e30, y: 0.2, dx: 0.2, dz: -0.05, v: 0.25, spin: true }, { g: blob(0.2, 8), m: leafMat, c: 0x2c6228, y: 0.15, dx: -0.03, dz: 0.24, v: 0.2, spin: true }],
-    rubble: [{ g: ico(0.17), m: stoneMat, c: 0x8a8274, y: 0.1, dx: -0.2, dz: 0.16, s: [1, 0.7, 1], v: 0.3, spin: true }, { g: ico(0.13), m: stoneMat, c: 0x7a7366, y: 0.08, dx: 0.18, dz: -0.2, s: [1, 0.7, 1], v: 0.3, spin: true },
-      { g: ico(0.1), m: stoneMat, c: 0x968d7e, y: 0.06, dx: 0.22, dz: 0.24, s: [1, 0.7, 1], v: 0.3, spin: true }],
+    // Завал: гранёные обломки разного размера, набросанные как попало (в каждой клетке свой набор)
+    rubble: [{ g: crag(0.17, 5), m: cragMat, c: 0x8a8274, y: 0.09, s: [1, 0.7, 1], v: 0.4, vi: 1, jit: 0.5, spin: true }, { g: crag(0.12, 6), m: cragMat, c: 0x7a7366, y: 0.07, s: [1, 0.7, 1], v: 0.4, vi: 1, jit: 0.75, skip: 0.2, spin: true },
+      { g: crag(0.09, 7), m: cragMat, c: 0x968d7e, y: 0.05, s: [1, 0.7, 1], v: 0.4, vi: 1, jit: 0.85, skip: 0.3, spin: true }, { g: crag(0.06, 8), m: cragMat, c: 0x857d70, y: 0.035, v: 0.4, vi: 1, jit: 0.85, skip: 0.3, spin: true },
+      { g: crag(0.22, 9), m: cragMat, c: 0x7f786c, y: 0.11, s: [1, 0.65, 1], v: 0.3, vi: 1, jit: 0.4, skip: 0.72, spin: true }],
     snow: [{ g: ico(0.3), m: plainMat, c: 0xe9eef5, y: 0.03, dx: -0.12, dz: 0.1, s: [1.2, 0.35, 1], v: 0.2, spin: true }, { g: ico(0.22), m: plainMat, c: 0xdfe6ef, y: 0.03, dx: 0.22, dz: -0.2, s: [1.2, 0.35, 1], v: 0.2, spin: true }],
     stairs: [0, 1, 2].map((i) => ({ g: box(0.9, 0.1 * (i + 1), 0.3), m: stoneMat, c: 0xa09078, y: 0.05 * (i + 1), dz: 0.3 - i * 0.3 })),
   };
@@ -329,8 +396,8 @@ export function create(wrap, api) {
   // Пятно местности: клетки, раздутые и с неровным краем — чтобы граница не шла по квадратам
   function blot(g, cells, has, s, grow, R) {
     g.fillStyle = g.strokeStyle = '#fff'; g.lineJoin = 'round'; g.lineWidth = grow * 2 * s;
-    cells.forEach(([x, y]) => {
-      g.fillRect(x * s - 0.5, y * s - 0.5, s + 1, s + 1); g.strokeRect(x * s, y * s, s, s);
+    cells.forEach(([x, y, flat]) => {
+      g.fillRect(x * s - 0.5, y * s - 0.5, s + 1, s + 1); if (flat) return; g.strokeRect(x * s, y * s, s, s);
       [[0, -1], [1, 0], [0, 1], [-1, 0]].forEach(([dx, dy]) => {
         if (has(x + dx, y + dy)) return;
         for (let i = 0; i < 6; i++) {
@@ -368,7 +435,7 @@ export function create(wrap, api) {
     PATCH.forEach(([kind, types, grow, rim, rimW, alpha], pi) => {
       let cells = types.flatMap((t) => by[t] || []);
       // Мост над водой — вода идёт и под ним
-      if (LIQ[kind]) cells = cells.concat((by.bridge || []).filter(([x, y]) => [[0, -1], [1, 0], [0, 1], [-1, 0]].some(([dx, dy]) => at(x + dx, y + dy) === kind)));
+      if (LIQ[kind]) cells = cells.concat((by.bridge || []).filter(([x, y]) => [[0, -1], [1, 0], [0, 1], [-1, 0]].some(([dx, dy]) => at(x + dx, y + dy) === kind)).map(([x, y]) => [x, y, 1]));
       const L = LIQ[kind] && (liquids[kind] = liquids[kind] || {});
       if (L && L.mesh) L.mesh.visible = cells.length > 0;
       if (kind === 'lava') lavaGlow = [];
@@ -457,26 +524,36 @@ export function create(wrap, api) {
     // (клетка стены, заслонённая соседней стеной, «не видна» туману войны, хотя её грань у всех на глазах)
     const isWall = (x, y) => S.map[`${x}_${y}`] === 'wall', inb = (x, y) => x >= 0 && y >= 0 && x < S.w && y < S.h;
     const D = [[0, -1], [0, 1], [1, 0], [-1, 0]], plan = [];
+    // Руины (затонувшие в болоте, заброшенная лачуга, остов корабля, разрушенный город): стены обвалились — каждая клетка своей высоты
+    const ruins = S.rooms.filter((r) => r.ruin || r.abandoned || (S.tpl === 'swamp' && r.kind === 'boss' && !Object.keys(S.doors).length));
+    const ruined = (x, y) => S.tpl === 'ruins' || ruins.some((r) => { const m = r.abandoned ? 1 : 5; return x >= r.x - m && y >= r.y - m && x < r.x + r.w + m && y < r.y + r.h + m; });
+    const hOf = (x, y) => (ruined(x, y) ? WALL_H * (0.28 + 0.62 * rnd(x, y, 17)) : WALL_H);
     Object.entries(S.map).forEach(([k, t]) => {
       if (t !== 'wall') return;
       const [x, y] = k.split('_').map(Number), own = S.shade(k);
       const f = D.map(([dx, dy]) => (isWall(x + dx, y + dy) ? -1 : inb(x + dx, y + dy) ? S.shade(`${x + dx}_${y + dy}`) : own));
       let top = own; for (let dy = -1; dy <= 1; dy++) for (let dx = -1; dx <= 1; dx++) if ((dx || dy) && inb(x + dx, y + dy) && !isWall(x + dx, y + dy)) top = Math.max(top, S.shade(`${x + dx}_${y + dy}`));
-      if (top >= 0 || f.some((v) => v >= 0)) plan.push([x, y, f, top]);
+      if (top >= 0 || f.some((v) => v >= 0)) plan.push([x, y, f, top, hOf(x, y)]);
     });
     const sig = JSON.stringify(plan);
     if (sig === wallSig) return; wallSig = sig;
     if (wallMesh) { scene.remove(wallMesh); wallMesh.geometry.dispose(); wallMesh = null; }
     if (!plan.length) return;
-    const pos = [], nor = [], uv = [], col = [], side = [], top = [], Hh = WALL_H;
-    const quad = (v, n, uvs, c, into) => { const i = pos.length / 3; v.forEach((p, j) => { pos.push(...p); nor.push(...n); uv.push(...uvs[j]); col.push(c, c, c); }); into.push(i, i + 1, i + 2, i, i + 2, i + 3); };
-    plan.forEach(([x, y, f, ts]) => {
-      const j = 0.92 + rnd(x, y, 3) * 0.16, u0 = x / 2, u1 = (x + 1) / 2, w0 = y / 2, w1 = (y + 1) / 2, V = 0.5;
-      if (f[0] >= 0) quad([[x + 1, 0, y], [x, 0, y], [x, Hh, y], [x + 1, Hh, y]], [0, 0, -1], [[u1, 0], [u0, 0], [u0, V], [u1, V]], f[0] * j, side);
-      if (f[1] >= 0) quad([[x, 0, y + 1], [x + 1, 0, y + 1], [x + 1, Hh, y + 1], [x, Hh, y + 1]], [0, 0, 1], [[u0, 0], [u1, 0], [u1, V], [u0, V]], f[1] * j, side);
-      if (f[2] >= 0) quad([[x + 1, 0, y + 1], [x + 1, 0, y], [x + 1, Hh, y], [x + 1, Hh, y + 1]], [1, 0, 0], [[w1, 0], [w0, 0], [w0, V], [w1, V]], f[2] * j, side);
-      if (f[3] >= 0) quad([[x, 0, y], [x, 0, y + 1], [x, Hh, y + 1], [x, Hh, y]], [-1, 0, 0], [[w0, 0], [w1, 0], [w1, V], [w0, V]], f[3] * j, side);
-      if (ts >= 0) quad([[x, Hh, y + 1], [x + 1, Hh, y + 1], [x + 1, Hh, y], [x, Hh, y]], [0, 1, 0], [[u0, w1], [u1, w1], [u1, w0], [u0, w0]], ts * j, top);
+    const pos = [], nor = [], uv = [], col = [], side = [], top = [];
+    const quad = (v, n, uvs, c, into, tint) => { const i = pos.length / 3; v.forEach((p, j) => { pos.push(...p); nor.push(...n); uv.push(...uvs[j]); if (tint) col.push(c * tint[0], c * tint[1], c * tint[2]); else col.push(c, c, c); }); into.push(i, i + 1, i + 2, i, i + 2, i + 3); };
+    plan.forEach(([x, y, f, ts, Hh]) => {
+      const j = 0.92 + rnd(x, y, 3) * 0.16, u0 = x / 2, u1 = (x + 1) / 2, w0 = y / 2, w1 = (y + 1) / 2, low = Hh < WALL_H - 0.01;
+      // Грань рисуется от пола, а над более низкой соседней стеной — от её верха
+      D.forEach(([dx, dy], i) => {
+        let b = 0, sh = f[i];
+        if (sh < 0) { const hn = isWall(x + dx, y + dy) ? hOf(x + dx, y + dy) : Hh; if (hn > Hh - 0.02 || ts < 0) return; b = hn; sh = ts; }
+        const V0 = (0.5 * b) / WALL_H, V = (0.5 * Hh) / WALL_H;
+        if (i === 0) quad([[x + 1, b, y], [x, b, y], [x, Hh, y], [x + 1, Hh, y]], [0, 0, -1], [[u1, V0], [u0, V0], [u0, V], [u1, V]], sh * j, side);
+        else if (i === 1) quad([[x, b, y + 1], [x + 1, b, y + 1], [x + 1, Hh, y + 1], [x, Hh, y + 1]], [0, 0, 1], [[u0, V0], [u1, V0], [u1, V], [u0, V]], sh * j, side);
+        else if (i === 2) quad([[x + 1, b, y + 1], [x + 1, b, y], [x + 1, Hh, y], [x + 1, Hh, y + 1]], [1, 0, 0], [[w1, V0], [w0, V0], [w0, V], [w1, V]], sh * j, side);
+        else quad([[x, b, y], [x, b, y + 1], [x, Hh, y + 1], [x, Hh, y]], [-1, 0, 0], [[w0, V0], [w1, V0], [w1, V], [w0, V]], sh * j, side);
+      });
+      if (ts >= 0) quad([[x, Hh, y + 1], [x + 1, Hh, y + 1], [x + 1, Hh, y], [x, Hh, y]], [0, 1, 0], [[u0, w1], [u1, w1], [u1, w0], [u0, w0]], ts * j, low ? side : top, low ? [1.15, 1.25, 1] : null); // обломанный верх — та же кладка, чуть замшелая
     });
     const geo = new THREE.BufferGeometry();
     geo.setAttribute('position', new THREE.Float32BufferAttribute(pos, 3)); geo.setAttribute('normal', new THREE.Float32BufferAttribute(nor, 3));
@@ -487,14 +564,16 @@ export function create(wrap, api) {
   const propBox = new THREE.Group(), doorBox = new THREE.Group(), lampBox = new THREE.Group(); scene.add(propBox, doorBox, lampBox);
   let propSig = '', doorSig = '', lampSig = '', stale = true, S = null;
   const rnd = (x, y, n) => { const v = Math.sin(x * 127.1 + y * 311.7 + n * 74.7) * 43758.5453; return v - Math.floor(v); };
-  const GRAVES = ['grave', 'grave', 'grave2', 'grave2', 'grave3', 'grave4'], RIG = { grave: [0.14, 0.5], grave2: [0.12, 0.5], grave3: [0.05, 0.7], grave4: [0.55, 0.9] }; // наклон и поворот
+  const GRAVES = ['grave', 'grave', 'grave2', 'grave2', 'grave3', 'grave4'], RIG = { grave: [0.14, 0.5], grave2: [0.12, 0.5], grave3: [0.05, 0.7], grave4: [0.55, 0.9], crate: [0, 6.28], palm: [0.1, 6.28, 0.16] }; // наклон, поворот, разброс размера
   function buildProps() {
     const cells = Object.entries(S.map).filter(([k, t]) => PROPS[t] && S.shade(k) >= 0 && !massif.has(k) && !flightAt.has(k));
     const sig = `${S.w}x${S.h}|${mapRev}|` + cells.map(([k, t]) => `${k}${t}${S.shade(k)}`).join(',');
     if (sig === propSig) return; propSig = sig;
     propBox.children.slice().forEach((m) => { propBox.remove(m); m.dispose(); });
     const leafy = !['snow', 'sand'].includes(S.ground), by = {};
-    cells.forEach(([k, t]) => { const [x, y] = k.split('_').map(Number), v = t === 'tree' && leafy && rnd(x, y, 5) > 0.6 ? 'tree2' : t === 'rock' && hearth.has(k) ? 'hearth' : t === 'grave' ? GRAVES[Math.floor(rnd(x, y, 6) * GRAVES.length)] : t; (by[v] = by[v] || []).push(k); });
+    // Пальмы — в пустыне, а на побережье — у самого песка
+    const palmy = (x, y) => S.ground === 'sand' || (['coast', 'desert'].includes(S.tpl) && [-1, 0, 1].some((dy) => [-1, 0, 1].some((dx) => S.map[`${x + dx}_${y + dy}`] === 'sand')));
+    cells.forEach(([k, t]) => { const [x, y] = k.split('_').map(Number), v = t === 'tree' ? (palmy(x, y) ? 'palm' : leafy && rnd(x, y, 5) > 0.6 ? 'tree2' : 'tree') : t === 'rock' ? (hearth.has(k) ? 'hearth' : bould.has(k) ? 'boulder' : 'rock') : t === 'grave' ? GRAVES[Math.floor(rnd(x, y, 6) * GRAVES.length)] : t; (by[v] = by[v] || []).push(k); });
     const GM = new THREE.Matrix4(), ZERO = new THREE.Vector3(), ONE = new THREE.Vector3(1, 1, 1);
     const M = new THREE.Matrix4(), P = new THREE.Vector3(), Q = new THREE.Quaternion(), SC = new THREE.Vector3(), E = new THREE.Euler(), C = new THREE.Color();
     Object.entries(by).forEach(([t, ks]) => PROPS[t].forEach((p, pi) => {
@@ -503,10 +582,11 @@ export function create(wrap, api) {
         const [x, y] = k.split('_').map(Number), r = rnd(x, y, pi), k1 = 1 + (p.v ? (rnd(x, y, p.vi ? 77 + pi : 77) - 0.5) * 2 * p.v : 0), s = p.s || [1, 1, 1], rig = RIG[t];
         const jx = p.jit ? (rnd(x, y, 91 + pi) - 0.5) * p.jit : 0, jz = p.jit ? (rnd(x, y, 92 + pi) - 0.5) * p.jit : 0;
         P.set((rig ? 0 : x + 0.5) + (p.dx || 0) + jx, p.y * (p.v ? k1 : 1), (rig ? 0 : y + 0.5) + (p.dz || 0) + jz); Q.setFromEuler(E.set(0, p.spin ? r * 6.28 : 0, 0)); SC.set(s[0] * k1, s[1] * k1, s[2] * k1);
+        if (t === 'boulder' && deep) { const bk = 1 + Math.min(2.2, Math.max(0, deep[y * S.w + x] - 1)) * 0.34; SC.multiplyScalar(bk); P.y *= bk; }
         if (p.skip && rnd(x, y, 90 + pi) < p.skip) SC.set(0, 0, 0);
         M.compose(P, Q, SC);
         // Предмет из нескольких частей (надгробие) наклоняется и поворачивается целиком
-        if (rig) { Q.setFromEuler(E.set((rnd(x, y, 93) - 0.5) * rig[0], (rnd(x, y, 94) - 0.5) * rig[1], (rnd(x, y, 95) - 0.5) * rig[0])); M.premultiply(GM.compose(P.set(x + 0.5, 0, y + 0.5), Q, ONE)); }
+        if (rig) { Q.setFromEuler(E.set((rnd(x, y, 93) - 0.5) * rig[0], (rnd(x, y, 94) - 0.5) * rig[1], (rnd(x, y, 95) - 0.5) * rig[0])); const gs = 1 + (rnd(x, y, 96) - 0.5) * 2 * (rig[2] || 0); M.premultiply(GM.compose(P.set(x + 0.5, 0, y + 0.5), Q, ZERO.set(gs, gs, gs))); }
         im.setMatrixAt(i, M);
         im.setColorAt(i, C.set(p.c).offsetHSL((rnd(x, y, p.vi ? 11 + pi * 3 : 11) - 0.5) * (p.vi ? 0.1 : 0.06), 0, 0).multiplyScalar(S.shade(k) * (0.88 + rnd(x, y, 9 + (p.vi ? pi : 0)) * 0.24)));
       });
@@ -519,9 +599,9 @@ export function create(wrap, api) {
   let planRev = -1, massif = new Set(), hearth = new Set(), deep = null, rockMesh = null, rockSig = '', furnMesh = null, furnSig = '';
   // Колодцы: своя клетка «колодец», а на старых картах поселений — одинокая клетка воды
   const SETTLE = ['village', 'city', 'castle', 'tavern', 'manor', 'temple', 'fair', 'guild', 'graveyard', 'arena'];
-  let wells = new Set(), flightAt = new Map(), stairY = new Map(), clothMesh = null;
+  let wells = new Set(), bould = new Set(), flightAt = new Map(), stairY = new Map(), clothMesh = null, barkMesh = null;
   function classify() {
-    massif = new Set(); hearth = new Set(); wells = new Set();
+    massif = new Set(); hearth = new Set(); wells = new Set(); bould = new Set();
     Object.entries(S.map).forEach(([k, t]) => {
       if (t === 'well') { wells.add(k); return; }
       if (t !== 'water' || !SETTLE.includes(S.tpl)) return;
@@ -540,11 +620,13 @@ export function create(wrap, api) {
         const c = q.pop(), [x, y] = c.split('_').map(Number); comp.push(c);
         for (const [dx, dy] of D4) { const n = `${x + dx}_${y + dy}`, nt = S.map[n]; if (nt === 'rock') { if (!seen.has(n)) { seen.add(n); q.push(n); } } else if (nt === 'floor' || nt === 'wall') house = true; }
       }
-      if (comp.length <= 3 && house && homes) comp.forEach((c) => hearth.add(c)); else if (comp.length >= 4) comp.forEach((c) => massif.add(c));
+      // У моря и на песке скала обкатана водой — скопление гладких валунов, а не гребень
+      const sea = S.tpl === 'coast' || (comp.length <= 14 && !['stone', 'snow'].includes(S.ground) && comp.some((c) => { const [x, y] = c.split('_').map(Number); return D4.some(([dx, dy]) => ['sand', 'water'].includes(S.map[`${x + dx}_${y + dy}`])); }));
+      if (comp.length <= 3 && house && homes) comp.forEach((c) => hearth.add(c)); else if (sea) comp.forEach((c) => bould.add(c)); else if (comp.length >= 4) comp.forEach((c) => massif.add(c));
     });
     // Расстояние до края пятна (в клетках); за краем поля массив продолжается
     const W = S.w, H = S.h, d = deep = new Float32Array(W * H), at = (x, y) => (x < 0 || y < 0 || x >= W || y >= H ? 1e3 : d[y * W + x]);
-    for (let y = 0; y < H; y++) for (let x = 0; x < W; x++) d[y * W + x] = massif.has(`${x}_${y}`) ? 1e3 : 0;
+    for (let y = 0; y < H; y++) for (let x = 0; x < W; x++) d[y * W + x] = massif.has(`${x}_${y}`) || bould.has(`${x}_${y}`) ? 1e3 : 0;
     for (let y = 0; y < H; y++) for (let x = 0; x < W; x++) if (d[y * W + x]) d[y * W + x] = Math.min(d[y * W + x], at(x - 1, y) + 1, at(x, y - 1) + 1, at(x - 1, y - 1) + 1.41, at(x + 1, y - 1) + 1.41);
     for (let y = H - 1; y >= 0; y--) for (let x = W - 1; x >= 0; x--) if (d[y * W + x]) d[y * W + x] = Math.min(d[y * W + x], at(x + 1, y) + 1, at(x, y + 1) + 1, at(x + 1, y + 1) + 1.41, at(x - 1, y + 1) + 1.41);
   }
@@ -605,17 +687,18 @@ export function create(wrap, api) {
   }
   // ---------- Мебель одной сеткой: столы с посудой, стойки, кровати, полки, доска заказов ----------
   // Четырёхугольник с плоской гранью; смотрит наружу от точки o
-  function pquad(B, a, b, c, d, col, o) {
+  function pquad(B, a, b, c, d, col, o, uvs) {
     let nx = (b[1] - a[1]) * (c[2] - a[2]) - (b[2] - a[2]) * (c[1] - a[1]), ny = (b[2] - a[2]) * (c[0] - a[0]) - (b[0] - a[0]) * (c[2] - a[2]), nz = (b[0] - a[0]) * (c[1] - a[1]) - (b[1] - a[1]) * (c[0] - a[0]);
     const l = Math.hypot(nx, ny, nz) || 1; nx /= l; ny /= l; nz /= l;
     const m = [(a[0] + b[0] + c[0]) / 3, (a[1] + b[1] + c[1]) / 3, (a[2] + b[2] + c[2]) / 3], flip = nx * (m[0] - o[0]) + ny * (m[1] - o[1]) + nz * (m[2] - o[2]) < 0;
     if (flip) { nx = -nx; ny = -ny; nz = -nz; }
-    (flip ? [a, c, b, a, d, c] : [a, b, c, a, c, d]).forEach((p) => { B.pos.push(p[0], p[1], p[2]); B.nor.push(nx, ny, nz); B.uv.push(p[0] + p[1] * 0.5, p[2] + p[1] * 0.5); B.col.push(col[0], col[1], col[2]); });
+    const P4 = [a, b, c, d];
+    (flip ? [0, 2, 1, 0, 3, 2] : [0, 1, 2, 0, 2, 3]).forEach((q) => { const p = P4[q]; B.pos.push(p[0], p[1], p[2]); B.nor.push(nx, ny, nz); if (uvs) B.uv.push(uvs[q][0], uvs[q][1]); else B.uv.push(p[0] + p[1] * 0.5, p[2] + p[1] * 0.5); B.col.push(col[0], col[1], col[2]); });
   }
   // Бревно: восьмигранник вдоль оси X (ax = 0) или Z (ax = 1), кора и светлый спил на торцах
-  function plog(B, cx, cy, cz, len, r, ax, bark, cut, n = 8) { // ax = 2 — стоит (бочка)
+  function plog(B, cx, cy, cz, len, r, ax, bark, cut, n = 8, Bs = null) { // ax = 2 — стоит (бочка); Bs — отдельная сетка для коры (с развёрткой вокруг ствола)
     const pt = (t, i) => { const a = ((i + 0.5) * 6.2832) / n, u = Math.cos(a) * r, v = Math.sin(a) * r; return ax === 2 ? [cx + u, cy + t, cz + v] : ax ? [cx + u, cy + v, cz + t] : [cx + t, cy + v, cz + u]; }, o = [cx, cy, cz];
-    for (let i = 0; i < n; i++) pquad(B, pt(-len / 2, i), pt(len / 2, i), pt(len / 2, i + 1), pt(-len / 2, i + 1), bark, o);
+    for (let i = 0; i < n; i++) pquad(Bs || B, pt(-len / 2, i), pt(len / 2, i), pt(len / 2, i + 1), pt(-len / 2, i + 1), bark, o, Bs ? [[i / n, 0], [i / n, len * 0.45], [(i + 1) / n, len * 0.45], [(i + 1) / n, 0]] : null);
     [-len / 2, len / 2].forEach((t) => { for (let i = 1; i < n - 1; i++) pquad(B, pt(t, 0), pt(t, i), pt(t, i + 1), pt(t, i + 1), cut, o); });
   }
   // sw — доски на верхней грани идут вдоль Z (иначе — вдоль длинной стороны)
@@ -640,10 +723,13 @@ export function create(wrap, api) {
     if (furnMesh) { scene.remove(furnMesh); furnMesh.geometry.dispose(); furnMesh = null; }
     if (masonMesh) { scene.remove(masonMesh); masonMesh.geometry.dispose(); masonMesh = null; }
     if (clothMesh) { scene.remove(clothMesh); clothMesh.geometry.dispose(); clothMesh = null; }
+    if (barkMesh) { scene.remove(barkMesh); barkMesh.geometry.dispose(); barkMesh = null; }
     fires = [];
     if (!cells.length) return;
-    const B = { pos: [], nor: [], uv: [], col: [] }, B2 = { pos: [], nor: [], uv: [], col: [] }, B3 = { pos: [], nor: [], uv: [], col: [] }, at = (x, y) => S.map[`${x}_${y}`], isF = (x, y) => at(x, y) === 'furn';
-    const inb = (x, y) => x >= 0 && y >= 0 && x < S.w && y < S.h, stoneB = STONE_B.includes(S.tpl) || Object.values(S.map).includes('lava');
+    const B = { pos: [], nor: [], uv: [], col: [] }, B2 = { pos: [], nor: [], uv: [], col: [] }, B3 = { pos: [], nor: [], uv: [], col: [] }, B4 = { pos: [], nor: [], uv: [], col: [] }, at = (x, y) => S.map[`${x}_${y}`], isF = (x, y) => at(x, y) === 'furn';
+    // На горном перевале мост бывает каменным (примерно в двух случаях из пяти — решает место моста)
+    const inb = (x, y) => x >= 0 && y >= 0 && x < S.w && y < S.h, fb = (cells.find(([, t]) => t === 'bridge') || ['0_0'])[0].split('_').map(Number);
+    const stoneB = STONE_B.includes(S.tpl) || Object.values(S.map).includes('lava') || (S.tpl === 'pass' && rnd(fb[0], fb[1], 97) < 0.3);
     // Свободная клетка рядом (туда можно поставить стул): не препятствие, не вода, не дверь
     const open = (x, y) => inb(x, y) && [undefined, '', 'floor', 'road', 'sand'].includes(at(x, y)) && !S.doors[`${x}_${y}`] && S.shade(`${x}_${y}`) >= 0;
     const camps = S.rooms.filter((r) => r.kind === 'camp').map((r) => ({ cx: r.x + Math.floor(r.w / 2), cy: r.y + Math.floor(r.h / 2), r: Math.max(r.w, r.h) / 2 + 3.5 }));
@@ -721,8 +807,14 @@ export function create(wrap, api) {
         const BB = stoneB ? B2 : B, tone = 0.9 + rnd(x, y, 71) * 0.2;
         pbox(BB, x + 0.5, 0.03, y + 0.5, 1, 0.06, 1, C3(stoneB ? 0xb4aca0 : [0x8a6238, 0x7c5730, 0x93693c][Math.floor(rnd(x, y, 72) * 3)], sh * tone * (stoneB ? 1.9 : 1)), alongX);
         hz.forEach((h, d) => {
-          if (!h) return;
           const [dx, dy] = D4[d], ex = x + 0.5 + dx * 0.46, ez = y + 0.5 + dy * 0.46, lw = dx ? 0 : 1, ld = dx ? 1 : 0; // перила идут вдоль края
+          if (!h) {
+            // Конец моста лежит на берегу: настил заходит на землю, под ним — опорный брус
+            if (at(x + dx, y + dy) === 'bridge') return;
+            pbox(BB, x + 0.5 + dx * 0.68, 0.02, y + 0.5 + dy * 0.68, dx ? 0.36 : 1, 0.04, dx ? 1 : 0.36, C3(stoneB ? 0xa39b8f : 0x6e4a28, sh * (stoneB ? 1.8 : 1)), !!dx);
+            pbox(BB, x + 0.5 + dx * 0.5, 0.045, y + 0.5 + dy * 0.5, dx ? 0.1 : 1, 0.09, dx ? 1 : 0.1, C3(stoneB ? 0x8f877b : 0x4a3018, sh * (stoneB ? 1.8 : 1)));
+            return;
+          }
           if (stoneB) { pbox(B2, ex, 0.22, ez, lw || 0.16, 0.36, ld || 0.16, C3(0xa39b8f, sh * 1.8)); pbox(B2, ex, 0.42, ez, lw || 0.22, 0.05, ld || 0.22, C3(0xc4bcb0, sh * 2)); return; }
           pbox(B, ex, 0.45, ez, lw || 0.06, 0.05, ld || 0.06, C3(0x5a3a1c, sh)); pbox(B, ex, 0.27, ez, lw || 0.04, 0.04, ld || 0.04, C3(0x5a3a1c, sh));
           [-0.46, 0.46].forEach((o) => pbox(B, ex + (dx ? 0 : o), 0.26, ez + (dx ? o : 0), 0.07, 0.46, 0.07, C3(0x4a3018, sh)));
@@ -784,8 +876,8 @@ export function create(wrap, api) {
         } else if (rect && Math.min(w, h) === 1 && comp.length <= 3 && dist <= 3.9) {
           // Бревно лежит поперёк взгляда на костёр
           const ax = w > h ? 0 : h > w ? 1 : Math.abs(tx) >= Math.abs(tz) ? 1 : 0, len = Math.max(w, h) - 0.12;
-          plog(B, mx, 0.17, mz, len, 0.17, ax, C3(0x4e3722, sh), C3(0xb8905a, sh));
-          [-1, 1].forEach((s) => { const q = s * (len / 2 - 0.25 - rnd(x0, y0 + s, 84) * 0.3); plog(B, mx + (ax ? 0 : q), 0.3, mz + (ax ? q : 0), 0.14, 0.035, ax ? 0 : 1, C3(0x4e3722, sh), C3(0xb8905a, sh)); });
+          plog(B, mx, 0.17, mz, len, 0.17, ax, C3(0xc4b29a, sh), C3(0xb8905a, sh), 12, B4);
+          [-1, 1].forEach((s) => { const q = s * (len / 2 - 0.25 - rnd(x0, y0 + s, 84) * 0.3); plog(B, mx + (ax ? 0 : q), 0.3, mz + (ax ? q : 0), 0.14, 0.035, ax ? 0 : 1, C3(0xc4b29a, sh), C3(0xb8905a, sh), 6, B4); });
         } else if (rect && comp.length === 2) {
           // Повозка: кузов с бортами на колёсах, в нём мешки
           // a — вдоль повозки, b — поперёк
@@ -853,6 +945,7 @@ export function create(wrap, api) {
     if (B.pos.length) furnMesh = meshOf(B, woodMat);
     if (B2.pos.length) masonMesh = meshOf(B2, masonMat);
     if (B3.pos.length) clothMesh = meshOf(B3, clothMat);
+    if (B4.pos.length) barkMesh = meshOf(B4, logMat);
   }
   const doorGeo = box(0.96, 0.84, 0.1), lockGeo = box(0.12, 0.14, 0.14), jambGeo = box(0.09, 0.9, 0.2);
   const doorTex = (() => {

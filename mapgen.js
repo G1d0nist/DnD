@@ -217,10 +217,11 @@ const MAPGEN = (() => {
     // Берега: кусты и редкие деревья; переправа — мост или брод
     blobs(G, R, 'bush', Math.round((G.w * G.h) / 70), 1, 2, 0.6);
     blobs(G, R, 'tree', Math.round((G.w * G.h) / 90 * (0.5 + o.density * 2)), 1, 3, 0.6);
-    const at = R.i(Math.floor(path.length * 0.3), Math.floor(path.length * 0.7)), c = path[at];
-    for (let j = -1; j <= width; j++) for (let k = 0; k < 2; k++) {
-      const x = vertical ? c + j : at + k, y = vertical ? at + k : c + j;
-      if (G.get(x, y) === 'water') G.set(x, y, R.ch(0.3) ? 'difficult' : 'bridge');
+    // Переправа целиком одного вида: мост (чаще) или брод — не вперемешку по клеткам
+    const at = R.i(Math.floor(path.length * 0.3), Math.floor(path.length * 0.7)), cross = R.ch(0.3) ? 'difficult' : 'bridge';
+    for (let k = 0; k < 2; k++) for (let j = 0; j < (vertical ? G.w : G.h); j++) {
+      const x = vertical ? j : at + k, y = vertical ? at + k : j;
+      if (G.get(x, y) === 'water') G.set(x, y, cross);
     }
     if (o.road) { // дорога к мосту с обеих сторон
       const L = vertical ? G.w : G.h;
@@ -680,11 +681,11 @@ const MAPGEN = (() => {
     if (f === 'mill') { fillRect(G, cx - 3, cy - 3, 8, 7, ''); building(G, out, cx - 2, cy - 2, 5, 5, 's', R, 0); out.rooms[out.rooms.length - 1].kind = 'hut'; G.set(cx + 3, cy, 'furn'); }
     if (f === 'mine') { clearCircle(G, cx, cy, 2, ''); G.set(cx, cy - 1, 'wall'); G.set(cx - 1, cy - 1, 'wall'); G.set(cx + 1, cy - 1, 'wall'); G.set(cx, cy, 'stairs'); G.set(cx + 2, cy + 1, 'crate'); out.lights.push({ x: cx - 1, y: cy, b: 10, d: 10 }); }
     if (f === 'rockslide') blobs(G, R, 'rubble', 1, 3, 4, 0.85);
-    if (f === 'sunken') { for (let k = 0; k < 3; k++) { const x = cx + R.i(-4, 4), y = cy + R.i(-3, 3); ringRect(G, x, y, x + 3, y + 3, 'wall'); G.set(x + 1, y, 'rubble'); G.set(x + 1, y + 1, 'bog'); } out.rooms.push({ x: cx - 3, y: cy - 3, w: 7, h: 7, kind: 'boss' }); }
+    if (f === 'sunken') { for (let k = 0; k < 3; k++) { const x = cx + R.i(-4, 4), y = cy + R.i(-3, 3); ringRect(G, x, y, x + 3, y + 3, 'wall'); G.set(x + 1, y, 'rubble'); G.set(x + 1, y + 1, 'bog'); } out.rooms.push({ x: cx - 3, y: cy - 3, w: 7, h: 7, kind: 'boss', ruin: 1 }); }
     if (f === 'witch') { fillRect(G, cx - 3, cy - 3, 8, 7, 'difficult'); building(G, out, cx - 2, cy - 2, 5, 4, 's', R, 0.3); out.rooms[out.rooms.length - 1].kind = 'boss'; out.lights.push({ x: cx, y: cy - 1, b: 10, d: 10 }); out.chests.push({ x: cx - 1, y: cy - 1 }); }
     if (f === 'pyramid') { for (let r = 4; r >= 0; r--) ringRect(G, cx - r, cy - r, cx + r, cy + r, r % 2 ? 'rock' : 'sand'); G.set(cx, cy + 4, 'stairs'); out.rooms.push({ x: cx - 3, y: cy - 3, w: 7, h: 7, kind: 'boss' }); }
     if (f === 'oasis') { clearCircle(G, cx, cy, 3, ''); clearCircle(G, cx, cy, 1, 'water'); for (let i = 0; i < 6; i++) { const a = R.f() * Math.PI * 2; G.set(Math.round(cx + Math.cos(a) * 3), Math.round(cy + Math.sin(a) * 3), 'tree'); } }
-    if (f === 'wreck') { for (let y = cy - 2; y <= cy + 2; y++) for (let x = cx - 5; x <= cx + 5; x++) { const edge = Math.abs(y - cy) === 2 || Math.abs(x - cx) === 5; G.set(x, y, edge ? (R.ch(0.7) ? 'wall' : 'rubble') : 'floor'); } G.set(cx, cy, 'furn'); out.chests.push({ x: cx + 3, y: cy, boss: true }); out.rooms.push({ x: cx - 4, y: cy - 1, w: 9, h: 3, kind: 'boss' }); }
+    if (f === 'wreck') { for (let y = cy - 2; y <= cy + 2; y++) for (let x = cx - 5; x <= cx + 5; x++) { const edge = Math.abs(y - cy) === 2 || Math.abs(x - cx) === 5; G.set(x, y, edge ? (R.ch(0.7) ? 'wall' : 'rubble') : 'floor'); } G.set(cx, cy, 'furn'); out.chests.push({ x: cx + 3, y: cy, boss: true }); out.rooms.push({ x: cx - 4, y: cy - 1, w: 9, h: 3, kind: 'boss', ruin: 1 }); }
     if (f === 'lighthouse') { const lx = Math.min(G.w - 4, cx + 6); for (let y = cy - 2; y <= cy + 2; y++) for (let x = lx - 2; x <= lx + 2; x++) G.set(x, y, Math.hypot(x - lx, y - cy) > 1.6 ? 'wall' : 'floor'); G.set(lx, cy, 'stairs'); G.set(lx - 2, cy, ''); out.doors[`${lx - 2}_${cy}`] = { o: 0 }; out.lights.push({ x: lx, y: cy, b: 60, d: 60 }); }
   }
 
