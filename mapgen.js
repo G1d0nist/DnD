@@ -73,13 +73,33 @@ const MAPGEN = (() => {
     const len = vertical ? G.h : G.w, span = vertical ? G.w : G.h, path = [];
     let c = R.i(Math.floor(span * 0.3), Math.floor(span * 0.7)), drift = 0;
     for (let i = 0; i < len; i++) {
+      const pc = i ? c : null;
       drift = Math.max(-1, Math.min(1, drift + (R.f() - 0.5) * 0.8));
       c = Math.max(1, Math.min(span - width - 1, Math.round(c + drift)));
       path.push(c);
-      for (let j = 0; j < width; j++) { const x = vertical ? c + j : i, y = vertical ? i : c + j; if (!keep(G.get(x, y))) G.set(x, y, t); }
+      // Сдвиг вбок закрывается клеткой-перемычкой (иначе ручей в одну клетку рвётся по диагонали);
+      // дорога через воду и вода через дорогу — мост
+      for (let v = pc == null ? c : Math.min(pc, c), hi = (pc == null ? c : Math.max(pc, c)) + width - 1; v <= hi; v++) {
+        const x = vertical ? v : i, y = vertical ? i : v, cur = G.get(x, y);
+        if (!keep(cur)) G.set(x, y, t === 'road' && cur === 'water' ? 'bridge' : t); else if (t === 'water' && cur === 'road') G.set(x, y, 'bridge');
+      }
     }
     return path;
   }
+  // Пруд или озеро: сплошное пятно с неровным берегом, в стороне от дороги и построек
+  function pond(G, R, rmin, rmax, t = 'water') {
+    for (let k = 0; k < 40; k++) {
+      const r = R.i(rmin, rmax), cx = R.i(r + 2, G.w - r - 3), cy = R.i(r + 2, G.h - r - 3), ph = R.f() * 6.28, n = R.i(2, 4);
+      let ok = true;
+      for (let y = cy - r - 2; y <= cy + r + 2 && ok; y++) for (let x = cx - r - 2; x <= cx + r + 2; x++) if (['road', 'bridge', 'wall', 'floor', 'furn'].includes(G.get(x, y))) { ok = false; break; }
+      if (!ok) continue;
+      for (let y = cy - r - 1; y <= cy + r + 1; y++) for (let x = cx - r - 1; x <= cx + r + 1; x++) if (Math.hypot(x - cx, (y - cy) * 1.2) <= r * (0.82 + 0.2 * Math.sin(Math.atan2(y - cy, x - cx) * n + ph)) + 0.35) G.set(x, y, t);
+      return true;
+    }
+    return false;
+  }
+  // Место под постройку: вода (и дорога, пока есть попытки) под неё не попадает — ручей и дорога не рвутся
+  const siteBusy = (G, x, y, w, h, roads) => { for (let j = y; j < y + h; j++) for (let i = x; i < x + w; i++) { const v = G.get(i, j); if (v === 'water' || v === 'bridge' || (roads && v === 'road')) return true; } return false; };
   const clearCircle = (G, cx, cy, r, v = '') => { for (let y = cy - r; y <= cy + r; y++) for (let x = cx - r; x <= cx + r; x++) if (Math.hypot(x - cx, y - cy) <= r + 0.3) G.set(x, y, v); };
   // Открытая клетка поближе к точке (старт, сундук)
   function openNear(G, x, y, ok = (v) => ['', 'road', 'floor', 'sand', 'bridge'].includes(v)) {
@@ -132,7 +152,7 @@ const MAPGEN = (() => {
   function hut(G, R, o, out, abandoned) {
     for (let t = 0; t < 80; t++) {
       const w = R.i(5, 6), h = R.i(4, 5), x = R.i(3, G.w - w - 3), y = R.i(3, G.h - h - 3);
-      if (Math.max(Math.abs(x - out.start.x), Math.abs(y - out.start.y)) < 8) continue;
+      if (Math.max(Math.abs(x - out.start.x), Math.abs(y - out.start.y)) < 8 || (t < 72 && siteBusy(G, x - 2, y - 2, w + 4, h + 4, t < 50))) continue;
       fillRect(G, x - 2, y - 2, w + 4, h + 4, '');
       const side = R.pick(['n', 's', 'w', 'e']);
       building(G, out, x, y, w, h, side, R, abandoned ? 0 : 0.3);
@@ -155,26 +175,37 @@ const MAPGEN = (() => {
   // Лагерь: поляна, костёр, палатки по кругу; у гоблинов — частокол с проходом, у бандитов — повозки и ящики
   function camp(G, R, o, out, faction) {
     for (let t = 0; t < 80; t++) {
-      const r = Math.max(3, Math.min(R.i(5, 7), Math.floor((Math.min(G.w, G.h) - 8) / 2))), cx = R.i(r + 2, G.w - r - 3), cy = R.i(r + 2, G.h - r - 3);
-      if (Math.max(Math.abs(cx - out.start.x), Math.abs(cy - out.start.y)) < r + 8) continue;
-      clearCircle(G, cx, cy, r + (faction === 'goblin' ? 1 : 0));
+      const r = Math.max(3, Math.min(R.i(5, 7), Math.floor((Math.min(G.w, G.h) - 8) / 2))), cx = R.i(r + 3, G.w - r - 4), cy = R.i(r + 3, G.h - r - 4);
+      if (Math.max(Math.abs(cx - out.start.x), Math.abs(cy - out.start.y)) < r + 8 || (t < 76 && siteBusy(G, cx - 3, cy - 3, 7, 7, true))) continue;
+      // Поляна: ручей и дорога, если идут через лагерь, остаются как есть (у костра их нет — см. проверку выше)
+      const kept = (x, y) => ['water', 'bridge', 'road'].includes(G.get(x, y)), cr = r + (faction === 'goblin' ? 1 : 0);
+      for (let y = cy - cr; y <= cy + cr; y++) for (let x = cx - cr; x <= cx + cr; x++) if (Math.hypot(x - cx, y - cy) <= cr + 0.3 && !kept(x, y)) G.set(x, y, '');
       G.set(cx, cy, 'furn'); out.lights.push({ x: cx, y: cy + 1, b: 20, d: 20 });
       const n = R.i(3, 5), a0 = R.f() * Math.PI * 2;
-      for (let i = 0; i < n; i++) { const a = a0 + (i / n) * Math.PI * 2, tx = Math.round(cx + Math.cos(a) * (r - 2)), ty = Math.round(cy + Math.sin(a) * (r - 2)); fillRect(G, tx, ty, 2, 2, 'furn'); }
+      for (let i = 0; i < n; i++) { const a = a0 + (i / n) * Math.PI * 2, tr = Math.max(5, r - 1), tx = Math.round(cx + Math.cos(a) * tr - 0.5), ty = Math.round(cy + Math.sin(a) * tr - 0.5); if (![[0, 0], [1, 0], [0, 1], [1, 1]].some(([i, j]) => kept(tx + i, ty + j))) fillRect(G, tx, ty, 2, 2, 'furn'); } // палатки — по краю поляны, не вплотную к костру
       if (faction === 'goblin') {
         const gapA = R.f() * Math.PI * 2;
         for (let a = 0; a < Math.PI * 2; a += 0.06) {
           // Два прохода с противоположных сторон — частокол не перегородит карту
           if (Math.abs(Math.atan2(Math.sin(a - gapA), Math.cos(a - gapA))) < 0.45 || Math.abs(Math.atan2(Math.sin(a - gapA - Math.PI), Math.cos(a - gapA - Math.PI))) < 0.35) continue;
-          G.set(Math.round(cx + Math.cos(a) * (r + 1)), Math.round(cy + Math.sin(a) * (r + 1)), 'wall');
+          const px = Math.round(cx + Math.cos(a) * (r + 1)), py = Math.round(cy + Math.sin(a) * (r + 1));
+          if (!kept(px, py)) G.set(px, py, 'wall');
         }
-      } else { fillRect(G, cx - r + 1, cy + 2, 1, 2, 'furn'); G.set(cx + 2, cy - 2, 'crate'); }
+      } else {
+        // Повозка и ящики — там, где свободно и ни к чему не примыкают (иначе предметы слипаются)
+        const lone = (cs) => cs.every(([x, y]) => G.get(x, y) === '' && [[0, -1], [1, 0], [0, 1], [-1, 0]].every(([ex, ey]) => cs.some(([a, b]) => a === x + ex && b === y + ey) || !['furn', 'crate'].includes(G.get(x + ex, y + ey))));
+        for (let k = 0, put = 0; k < 30 && put < 2; k++) {
+          const a = R.f() * Math.PI * 2, wx = Math.round(cx + Math.cos(a) * (r - 1)), wy = Math.round(cy + Math.sin(a) * (r - 1)), cs = put ? [[wx, wy]] : [[wx, wy], [wx, wy + 1]];
+          if (Math.hypot(wx - cx, wy - cy) < 3.2 || !lone(cs)) continue;
+          cs.forEach(([x, y]) => G.set(x, y, put ? 'crate' : 'furn')); put++;
+        }
+      }
       // Брёвна вокруг костра — на них сидят; seats — места между бревном и огнём (туда встают хозяева лагеря)
-      const seats = [];
-      [[0, -1], [1, 0], [0, 1], [-1, 0]].forEach(([dx, dy]) => {
-        const log = [-1, 0, 1].map((i) => [cx + dx * 3 + (dx ? 0 : i), cy + dy * 3 + (dy ? 0 : i)]), own = (x, y) => log.some(([a, b]) => a === x && b === y);
-        if (R.ch(0.2) || !log.every(([x, y]) => G.get(x, y) === '' && [[0, -1], [1, 0], [0, 1], [-1, 0]].every(([ex, ey]) => own(x + ex, y + ey) || G.get(x + ex, y + ey) !== 'furn'))) return;
-        log.forEach(([x, y]) => { G.set(x, y, 'furn'); if (G.get(x - dx, y - dy) === '') seats.push([x - dx, y - dy]); });
+      const seats = [], gap = R.i(0, 3); // одна сторона всегда открыта — к костру можно подойти
+      [[0, -1], [1, 0], [0, 1], [-1, 0]].forEach(([dx, dy], side) => {
+        const log = [-1, 0, 1].map((i) => [cx + dx * 2 + (dx ? 0 : i), cy + dy * 2 + (dy ? 0 : i)]), own = (x, y) => log.some(([a, b]) => a === x && b === y);
+        if (side === gap || R.ch(0.15) || !log.every(([x, y]) => G.get(x, y) === '' && [[0, -1], [1, 0], [0, 1], [-1, 0]].every(([ex, ey]) => own(x + ex, y + ey) || G.get(x + ex, y + ey) !== 'furn'))) return;
+        log.forEach(([x, y]) => { G.set(x, y, 'furn'); const sx = x - dx, sy = y - dy; if (G.get(sx, sy) === '' && !(sx === cx + 1 && sy === cy - 1) && !seats.some(([a, b]) => a === sx && b === sy)) seats.push([sx, sy]); });
       });
       out.rooms.push({ x: cx - r + 2, y: cy - r + 2, w: 2 * r - 3, h: 2 * r - 3, kind: 'camp', faction, seats });
       if (o.chests || R.ch(0.7)) out.chests.push({ x: cx + 1, y: cy - 1 });
@@ -207,7 +238,7 @@ const MAPGEN = (() => {
     blobs(G, R, 'rubble', Math.round(2 + o.density * 4), 1, 2, 0.6);
     if (o.road) band(G, R, 'road', 2, false, (v) => false);
     blobs(G, R, 'tree', 3, 1, 2, 0.5);
-    if (R.ch(0.4)) blobs(G, R, 'water', 1, 1, 2, 0.9);
+    if (R.ch(0.4)) pond(G, R, 1, 2);
     // Заснеженные горы: снег на открытых местах, озёра подо льдом
     const snowy = R.ch(0.35);
     if (snowy) for (let y = 0; y < G.h; y++) for (let x = 0; x < G.w; x++) {
@@ -222,8 +253,8 @@ const MAPGEN = (() => {
     blobs(G, R, 'bush', Math.round((G.w * G.h) / 90), 1, 2, 0.5);
     blobs(G, R, 'tree', Math.round(2 + o.density * 8), 1, 3, 0.6);
     for (let i = 0; i < G.w * G.h * 0.01; i++) { const x = R.i(0, G.w - 1), y = R.i(0, G.h - 1); if (G.get(x, y) === '') G.set(x, y, 'rock'); }
-    if (R.ch(0.5)) blobs(G, R, 'water', 1, 2, 3, 0.95);
     if (o.road) band(G, R, 'road', 2, R.ch(0.3));
+    if (R.ch(0.5)) pond(G, R, 2, 3);
     out.ground = 'grass'; out.start = openNear(G, 1, Math.floor(G.h / 2));
     feature(G, R, o, out, o.variant || (R.ch(0.55) ? 'none' : R.pick(['bandits', 'hut', 'ruin'])));
   }
@@ -434,7 +465,7 @@ const MAPGEN = (() => {
     }
     Object.keys(out.doors).forEach((k) => { if (R.ch(0.6)) delete out.doors[k]; }); // двери сгнили
     const px = Math.floor(G.w / 2), py = Math.floor(G.h / 2);
-    clearCircle(G, px, py, 3, 'road'); G.set(px, py, 'water');
+    clearCircle(G, px, py, 3, 'road'); G.set(px, py, 'well');
     blobs(G, R, 'tree', Math.round((G.w * G.h) / 200), 1, 1, 0.6);
     out.ground = 'dirt'; out.amb = 'bright'; out.start = openNear(G, 1, Math.floor(G.h / 2));
   }
@@ -539,7 +570,7 @@ const MAPGEN = (() => {
     // Сад
     for (let j = y + h + 1; j < G.h - 1; j++) G.set(ex, j, 'road');
     const fy = y + h + Math.floor((G.h - y - h) / 2);
-    clearCircle(G, ex, fy, 2, 'road'); G.set(ex, fy, 'water');
+    clearCircle(G, ex, fy, 2, 'road'); G.set(ex, fy, 'well');
     for (let j = y + h + 1; j < G.h - 1; j += 3) for (let i = 2; i < G.w - 2; i++) if (Math.abs(i - ex) > 3 && G.get(i, j) === '' && R.ch(0.7)) G.set(i, j, 'bush');
     blobs(G, R, 'tree', 4, 1, 1, 0.7);
     out.rooms.push({ x: 1, y: y + h + 1, w: G.w - 2, h: G.h - y - h - 2, kind: 'garden' });
@@ -630,8 +661,11 @@ const MAPGEN = (() => {
   }
   // Варианты уже знакомых местностей: особые места на карте
   function terrainFeature(G, R, out, f) {
-    const cx = R.i(Math.floor(G.w * 0.3), Math.floor(G.w * 0.7)), cy = R.i(Math.floor(G.h * 0.3), Math.floor(G.h * 0.7));
-    if (f === 'idol') { clearCircle(G, cx, cy, 3, ''); G.set(cx, cy, 'rock'); [[-2, 0], [2, 0], [0, -2], [0, 2]].forEach(([dx, dy]) => G.set(cx + dx, cy + dy, 'grave')); out.lights.push({ x: cx, y: cy + 1, b: 10, d: 10 }); out.rooms.push({ x: cx - 2, y: cy - 2, w: 5, h: 5, kind: 'boss' }); }
+    let cx = R.i(Math.floor(G.w * 0.3), Math.floor(G.w * 0.7)), cy = R.i(Math.floor(G.h * 0.3), Math.floor(G.h * 0.7));
+    if (f === 'idol') {
+      // Поляна с идолом — в стороне от ручья и дороги (они не рвутся)
+      for (let t = 0; t < 40 && siteBusy(G, cx - 3, cy - 3, 7, 7, true); t++) { cx = R.i(Math.floor(G.w * 0.2), Math.floor(G.w * 0.8)); cy = R.i(Math.floor(G.h * 0.2), Math.floor(G.h * 0.8)); }
+      clearCircle(G, cx, cy, 3, ''); G.set(cx, cy, 'rock'); [[-2, 0], [2, 0], [0, -2], [0, 2]].forEach(([dx, dy]) => G.set(cx + dx, cy + dy, 'grave')); out.lights.push({ x: cx, y: cy + 1, b: 10, d: 10 }); out.rooms.push({ x: cx - 2, y: cy - 2, w: 5, h: 5, kind: 'boss' }); }
     if (f === 'fallen') { // ствол поперёк воды в ближайшем к центру ряду, где она есть
       for (let d = 0; d < G.h; d++) {
         const y = cy + (d % 2 ? -1 : 1) * Math.ceil(d / 2), xs = [];
@@ -937,7 +971,7 @@ const MAPGEN = (() => {
       placed++;
     }
     // Колодец и плац во дворе, сад — во внешнем дворе или в углу внутреннего
-    const wl = openNear(G, gx + 4, cy1 - 3, (c) => c === ''); G.set(wl.x, wl.y, 'water');
+    const wl = openNear(G, gx + 4, cy1 - 3, (c) => c === ''); G.set(wl.x, wl.y, 'well');
     const tp = openNear(G, gx - 7, cy1 - 4, (c) => c === '');
     if (fits(G, tp.x, tp.y, 4, 3, (c) => c === '')) { fillRect(G, tp.x, tp.y, 4, 3, 'sand'); G.set(tp.x + 1, tp.y + 1, 'furn'); G.set(tp.x + 3, tp.y + 1, 'furn'); }
     if (garden) {
@@ -1098,7 +1132,7 @@ const MAPGEN = (() => {
       n++;
     }
     const wc = openNear(G, Math.floor(G.w / 2), Math.floor(G.h / 2), (v) => v === '');
-    G.set(wc.x, wc.y, 'water');
+    G.set(wc.x, wc.y, 'well');
     blobs(G, R, 'tree', Math.round(4 + o.density * 10), 1, 3, 0.6);
     blobs(G, R, 'bush', 5, 1, 2, 0.5);
     out.lights.push({ x: wc.x, y: wc.y + 1, b: 20, d: 20 });
@@ -1108,7 +1142,7 @@ const MAPGEN = (() => {
   // Варианты: корчма (маленькая), постоялый двор (с конюшней), большая таверна (с кабинетом хозяина). Поворот карты — в generate
   // Верхний этаж здания (тот же контур, что у первого): посередине коридор, по обе стороны — комнаты с кроватями; у лестницы — открытая
   // площадка. Вокруг здания — пустота. down — лестница вниз (здесь появляется отряд), up — лестница выше (если этаж не последний)
-  function upper(G, R, o, out, B, down, up, kind) {
+  function upper(G, R, o, out, B, down, up, kind, span) {
     const { x0, y0, x1, y1 } = B;
     for (let y = 0; y < G.h; y++) for (let x = 0; x < G.w; x++) G.set(x, y, x < x0 || x > x1 || y < y0 || y > y1 ? 'chasm' : x === x0 || x === x1 || y === y0 || y === y1 ? 'wall' : '');
     const ih = y1 - y0 - 1, cw = ih >= 13 ? 2 : 1, yc = y0 + 1 + Math.floor((ih - cw) / 2);
@@ -1133,22 +1167,29 @@ const MAPGEN = (() => {
       }
     };
     // Площадка у лестниц — в верхней полосе, открыта в коридор
-    const ya = y0 + 1, yb = yc - 2, sx0 = Math.min(down.x, up ? up.x : down.x), sx1 = Math.max(down.x, up ? up.x : down.x);
-    let lx0 = Math.max(x0 + 1, sx0 - 2), lx1 = Math.min(x1 - 1, sx1 + 1);
+    const ya = y0 + 1, yb = yc - 2;
+    let lx0 = Math.max(x0 + 1, span[0]), lx1 = Math.min(x1 - 1, span[1]);
     if (lx0 - 1 - (x0 + 1) < 3) lx0 = x0 + 1;
     if (x1 - 1 - (lx1 + 1) < 3) lx1 = x1 - 1;
     for (let x = x0 + 1; x < x1; x++) { if (x < lx0 || x > lx1) G.set(x, yc - 1, 'wall'); G.set(x, yc + cw, 'wall'); }
     if (lx0 > x0 + 1) { for (let y = ya; y <= yb; y++) G.set(lx0 - 1, y, 'wall'); rooms(x0 + 1, lx0 - 2, ya, yb, yc - 1, ya); }
     if (lx1 < x1 - 1) { for (let y = ya; y <= yb; y++) G.set(lx1 + 1, y, 'wall'); rooms(lx1 + 2, x1 - 1, ya, yb, yc - 1, ya); }
     rooms(x0 + 1, x1 - 1, yc + cw + 1, y1 - 1, yc + cw, y1 - 1);
-    G.set(down.x, down.y, 'stairs'); if (up) G.set(up.x, up.y, 'stairs');
+    setFlights(G, out, up, down);
     out.rooms.push({ x: lx0, y: ya, w: lx1 - lx0 + 1, h: yb - ya + 1, kind: 'landing' }, { x: x0 + 1, y: yc, w: x1 - x0 - 1, h: cw, kind: 'corridor' });
-    out.lights.push({ x: Math.min(lx1, sx1 + 1), y: yb, b: 15, d: 15 });
+    out.lights.push({ x: lx0, y: yb, b: 15, d: 15 });
     for (let x = x0 + 3; x < x1 - 1; x += 7) out.lights.push({ x, y: yc, b: 15, d: 15 });
-    out.ground = 'wood'; out.amb = 'dim'; out.start = { x: down.x, y: down.y };
+    // Отряд появляется на площадке рядом с проёмом, из которого поднялся
+    out.ground = 'wood'; out.amb = 'dim'; out.start = { x: down.x + down.dx, y: down.y + down.dy + 1 };
   }
-  // Лестницы здания стоят рядом и чередуются: на нечётном этаже вверх ведёт A, на чётном — B
+  // Лестничный марш — две клетки: (x, y) — нижняя, (dx, dy) — куда поднимается; высотой марш со стену.
+  // Марши A и B стоят вдоль одной стены и чередуются: с нечётного этажа вверх ведёт A, с чётного — B
+  const FL = (x, y, dx, dy) => ({ x, y, dx, dy });
   const flight = (o, floors, A, B) => [o.floor % 2 ? B : A, o.floor < floors ? (o.floor % 2 ? A : B) : null];
+  function setFlights(G, out, up, down) {
+    out.flights = [];
+    [[up, 0], [down, 1]].forEach(([f, dn]) => { if (!f) return; G.set(f.x, f.y, 'stairs'); G.set(f.x + f.dx, f.y + f.dy, 'stairs'); out.flights.push({ ...f, down: dn }); });
+  }
   function tavern(G, R, o, out) {
     const rv = R.pick(['inn', 'small', 'big', 'inn']), v = o.variant || rv;
     const bw = Math.min(G.w - 4, v === 'small' ? R.i(14, 18) : v === 'big' ? R.i(26, 34) : R.i(20, 26));
@@ -1157,11 +1198,11 @@ const MAPGEN = (() => {
     const split = x0 + Math.round(bw * (v === 'small' ? 0.62 : 0.5 + R.f() * 0.15));
     // Этажи: наверху номера; в большой таверне — два верхних этажа. Лестница — в углу зала у перегородки
     out.v = v; out.floors = v === 'big' ? 3 : 2;
-    const stA = { x: split - 1, y: y0 + 1 }, stB = { x: split - 2, y: y0 + 1 };
-    if (o.floor > 1) { upper(G, R, o, out, { x0, y0, x1, y1 }, ...flight(o, out.floors, stA, stB), 'tavern'); return; }
+    const stA = FL(split - 2, y0 + 1, 1, 0), stB = FL(split - 4, y0 + 1, -1, 0);
+    if (o.floor > 1) { upper(G, R, o, out, { x0, y0, x1, y1 }, ...flight(o, out.floors, stA, stB), 'tavern', [split - 5, split - 1]); return; }
     for (let y = y0; y <= y1; y++) for (let x = x0; x <= x1; x++) G.set(x, y, x === x0 || x === x1 || y === y0 || y === y1 ? 'wall' : 'floor');
     for (let y = y0; y <= y1; y++) G.set(split, y, 'wall');
-    G.set(stA.x, stA.y, 'stairs');
+    setFlights(G, out, stA, null);
     // Комнаты справа — нарезка по высоте 3–6 клеток; нижняя — кухня (не меньше 4)
     const cuts = [];
     let yy = y0;
@@ -1170,7 +1211,7 @@ const MAPGEN = (() => {
     const bounds = [y0, ...cuts, y1];
     let kitchenDoor = null;
     for (let k = 0; k < bounds.length - 1; k++) {
-      const ry0 = bounds[k], ry1 = bounds[k + 1], dy = ry0 + 1 + R.i(0, Math.max(0, ry1 - ry0 - 3)), kitchen = k === bounds.length - 2;
+      const ry0 = bounds[k], ry1 = bounds[k + 1], dy0 = ry0 + 1 + R.i(0, Math.max(0, ry1 - ry0 - 3)), dy = !k && dy0 === y0 + 1 && ry1 - ry0 > 2 ? dy0 + 1 : dy0, kitchen = k === bounds.length - 2; // дверь не упирается в лестницу
       G.set(split, dy, 'floor'); out.doors[`${split}_${dy}`] = { o: 0, ...(!kitchen && R.ch(0.45) ? { l: 1 } : {}) };
       const room = { x: split + 1, y: ry0 + 1, w: x1 - split - 1, h: ry1 - ry0 - 1, kind: kitchen ? 'kitchen' : 'room' };
       out.rooms.push(room);
@@ -1230,7 +1271,7 @@ const MAPGEN = (() => {
         for (let i = sx + 1; i < sx + sw - 1; i += 2) G.set(i, sy + 1, 'difficult');
       }
       const wl = openNear(G, ex - 3, y1 + 3, (c) => c === '');
-      G.set(wl.x, wl.y, 'water');
+      G.set(wl.x, wl.y, 'well');
     }
     blobs(G, R, 'tree', Math.round((G.w * G.h) / 160), 1, 2, 0.6);
     blobs(G, R, 'bush', 3, 1, 1, 0.5);
@@ -1243,14 +1284,14 @@ const MAPGEN = (() => {
     const bw = Math.min(G.w - 4, R.i(22, 28)), bh = Math.min(G.h - 6, R.i(14, 17));
     const x0 = Math.max(2, Math.floor((G.w - bw) / 2) + R.i(-1, 1)), y0 = 2, x1 = x0 + bw - 1, y1 = y0 + bh - 1;
     out.floors = 2;
-    const stA = { x: x1 - 1, y: y0 + 1 }, stB = { x: x1 - 2, y: y0 + 1 };
-    if (o.floor > 1) { upper(G, R, o, out, { x0, y0, x1, y1 }, ...flight(o, out.floors, stA, stB), 'guild'); return; }
+    const stA = FL(x1 - 2, y0 + 1, 1, 0);
+    if (o.floor > 1) { upper(G, R, o, out, { x0, y0, x1, y1 }, ...flight(o, out.floors, stA, stA), 'guild', [x1 - 4, x1 - 1]); return; }
     for (let y = y0; y <= y1; y++) for (let x = x0; x <= x1; x++) G.set(x, y, x === x0 || x === x1 || y === y0 || y === y1 ? 'wall' : 'floor');
     // Задняя полоса: канцелярия | хранилище | лестничный угол (открыт в зал)
     const yb = y0 + 5, xa = x0 + Math.round(bw * 0.36), xs = x1 - 5;
     for (let x = x0; x <= xs; x++) G.set(x, yb, 'wall');
     for (let y = y0; y <= yb; y++) { G.set(xa, y, 'wall'); G.set(xs, y, 'wall'); }
-    G.set(stA.x, stA.y, 'stairs');
+    setFlights(G, out, stA, null);
     const od = R.i(x0 + 2, xa - 2), vd = R.i(xa + 2, xs - 2);
     G.set(od, yb, 'floor'); out.doors[`${od}_${yb}`] = { o: 0 };
     G.set(vd, yb, 'floor'); out.doors[`${vd}_${yb}`] = { o: 0, l: 1 };
@@ -1332,10 +1373,11 @@ const MAPGEN = (() => {
     out.rooms = out.rooms.map((r) => ({ ...r, x: H - (r.y + r.h), y: r.x, w: r.h, h: r.w }));
     const [sx, sy] = P(out.start.x, out.start.y);
     out.start = { x: sx, y: sy };
+    if (out.flights) out.flights = out.flights.map((f) => { const [x, y] = P(f.x, f.y); return { x, y, dx: -f.dy, dy: f.dx, down: f.down }; });
     return NG;
   }
   // Местность: замкнутые деревьями и скалами карманы соединяются с основной областью просекой
-  const SOLID = new Set(['wall', 'tree', 'rock', 'furn', 'lava', 'chasm', 'grave', 'mushroom', 'crate', 'board']);
+  const SOLID = new Set(['wall', 'tree', 'rock', 'furn', 'lava', 'chasm', 'grave', 'mushroom', 'crate', 'board', 'well']);
   function connectOutdoor(G, out) {
     const pass = (x, y) => G.inb(x, y) && !SOLID.has(G.g[y][x]);
     const reach = new Set(), q = [[out.start.x, out.start.y]];
@@ -1399,7 +1441,7 @@ const MAPGEN = (() => {
       const [x, y] = k.split('_').map(Number), wall = (a, b) => out.cells[`${a}_${b}`] === 'wall';
       [[1, 0], [0, 1]].forEach(([dx, dy]) => { const n = `${x + dx}_${y + dy}`; if (out.doors[n] && wall(x + dy, y + dx) && wall(x - dy, y - dx)) { if (out.doors[n].l) out.doors[k].l = 1; delete out.doors[n]; } });
     });
-    out.chests = out.chests.filter((c, i, a) => !['wall', 'rock', 'tree', 'water', 'furn', 'lava', 'chasm', 'grave', 'mushroom', 'crate', 'stairs', 'board'].includes(out.cells[`${c.x}_${c.y}`]) && a.findIndex((d) => d.x === c.x && d.y === c.y) === i && !out.doors[`${c.x}_${c.y}`]);
+    out.chests = out.chests.filter((c, i, a) => !['wall', 'rock', 'tree', 'water', 'furn', 'lava', 'chasm', 'grave', 'mushroom', 'crate', 'stairs', 'board', 'well'].includes(out.cells[`${c.x}_${c.y}`]) && a.findIndex((d) => d.x === c.x && d.y === c.y) === i && !out.doors[`${c.x}_${c.y}`]);
     return out;
   }
   return { TEMPLATES, generate };

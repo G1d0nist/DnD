@@ -35,6 +35,7 @@ const TERRAIN = {
   crate: { n: 'Ящики и бочки', color: 'rgba(120,80,40,.55)', block: true, cover: 5, ic: '📦' },
   stairs: { n: 'Лестница', color: 'rgba(160,140,110,.55)', ic: '🪜' },
   board: { n: 'Доска заказов', color: 'rgba(120,84,44,.9)', block: true, cover: 2, ic: '📜' },
+  well: { n: 'Колодец', color: 'rgba(96,96,104,.9)', block: true, cover: 2, ic: '⛲' },
 };
 TERRAIN.furn.cover = 2; TERRAIN.tree.cover = 5; TERRAIN.rock.cover = 5;
 // Цвет земли под картой (meta.ground) — задаёт генератор
@@ -649,6 +650,10 @@ function drawCell(g, type, px, py, v) {
   } else if (type === 'stairs') { // ступени
     g.fillStyle = 'rgba(40,30,20,.5)'; for (let i = 0; i < 4; i++) g.fillRect(px + 6 + i * 3, py + 8 + i * 7, CELL - 12 - i * 6, 4);
     g.font = '12px system-ui'; g.fillText('🪜', px + CELL - 15, py + 13);
+  } else if (type === 'well') { // колодец: каменное кольцо с водой
+    g.fillStyle = '#8a8680'; g.beginPath(); g.arc(px + c, py + c, 15, 0, Math.PI * 2); g.fill();
+    g.fillStyle = '#2f5f8f'; g.beginPath(); g.arc(px + c, py + c, 9, 0, Math.PI * 2); g.fill();
+    g.strokeStyle = '#4a4640'; g.lineWidth = 1.5; g.beginPath(); g.arc(px + c, py + c, 15, 0, Math.PI * 2); g.stroke();
   } else if (type === 'board') { // доска с листами заказов
     g.fillStyle = '#5a3c1e'; g.fillRect(px + 4, py + 4, CELL - 8, CELL - 8); g.strokeStyle = '#2e1c0c'; g.lineWidth = 2; g.strokeRect(px + 4, py + 4, CELL - 8, CELL - 8);
     [[8, 8, 10, 12], [21, 7, 11, 9], [9, 23, 9, 10], [20, 19, 12, 14]].forEach(([dx, dy, w, h], i) => { g.fillStyle = ['#efe4c4', '#e2d3a8', '#f4ecd6', '#d9c797'][(i + v) % 4]; g.fillRect(px + dx, py + dy, w, h); g.fillStyle = '#a03020'; g.fillRect(px + dx + w / 2 - 1, py + dy + 1, 2, 2); });
@@ -6246,7 +6251,7 @@ function handoutsDialog() {
 /* ---------- Генератор местности и локаций ---------- */
 // mapgen.js строит карту по шаблону и «зерну»; здесь — предпросмотр, сундуки с добычей и замена поля (по желанию — новой сценой)
 // Цвета предпросмотра: стены тёмные, пол светлый — чтобы план читался с первого взгляда
-const PREV_C = { lava: '#e05a14', chasm: '#000', grave: '#8c8c94', mushroom: '#7a46a5', crate: '#8a5a2b', stairs: '#c8b48a', board: '#d9c797', wall: '#15120f', floor: '#6e604b', tree: '#2f6b2a', rock: '#7a746a', furn: '#a0662e', road: '#b08a55', bridge: '#8a5a2b', water: '#3c6eaa', thicket: '#2a5a2a', snow: '#dfe6ee', sand: '#c8b27a', slope: '#8a7454', bog: '#4a5a30' };
+const PREV_C = { lava: '#e05a14', chasm: '#000', grave: '#8c8c94', mushroom: '#7a46a5', crate: '#8a5a2b', stairs: '#c8b48a', board: '#d9c797', well: '#7a8aa0', wall: '#15120f', floor: '#6e604b', tree: '#2f6b2a', rock: '#7a746a', furn: '#a0662e', road: '#b08a55', bridge: '#8a5a2b', water: '#3c6eaa', thicket: '#2a5a2a', snow: '#dfe6ee', sand: '#c8b27a', slope: '#8a7454', bog: '#4a5a30' };
 const AMB_N = [['bright', '☀ день'], ['dim', '🌆 сумерки'], ['dark', '🌑 темнота']], FOG_N = [['off', 'выключен'], ['vision', 'обзор персонажей'], ['manual', 'только открытое мастером']];
 let genSeed = 0;
 function genDialog() {
@@ -6364,7 +6369,7 @@ async function genApply(res, o) {
     for (let r = 0; r < Math.max(res.w, res.h); r++) for (let dy = -r; dy <= r; dy++) for (let dx = -r; dx <= r; dx++) {
       if (Math.max(Math.abs(dx), Math.abs(dy)) !== r) continue;
       const x = res.start.x + dx, y = res.start.y + dy, k = `${x}_${y}`;
-      if (x >= 0 && y >= 0 && x < res.w && y < res.h && !blocked(k) && !taken.has(k) && res.cells[k] !== 'water') { taken.add(k); return [x, y]; }
+      if (x >= 0 && y >= 0 && x < res.w && y < res.h && !blocked(k) && !taken.has(k) && res.cells[k] !== 'water' && res.cells[k] !== 'stairs') { taken.add(k); return [x, y]; }
     }
     return [res.start.x, res.start.y];
   };
@@ -6380,7 +6385,7 @@ async function genApply(res, o) {
   });
   // План комнат и вход — для заселения сейчас и позже («👥 Заселить»)
   // Здание в несколько этажей: зерно и вариант — чтобы следующий этаж повторил контур (см. stairsDialog)
-  const gen = { tpl: res.tpl, rooms: res.rooms, start: res.start, ...(res.floors ? { seed: res.seed, v: res.v || '', floor: res.floor || 1, floors: res.floors } : {}) };
+  const gen = { tpl: res.tpl, rooms: res.rooms, start: res.start, ...(res.floors ? { seed: res.seed, v: res.v || '', floor: res.floor || 1, floors: res.floors } : {}), ...(res.flights ? { flights: res.flights } : {}) };
   upd['meta/gen'] = gen;
   const P = o.pop ? populate({ w: res.w, h: res.h, cells: res.cells, doors: res.doors, rooms: res.rooms, start: res.start, tpl: res.tpl, floor: res.floor || 1 }, { ...o.pop, keep: Object.values(pcs).map((p) => [p.x, p.y]) }) : null;
   if (P) Object.entries(P.tokens).forEach(([id, t]) => { upd[`tokens/${id}`] = t; });
@@ -6595,6 +6600,7 @@ function peacefulNpcs(L, F, tokens, notes, key) {
     : [['Commoner', 'трактирщик', 1, n_('bar') ? 'bar' : 'hall'], ['Commoner', 'посетитель', R_(4, 7), 'hall'], ['Thug', 'громила', chance(0.4) ? 1 : 0, 'hall'], ['Scout', 'путник', chance(0.5) ? 1 : 0, 'hall'],
       ['Noble', 'знатный гость', chance(0.4) ? 1 : 0, 'room'], ['Commoner', 'постоялец', R_(0, 2), 'room'], ['Commoner', 'кухарка', 1, 'kitchen'], ['Commoner', 'конюх', n_('stable') ? 1 : 0, 'stable']];
   // Торговцы: в городе — в лавках и на рынке, в деревне — лавочник, в замке — кузнец в кузнице, в таверне — иногда бродячий торговец
+  const big = T === 'city';
   const shops = T === 'city' ? [...roomsOf('shop').slice(0, 3).map((r, i) => ['Commoner', ['торговец', 'кузнец', 'алхимик'][i], 1, r, ['general', 'smith', 'alchemist'][i]]),
     ...roomsOf('market').flatMap((r) => [['Commoner', 'торговец', 1, r, 'general'], ['Commoner', 'алхимик', 1, r, 'alchemist'], ...(chance(0.5) ? [['Commoner', 'оружейник', 1, r, 'smith']] : [])]),
     // В большом городе — иногда лавка диковин
@@ -6611,7 +6617,7 @@ function peacefulNpcs(L, F, tokens, notes, key) {
     if (p) F.take(p[0], p[1]);
     return p;
   };
-  const big = T === 'city', place = (where, s) => {
+  const place = (where, s) => {
     const room = typeof where === 'object' ? where : null;
     if (room) return (s === 1 && byTable(room)) || F.near(room.x + Math.floor(room.w / 2), room.y + Math.floor(room.h / 2), s, room, 6);
     if (where === 'gate') return F.near(L.start.x, L.start.y, s, null, 9);
@@ -7109,12 +7115,14 @@ function stairsDialog(k) {
     const sel = $('#lvT').value, t = sel === '@up' ? tpl : sel, name = $('#lvN').value.trim() || 'Новый уровень', pop = $('#lvPop').checked;
     app.closeModal();
     const cur = await saveScene(), res = sel === '@up' ? MAPGEN.generate(t, { seed: G.seed, variant: G.v || '', w: W(), h: H(), floor: up }) : MAPGEN.generate(t, { seed: Math.floor(Math.random() * 1e9) });
-    const back = `${res.start.x}_${res.start.y}`;
-    res.cells = { ...res.cells, [back]: 'stairs' };
+    // Марш в две клетки связывается обеими клетками — и здесь, и на новом этаже
+    const cellsOf = (f) => [`${f.x}_${f.y}`, `${f.x + f.dx}_${f.y + f.dy}`], here = (G.flights || []).map(cellsOf).find((c) => c.includes(k)) || [k];
+    const dn = sel === '@up' && (res.flights || []).find((f) => f.down), backs = dn ? cellsOf(dn) : [`${res.start.x}_${res.start.y}`];
+    if (!dn) res.cells = { ...res.cells, [backs[0]]: 'stairs' };
     const players = Object.values(game.members || {}).filter((m) => m.role !== 'dm').length || 4;
     const sid2 = await genApply({ ...res, tpl: t }, { lvl: partyLevel(), amb: res.amb, fog: res.fog, asScene: true, name, clearNpc: true, peaceful: !!T[t].peaceful,
-      pop: pop ? { lvl: partyLevel(), n: players, diff: 1, groups: 0, peaceful: !!T[t].peaceful, hidden: false } : null, worldFrom: (game.meta || {}).worldFrom || null, links: { [back]: cur } });
-    if (sid2) await R.update(ref(gpath()), { [`sceneData/${cur}/links/${k}`]: sid2 });
+      pop: pop ? { lvl: partyLevel(), n: players, diff: 1, groups: 0, peaceful: !!T[t].peaceful, hidden: false } : null, worldFrom: (game.meta || {}).worldFrom || null, links: Object.fromEntries(backs.map((b) => [b, cur])) });
+    if (sid2) await R.update(ref(gpath()), Object.fromEntries(here.map((c) => [`sceneData/${cur}/links/${c}`, sid2])));
   };
 }
 
@@ -7605,7 +7613,7 @@ function renderTools() {
   const hasMine = user && game.tokens[`pc_${user.uid}`];
   $('#tblBoard').dataset.tool = tool; // курсор поля соответствует инструменту
   const b = (a, label, title, on) => `<button class="${on ? 'on' : ''}" data-tbl="${a}" title="${title}">${label}${on && /Свободно|Вид игроков/.test(label) ? ' ✓' : ''}</button>`;
-  const brushes = ['tree', 'rock', 'bush', 'road', 'sand', 'bridge', 'furn', 'floor', 'crate', 'grave', 'mushroom', 'stairs', 'board', 'lava', 'chasm'], rough = ['thicket', 'bog', 'rubble', 'slope', 'snow', 'ice'];
+  const brushes = ['tree', 'rock', 'bush', 'road', 'sand', 'bridge', 'furn', 'floor', 'crate', 'grave', 'mushroom', 'stairs', 'board', 'well', 'lava', 'chasm'], rough = ['thicket', 'bog', 'rubble', 'slope', 'snow', 'ice'];
   const handouts = isDM() || hoMine().length ? b('handouts', `📜 Материалы${!isDM() && hoMine().length ? ` (${hoMine().length})` : ''}`, isDM() ? 'Показать игрокам картинку, письмо или карту' : 'Что показывал мастер') : '';
   const base = t('move', '✋ Двигать', 'Перетаскивайте токены; шаг — WASD или стрелки') + t('ruler', '📏 Линейка', 'Протяните, чтобы измерить расстояние')
     + b('keys', '⌨', 'Клавиши: шаг WASD, атака Q, заклинание E, спасбросок Alt… — посмотреть и переназначить (K)')
@@ -8549,7 +8557,7 @@ document.addEventListener('change', (e) => {
 /* ---------- Объёмный вид ---------- */
 // table3d.js только рисует: слои поля идут на пол текстурами, стены и существа — объёмные. Правила, ввод и
 // синхронизация остаются здесь. Модуль (и Three.js) подгружается при первом включении
-const PROP3D = new Set(['wall', 'rock', 'tree', 'crate', 'furn', 'grave', 'mushroom', 'bridge', 'bush', 'thicket', 'rubble', 'snow', 'stairs', 'bog', 'ice', 'lava', 'board']);
+const PROP3D = new Set(['wall', 'rock', 'tree', 'crate', 'furn', 'grave', 'mushroom', 'bridge', 'bush', 'thicket', 'rubble', 'snow', 'stairs', 'bog', 'ice', 'lava', 'board', 'well']);
 // Яркость клетки для стен и препятствий: −1 — игрок её ещё не видел (не рисовать)
 function cellShade(k) {
   if (!fogVis) return 1;
@@ -8569,7 +8577,7 @@ function g3State() {
     ...Object.values(game.tokens || {}).filter((t) => t.lt && !(t.hidden && !isDM()) && !fogHides(t)).map((t) => ({ x: t.x + (t.size || 1) / 2, y: t.y + (t.size || 1) / 2, r: ((+t.lt.b || 0) + (+t.lt.d || 0)) / FT() }))];
   // rocky — каменная земля под открытым небом (горы, перевал), а не плиты подземелья; rooms — что за комнаты (кровати, стойки)
   const gen = (game.meta || {}).gen || {}, rocky = (game.meta || {}).ground === 'stone' && (gen.tpl ? ['mountains', 'pass', 'volcano'].includes(gen.tpl) : (f.amb || 'bright') !== 'dark');
-  return { rocky, rooms: gen.rooms || [], tpl: gen.tpl || '', w: W(), h: H(), bg: !!bgImg, ground: (game.meta || {}).ground || '', map: bgImg ? {} : game.map || {}, doors: game.doors || {}, chests: Object.values(game.chests || {}).map((C) => ({ x: C.x, y: C.y, o: !!C.o })), drops: Object.values(game.drops || {}).map((D) => ({ x: D.x, y: D.y })), lights: lights.filter((L) => cellShade(`${Math.floor(L.x)}_${Math.floor(L.y)}`) >= 0), amb, shade: cellShade };
+  return { rocky, rooms: gen.rooms || [], tpl: gen.tpl || '', flights: gen.flights || [], w: W(), h: H(), bg: !!bgImg, ground: (game.meta || {}).ground || '', map: bgImg ? {} : game.map || {}, doors: game.doors || {}, chests: Object.values(game.chests || {}).map((C) => ({ x: C.x, y: C.y, o: !!C.o })), drops: Object.values(game.drops || {}).map((D) => ({ x: D.x, y: D.y })), lights: lights.filter((L) => cellShade(`${Math.floor(L.x)}_${Math.floor(L.y)}`) >= 0), amb, shade: cellShade };
 }
 // Области, которые держатся на поле, и стены заклинаний — для частиц и объёмных стен; только видимые клетки
 function g3Zones() {
