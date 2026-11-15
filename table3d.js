@@ -658,6 +658,7 @@ export function create(wrap, api) {
         const [x, y] = k.split('_').map(Number), r = rnd(x, y, pi), k1 = 1 + (p.v ? (rnd(x, y, p.vi ? 77 + pi : 77) - 0.5) * 2 * p.v : 0), s = p.s || [1, 1, 1], rig = RIG[t];
         const jx = p.jit ? (rnd(x, y, 91 + pi) - 0.5) * p.jit : 0, jz = p.jit ? (rnd(x, y, 92 + pi) - 0.5) * p.jit : 0;
         P.set((rig ? 0 : x + 0.5) + (p.dx || 0) + jx, p.y * (p.v ? k1 : 1), (rig ? 0 : y + 0.5) + (p.dz || 0) + jz); Q.setFromEuler(E.set(0, p.spin ? r * 6.28 : 0, 0)); SC.set(s[0] * k1, s[1] * k1, s[2] * k1);
+        if (t === 'hearth') { const d = D4.find(([dx, dy]) => thin.has(`${x + dx}_${y + dy}`)); if (d) { P.x += d[0] * (0.5 - THIN); P.z += d[1] * (0.5 - THIN); } }
         if (t === 'boulder' && deep) { const bk = 1 + Math.min(2.2, Math.max(0, deep[y * S.w + x] - 1)) * 0.34; SC.multiplyScalar(bk); P.y *= bk; }
         if (p.skip && rnd(x, y, 90 + pi) < p.skip) SC.set(0, 0, 0);
         M.compose(P, Q, SC);
@@ -818,6 +819,7 @@ export function create(wrap, api) {
   const SIDE = { n: 0, e: 1, s: 2, w: 3 }, AUTO_DECOR = { castle: ['tapestry', 'shield', 'tapestry', 'painting'], manor: ['painting', 'painting', 'mirror', 'tapestry'], temple: ['tapestry'], guild: ['map', 'shield', 'painting'], tavern: ['antlers', 'painting', 'shield'] };
   let roofMesh = null;
   const WOODS = [0x8a5a2e, 0x7a4c26, 0x94683a, 0x6e4623], BLANKETS = [0x8a2f2a, 0x2f4f7a, 0x3d6b3a, 0x6a3f7a, 0x8a6a2a], BOOKS = [0x7a2a24, 0x2a4a6a, 0x34582e, 0x6a5a2a, 0x4a2e5a, 0x8a7a5a], PAPERS = [0xefe4c4, 0xe2d3a8, 0xf4ecd6, 0xd9c797];
+  const CANOPY = [0xa8322a, 0x2f5f9a, 0x3f7a3a, 0x7a3f8a, 0xc8922a, 0x2a8a8a, 0xb0502a], FRUIT = [0xb8322a, 0x6a9a2a, 0xd88a2a, 0xd8c040], POTS = [0xb5653a, 0x9a5230, 0xc8825a, 0x5a7a9a, 0xd8cdb4], CLOTHS = [0xa8322a, 0x2f5f9a, 0x3f7a3a, 0x7a3f8a, 0xc8922a, 0xe6dcc2, 0x2a8a8a];
   const TENTS = [0xb9a47a, 0x9c8f6c, 0x8a8f6a, 0xa8926a], HAZ = ['water', 'bog', 'lava', 'chasm'], STONE_B = ['castle', 'city', 'dungeon', 'crypt', 'sewer', 'temple', 'ruins', 'lair', 'volcano', 'graveyard'];
   const masonMat = new THREE.MeshStandardMaterial({ map: brickTex, bumpMap: brickTex, bumpScale: 3, roughness: 0.92, vertexColors: true });
   let masonMesh = null, fires = [];
@@ -833,7 +835,7 @@ export function create(wrap, api) {
       decor[k] = `${auto[Math.floor(rnd(x, y, 77) * auto.length)]}:${'nesw'[r]}`;
     });
     const decSh = (k, v) => { const [x, y] = k.split('_').map(Number), [dx, dy] = D4[SIDE[v.split(':')[1]] ?? 2]; return S.shade(`${x + dx}_${y + dy}`); };
-    const sig = `${mapRev}|${S.rooms.length}|${S.tpl}|` + cells.map(([k]) => k + S.shade(k)).join(',') + '|' + Object.keys(S.doors).length + '|' + roofs.map((q) => q.r.door + q.sh).join() + '|' + Object.keys(S.props).length + '|' + Object.entries(decor).map(([k, v]) => decSh(k, v)).join('');
+    const sig = `${mapRev}|${S.rooms.length}|${S.tpl}|` + cells.map(([k]) => k + S.shade(k)).join(',') + '|' + Object.keys(S.doors).length + '|' + roofs.map((q) => q.r.door + q.sh).join() + '|' + Object.keys(S.props).length + '|' + Object.entries(decor).map(([k, v]) => decSh(k, v)).join('') + '|' + S.lights.length;
     if (sig === furnSig) return; furnSig = sig;
     if (roofMesh) { scene.remove(roofMesh); roofMesh.geometry.dispose(); roofMesh = null; }
     if (furnMesh) { scene.remove(furnMesh); furnMesh.geometry.dispose(); furnMesh = null; }
@@ -856,7 +858,10 @@ export function create(wrap, api) {
     // Сторона стены у клетки: 0 — север, 1 — восток, 2 — юг, 3 — запад (−1 — стены рядом нет)
     const wallSide = (x, y) => [0, 1, 2, 3].find((r) => at(x + D4[r][0], y + D4[r][1]) === 'wall') ?? -1;
     // Часть предмета в своих осях: «голова» предмета смотрит на сторону r
-    const part = (x, y, r, sh) => (lx, ly, lz, w, h, d, hex, k = 1) => {
+    // push — сдвиг к стене: тонкая стена стоит посередине своей клетки, и шкаф у края клетки от неё отставал бы
+    const gapW = (x, y, r) => (r >= 0 && thin.has(`${x + D4[r][0]}_${y + D4[r][1]}`) ? 0.5 - THIN : 0);
+    const part = (x, y, r, sh, push = 0) => (lx, ly, lz, w, h, d, hex, k = 1) => {
+      lz -= push;
       const [ox, oz] = r === 1 ? [-lz, lx] : r === 2 ? [-lx, -lz] : r === 3 ? [lz, -lx] : [lx, lz];
       pbox(B, x + 0.5 + ox, ly, y + 0.5 + oz, r & 1 ? d : w, h, r & 1 ? w : d, C3(hex, sh * k));
     };
@@ -871,7 +876,7 @@ export function create(wrap, api) {
     };
     // Предмет интерьера по подсказке генератора (S.props): одна клетка — один предмет
     const item = (cx, cy, p, sh) => {
-      const r0 = wallSide(cx, cy), r = r0 < 0 ? 0 : r0, P = part(cx, cy, r, sh), X = cx + 0.5, Z = cy + 0.5, hs = (n) => rnd(cx * 3 + n, cy * 5 + n, 70 + n);
+      const r0 = wallSide(cx, cy), r = r0 < 0 ? 0 : r0, P = part(cx, cy, r, sh, ['books', 'potions', 'goods', 'curio', 'wardrobe', 'rack', 'bed'].includes(p) ? gapW(cx, cy, r0) : 0), X = cx + 0.5, Z = cy + 0.5, hs = (n) => rnd(cx * 3 + n, cy * 5 + n, 70 + n);
       const shelf = (fill) => { P(0, 0.5, -0.26, 0.96, 1, 0.42, 0x4a3018); [0.2, 0.5, 0.8].forEach((py, row) => { P(0, py - 0.125, -0.04, 0.9, 0.025, 0.06, 0x6b4826); fill(py - 0.11, row); }); }; // шкаф у стены, три полки
       if (p === 'books') {
         if (r0 < 0) { // стеллаж посреди зала: книги с обеих сторон
@@ -909,8 +914,137 @@ export function create(wrap, api) {
       } else if (p === 'cauldron') { // котёл на ножках, варево
         plog(B, X, 0.28, Z, 0.34, 0.27, 2, C3(0x1c1c22, sh), C3(0x3f8a4a, sh * 1.5), 12); plog(B, X, 0.45, Z, 0.04, 0.3, 2, C3(0x2a2a32, sh), C3(0x3f8a4a, sh * 1.5), 12);
         [[0.2, 0.2], [-0.2, 0.2], [0, -0.26]].forEach(([a, b]) => pbox(B, X + a, 0.06, Z + b, 0.05, 0.12, 0.05, C3(0x1c1c22, sh)));
+      } else if (p === 'candelabra') { // напольный подсвечник на три свечи (огонь — в buildLamps)
+        const gold = C3(0xd4a64a, sh * 1.4), wax = C3(0xf0e8d0, sh * 1.3);
+        pbox(B, X, 0.03, Z, 0.28, 0.06, 0.28, gold); pbox(B, X, 0.1, Z, 0.14, 0.08, 0.14, gold); pbox(B, X, 0.44, Z, 0.045, 0.7, 0.045, gold); pbox(B, X, 0.8, Z, r & 1 ? 0.05 : 0.42, 0.035, r & 1 ? 0.42 : 0.05, gold);
+        [-0.19, 0, 0.19].forEach((a) => { const px = X + (r & 1 ? 0 : a), pz = Z + (r & 1 ? a : 0), up = a ? 0 : 0.05; pbox(B, px, 0.835 + up, pz, 0.07, 0.03, 0.07, gold); pbox(B, px, 0.9 + up, pz, 0.035, 0.1, 0.035, wax); });
+      } else if (p === 'lectern') { P(0, 0.04, 0, 0.4, 0.08, 0.4, 0x4a3018); P(0, 0.34, 0, 0.12, 0.56, 0.12, 0x5e3d1f); P(0, 0.65, 0, 0.5, 0.05, 0.38, 0x5e3d1f); P(0, 0.69, 0, 0.34, 0.03, 0.26, 0xefe4c4, 1.2); P(0, 0.692, 0, 0.012, 0.032, 0.26, 0x7a2a24); }
+      else if (p === 'throne') { // трон на каменном возвышении: высокая спинка, красная обивка, позолота
+        pbox(B2, X, 0.05, Z, 0.96, 0.1, 0.96, C3(0xa39b8f, sh * 1.8));
+        P(0, 0.3, -0.02, 0.52, 0.4, 0.5, 0x5e3d1f); P(0, 0.52, 0.02, 0.44, 0.05, 0.4, 0x8a2f2a, 1.2);
+        P(0, 0.85, -0.27, 0.56, 1.1, 0.08, 0x4a3018); P(0, 0.9, -0.225, 0.4, 0.7, 0.02, 0x8a2f2a, 1.2);
+        [-0.27, 0.27].forEach((a) => { P(a, 0.62, 0, 0.07, 0.2, 0.46, 0x5e3d1f); P(a, 1.44, -0.27, 0.08, 0.1, 0.08, 0xd4a64a, 1.5); });
+        P(0, 1.46, -0.27, 0.2, 0.12, 0.06, 0xd4a64a, 1.5);
       } else if (p === 'bed') { P(0, 0.14, 0, 0.84, 0.2, 0.94, 0x5e3d1f); P(0, 0.29, 0.02, 0.76, 0.1, 0.84, 0xd9cfb8); P(0, 0.345, 0.18, 0.78, 0.03, 0.52, BLANKETS[Math.floor(hs(2) * 5)]); P(0, 0.37, -0.28, 0.5, 0.07, 0.2, 0xf0ebe0); P(0, 0.33, -0.45, 0.84, 0.56, 0.06, 0x4a3018); }
       else { P(0, 0.43, 0, 0.84, 0.06, 0.84, 0x7a4c26); [[-0.33, -0.33], [0.33, -0.33], [-0.33, 0.33], [0.33, 0.33]].forEach(([a, b]) => P(a, 0.2, b, 0.08, 0.4, 0.08, 0x4a3018)); things(cx, cy, 1, 1, 0.46, sh, 2); }
+    };
+    // Предмет в несколько клеток в своих осях: a — вдоль, b — поперёк (b > 0 — «лицо» предмета), r — сторона, куда он стоит спиной
+    const frame = (x0, y0, w, h, r, sh, push = 0) => {
+      const lx = !(r & 1), f = r === 0 || r === 3 ? 1 : -1, mx = x0 + w / 2, mz = y0 + h / 2;
+      const W3 = (a, yy, b) => (lx ? [mx + a, yy, mz + (b - push) * f] : [mx + (b - push) * f, yy, mz + a]);
+      const F = (a, yy, b, la, hh, lb, hex, k = 1, BB = B) => { const [px, py, pz] = W3(a, yy, b); pbox(BB, px, py, pz, lx ? la : lb, hh, lx ? lb : la, C3(hex, sh * k)); };
+      F.W3 = W3; F.lx = lx; F.mx = mx; F.mz = mz;
+      return F;
+    };
+    // Торговая лавка: прилавок со ступенчатой витриной под полосатым навесом. Навес выше со стороны покупателей — продавца за прилавком видно
+    const stall = (x0, y0, w, h, goods, sh) => {
+      const vr = S.rooms.find((q) => q.kind === 'stall' && q.x <= x0 + w && q.x + q.w >= x0 && q.y <= y0 + h && q.y + q.h >= y0);
+      const r = !vr ? (w >= h ? 0 : 3) : vr.y + vr.h <= y0 ? 0 : vr.y >= y0 + h ? 2 : vr.x + vr.w <= x0 ? 3 : 1;
+      const F = frame(x0, y0, w, h, r, sh), W3 = F.W3, L = r & 1 ? h : w, len = L - 0.12, hl = len / 2, hs = (n) => rnd(x0 * 7 + n, y0 * 3 + n * 2, 100 + (n % 9));
+      const col = CANOPY[Math.floor(hs(1) * CANOPY.length)], cream = 0xe6dcc2, gold = 0xd4a64a, HF = 1.7, HB = 1.12;
+      const cyl = (a, yy, b, hh, rad, hex, cap, k = 1, n = 8) => { const [px, py, pz] = W3(a, yy, b); plog(B, px, py, pz, hh, rad, 2, C3(hex, sh * k), C3(cap == null ? hex : cap, sh * k), n); };
+      const roll = (a, yy, b, ln, rad, hex) => { const [px, py, pz] = W3(a, yy, b); plog(B, px, py, pz, ln, rad, F.lx ? 1 : 0, C3(hex, sh), C3(cream, sh), 8); };
+      // Прилавок: столешница на ножках, спереди и с боков — ткань, сзади на столе — ступень витрины
+      F(0, 0.5, 0.05, len, 0.05, 0.74, 0x7a5230);
+      [[-1, -1], [1, -1], [-1, 1], [1, 1]].forEach(([sa, sb]) => F(sa * (hl - 0.05), 0.24, 0.05 + sb * 0.32, 0.07, 0.48, 0.07, 0x4a3018));
+      F(0, 0.29, 0.425, len, 0.4, 0.02, col, 0.95, B3); F(0, 0.12, 0.428, len, 0.03, 0.02, gold, 1.1, B3);
+      [-1, 1].forEach((s) => F(s * hl, 0.29, 0.05, 0.02, 0.4, 0.74, col, 0.8, B3));
+      F(0, 0.6, -0.2, len - 0.08, 0.15, 0.26, 0x6b4826);
+      // Стойки и навес: полосы ткани с провисом, по переднему краю — фестоны
+      [-1, 1].forEach((s) => { F(s * (hl - 0.01), HF / 2, 0.44, 0.06, HF, 0.06, 0x4a3018); F(s * (hl - 0.01), HB / 2, -0.4, 0.06, HB, 0.06, 0x4a3018); });
+      F(0, HF, 0.44, len + 0.12, 0.05, 0.05, 0x4a3018); F(0, HB, -0.4, len + 0.12, 0.05, 0.05, 0x4a3018);
+      const NS = Math.max(4, Math.round(len / 0.27)), a0 = -hl - 0.14, da = (len + 0.28) / NS, yAt = (b) => HB + 0.045 + ((HF - HB) * (b + 0.4)) / 0.84, bs = [-0.54, 0, 0.52], o = [F.mx, -6, F.mz];
+      for (let i = 0; i < NS; i++) {
+        const c = C3(i % 2 ? cream : col, sh * (0.94 + 0.12 * hs(i + 10))), u0 = a0 + i * da, u1 = u0 + da;
+        for (let q = 0; q < 2; q++) { const b0 = bs[q], b1 = bs[q + 1], ya = yAt(b0) - (q ? 0.04 : 0), yb = yAt(b1) - (q ? 0 : 0.04); pquad(B3, W3(u0, ya, b0), W3(u1, ya, b0), W3(u1, yb, b1), W3(u0, yb, b1), c, o); }
+        const vy = yAt(0.52), dl = i % 2 ? 0.1 : 0.15;
+        pquad(B3, W3(u0, vy, 0.52), W3(u1, vy, 0.52), W3(u1, vy - dl, 0.53), W3(u0, vy - dl, 0.53), C3(i % 2 ? cream : col, sh * 0.85), [F.mx, vy, F.mz]);
+      }
+      // Сбоку — полотнище от навеса до прилавка (с одной стороны)
+      { const s = hs(2) < 0.5 ? -1 : 1, a = s * (hl + 0.03); pquad(B3, W3(a, 0.55, -0.42), W3(a, 0.55, 0.12), W3(a, yAt(0.12), 0.12), W3(a, yAt(-0.42), -0.42), C3(CLOTHS[Math.floor(hs(3) * CLOTHS.length)], sh * 0.9), [F.mx, 0.8, F.mz]); }
+      // Фонарь под навесом — там, где у лавки горит свет
+      S.lights.forEach((Lt) => {
+        if (Lt.x < x0 || Lt.x > x0 + w || Lt.y < y0 || Lt.y > y0 + h) return;
+        const iron = C3(0x2a2622, sh);
+        pbox(B, Lt.x, 1.25, Lt.y, 0.014, 0.2, 0.014, iron); pbox(B, Lt.x, 1.15, Lt.y, 0.12, 0.02, 0.12, iron); pbox(B, Lt.x, 0.99, Lt.y, 0.12, 0.02, 0.12, iron);
+        [[-1, -1], [1, -1], [-1, 1], [1, 1]].forEach(([p, q]) => pbox(B, Lt.x + p * 0.052, 1.07, Lt.y + q * 0.052, 0.012, 0.16, 0.012, iron));
+      });
+      // Под передней балкой висят связки
+      if (goods === 'herbs' || goods === 'food') for (let i = 0; i < L * 2; i++) { const a = -hl + 0.3 + ((len - 0.6) * i) / Math.max(1, L * 2 - 1); F(a, HF - 0.14, 0.44, 0.06, 0.2, 0.05, goods === 'herbs' ? [0x5a8a3a, 0x8a9a3a, 0x7a5a8a][i % 3] : [0x8a3a2a, 0xd8cdb4, 0x9a5230][i % 3]); }
+      // Товар: передний ряд — на столешнице, задний — на ступени витрины
+      const good = (a, top, b, q, n) => {
+        const k2 = hs(n + 7);
+        if (goods === 'potions') {
+          const hh = 0.1 + q * 0.12; F(a, top + hh / 2, b, 0.075, hh, 0.075, POTIONS[Math.floor(k2 * POTIONS.length)], 1.7); F(a, top + hh + 0.015, b, 0.03, 0.03, 0.03, 0x8a6238);
+          F(a + 0.1, top + 0.045, b + 0.03, 0.06, 0.09, 0.06, POTIONS[Math.floor(q * POTIONS.length)], 1.7); F(a + 0.1, top + 0.1, b + 0.03, 0.025, 0.025, 0.025, 0x8a6238);
+        } else if (goods === 'cloth') {
+          if (q < 0.5) { const c = Math.floor(k2 * 7); roll(a - 0.06, top + 0.055, b, 0.32, 0.055, CLOTHS[c % 7]); roll(a + 0.06, top + 0.055, b, 0.32, 0.055, CLOTHS[(c + 2) % 7]); roll(a, top + 0.15, b, 0.32, 0.055, CLOTHS[(c + 4) % 7]); }
+          else for (let i = 0; i < 4; i++) F(a + (hs(n + i) - 0.5) * 0.02, top + 0.02 + i * 0.038, b, 0.2, 0.036, 0.26, CLOTHS[Math.floor(hs(n + i + 11) * CLOTHS.length)]);
+        } else if (goods === 'weapons') {
+          if (q < 0.35) { F(a, top + 0.008, b, 0.035, 0.014, 0.34, 0xb4b8c0, 1.3); F(a, top + 0.012, b + 0.13, 0.12, 0.022, 0.026, 0x8a6a2a); F(a + 0.1, top + 0.008, b, 0.03, 0.014, 0.28, 0xb4b8c0, 1.3); F(a + 0.1, top + 0.012, b + 0.1, 0.1, 0.022, 0.026, 0x4a3018); }
+          else if (q < 0.6) { F(a, top + 0.07, b, 0.15, 0.14, 0.16, 0x8a9098, 1.2); F(a, top + 0.15, b, 0.03, 0.03, 0.16, 0xaab0b8, 1.2); F(a, top + 0.07, b + 0.085, 0.1, 0.025, 0.01, 0x1a1a20); }
+          else if (q < 0.82) { F(a, top + 0.14, b - 0.02, 0.24, 0.28, 0.03, k2 < 0.5 ? 0x8a2f2a : 0x2f4f7a, 1.2); F(a, top + 0.14, b, 0.07, 0.07, 0.02, gold, 1.3); }
+          else { F(a, top + 0.012, b, 0.03, 0.024, 0.3, 0x6e4a28); F(a + 0.04, top + 0.014, b - 0.11, 0.11, 0.02, 0.08, 0x9aa0a8, 1.2); }
+        } else if (goods === 'pottery') {
+          const rad = 0.05 + q * 0.04, hh = 0.1 + k2 * 0.12, c = POTS[Math.floor(hs(n + 9) * POTS.length)];
+          cyl(a, top + hh / 2, b, hh, rad, c, 0x2a1c12, 1.1, 10); cyl(a, top + hh + 0.02, b, 0.04, rad * 0.6, c, 0x2a1c12, 1.1, 8);
+        } else if (goods === 'curio') {
+          if (q < 0.3) { const c = C3([0x9a6cf0, 0x5ac8f0, 0xf0c05a, 0x5af0a0][Math.floor(k2 * 4)], sh * 2.6), [px, , pz] = W3(a, 0, b), ym = top + 0.11, s = 0.06, ring = [[1, 1], [1, -1], [-1, -1], [-1, 1]]; ring.forEach(([u, v], i) => { const [u2, v2] = ring[(i + 1) % 4], p1 = [px + u * s, ym, pz + v * s], p2 = [px + u2 * s, ym, pz + v2 * s]; pquad(B, p1, p2, [px, ym + 0.11, pz], [px, ym + 0.11, pz], c, [px, ym, pz]); pquad(B, p1, p2, [px, ym - 0.09, pz], [px, ym - 0.09, pz], c, [px, ym, pz]); }); }
+          else if (q < 0.55) { F(a, top + 0.015, b, 0.08, 0.03, 0.08, gold, 1.5); F(a, top + 0.06, b, 0.03, 0.07, 0.03, gold, 1.5); F(a, top + 0.125, b, 0.1, 0.07, 0.1, gold, 1.5); }
+          else if (q < 0.78) { F(a, top + 0.05, b, 0.18, 0.1, 0.12, 0x6e4a28); F(a, top + 0.105, b, 0.19, 0.02, 0.13, gold, 1.3); F(a, top + 0.06, b + 0.062, 0.03, 0.04, 0.01, gold, 1.4); }
+          else { F(a, top + 0.05, b, 0.1, 0.09, 0.11, 0xe8e4d8, 1.2); F(a, top + 0.06, b + 0.056, 0.07, 0.025, 0.01, 0x1a1a20); }
+        } else if (goods === 'books') {
+          if (q < 0.65) for (let i = 0; i < 2 + Math.floor(k2 * 3); i++) F(a + (hs(n + i) - 0.5) * 0.03, top + 0.02 + i * 0.042, b, 0.16, 0.04, 0.21, BOOKS[Math.floor(hs(n + i + 13) * 6)]);
+          else { roll(a - 0.05, top + 0.028, b, 0.2, 0.028, 0xe8dcc0); roll(a + 0.03, top + 0.028, b, 0.2, 0.028, 0xd9c797); roll(a - 0.01, top + 0.075, b, 0.2, 0.028, 0xefe4c4); }
+        } else if (goods === 'herbs') {
+          if (q < 0.4) { F(a, top + 0.03, b, 0.08, 0.06, 0.22, [0x5a8a3a, 0x8a9a3a, 0x6a7a2a][Math.floor(k2 * 3)]); F(a + 0.1, top + 0.03, b, 0.08, 0.06, 0.2, [0x7a5a8a, 0xa08a3a, 0x5a8a3a][Math.floor(k2 * 3)]); }
+          else if (q < 0.75) { F(a, top + 0.07, b, 0.16, 0.14, 0.14, 0xb8a070); F(a, top + 0.145, b, 0.11, 0.02, 0.09, [0x5a8a3a, 0x8a5a2b, 0xc8a04a][Math.floor(k2 * 3)]); }
+          else { cyl(a, top + 0.045, b, 0.09, 0.07, 0x8a857c, 0x5a8a3a, 1.2); F(a + 0.03, top + 0.11, b, 0.025, 0.1, 0.025, 0x8a857c, 1.2); }
+        } else { // food: хлеб, корзины с фруктами, сыр, кувшины
+          if (q < 0.3) { F(a, top + 0.035, b, 0.2, 0.07, 0.11, 0xc8944e); F(a + 0.02, top + 0.095, b, 0.11, 0.06, 0.18, 0xb9843e); }
+          else if (q < 0.6) { F(a, top + 0.05, b, 0.24, 0.1, 0.2, 0x8a6a3a); [[-0.06, -0.05], [0.06, -0.05], [-0.06, 0.05], [0.06, 0.05], [0, 0]].forEach(([u, v], i) => F(a + u, top + (i === 4 ? 0.155 : 0.12), b + v, 0.085, 0.07, 0.085, FRUIT[Math.floor(k2 * 4 + (i % 2)) % 4], 1.25)); }
+          else if (q < 0.8) { cyl(a, top + 0.04, b, 0.08, 0.1, 0xe0b040, 0xe8c460, 1.1, 10); cyl(a + 0.02, top + 0.115, b, 0.07, 0.075, 0xd8a838, 0xe8c460, 1.1, 10); }
+          else { cyl(a, top + 0.08, b, 0.16, 0.06, 0x9a5230, null, 1.1); cyl(a, top + 0.19, b, 0.06, 0.03, 0x9a5230, 0x2a1c12, 1.1); }
+        }
+      };
+      const NA = L * 3;
+      for (let i = 0; i < NA; i++) { const a = -hl + 0.2 + ((len - 0.4) * i) / (NA - 1); good(a + (hs(i) - 0.5) * 0.05, 0.525, 0.2 + (hs(i + 3) - 0.5) * 0.08, hs(i + 5), i); good(a + (hs(i + 30) - 0.5) * 0.05, 0.675, -0.2, hs(i + 35), i + 30); }
+    };
+    // Церковная скамья: сиденье, высокая спинка, боковины; смотрит на алтарь
+    const altars = Object.entries(S.props).filter(([, p]) => p === 'altar').map(([k]) => k.split('_').map(Number));
+    const pew = (x0, y0, w, h, sh) => {
+      const cx = x0 + w / 2 - 0.5, cy = y0 + h / 2 - 0.5, al = altars.slice().sort((a, b) => Math.hypot(a[0] - cx, a[1] - cy) - Math.hypot(b[0] - cx, b[1] - cy))[0];
+      const lx = w > h || (w === h && (!al || Math.abs(al[1] - cy) >= Math.abs(al[0] - cx))), r = lx ? (al && al[1] > cy ? 0 : 2) : (al && al[0] > cx ? 3 : 1);
+      const F = frame(x0, y0, w, h, r, sh), len = (lx ? w : h) - 0.1, hl = len / 2, wood = 0x4e3220;
+      F(0, 0.27, 0.03, len, 0.05, 0.4, wood, 1.15); F(0, 0.5, -0.2, len, 0.5, 0.05, wood); F(0, 0.77, -0.2, len, 0.04, 0.09, wood, 1.25); F(0, 0.44, -0.255, len - 0.14, 0.03, 0.07, wood, 1.2);
+      const n = Math.max(1, Math.round(len / 1.5));
+      for (let i = 0; i <= n; i++) { const a = -hl + 0.03 + ((len - 0.06) * i) / n, end = i === 0 || i === n; if (end) { F(a, 0.36, 0, 0.06, 0.72, 0.48, wood, 0.9); F(a, 0.75, -0.1, 0.07, 0.07, 0.28, wood, 1.2); } else F(a, 0.13, 0.03, 0.05, 0.26, 0.36, wood, 0.8); }
+    };
+    // Алтарь: каменный стол на ступени, белый покров с золотой каймой, свечи, чаша и книга
+    const altar = (x0, y0, w, h, sh) => {
+      const F = frame(x0, y0, w, h, w >= h ? 0 : 3, sh), L = Math.max(w, h), len = L - 0.24, hl = len / 2, gold = 0xd4a64a, white = 0xf0ebe0;
+      F(0, 0.04, 0, len + 0.18, 0.08, 0.88, 0xa39b8f, 1.8, B2); F(0, 0.31, 0, len, 0.46, 0.6, 0xb4aca0, 1.9, B2);
+      F(0, 0.56, 0, len + 0.06, 0.04, 0.68, white, 1.2, B3);
+      [-1, 1].forEach((s) => { F(0, 0.42, s * 0.345, Math.min(len, 0.9), 0.3, 0.012, white, 1.15, B3); F(0, 0.29, s * 0.352, Math.min(len, 0.9), 0.03, 0.012, gold, 1.3, B3); F(0, 0.44, s * 0.353, 0.12, 0.12, 0.01, gold, 1.4, B3); });
+      [-1, 1].forEach((s) => { const a = s * Math.max(0.2, hl - 0.14); F(a, 0.6, 0, 0.07, 0.04, 0.07, gold, 1.4); F(a, 0.68, 0, 0.03, 0.14, 0.03, gold, 1.4); F(a, 0.8, 0, 0.035, 0.12, 0.035, 0xf0e8d0, 1.3); F(a, 0.875, 0, 0.022, 0.035, 0.022, 0xffc860, 3); });
+      F(0, 0.595, 0, 0.08, 0.03, 0.08, gold, 1.5); F(0, 0.65, 0, 0.03, 0.08, 0.03, gold, 1.5); F(0, 0.72, 0, 0.1, 0.07, 0.1, gold, 1.5);
+      if (L >= 2) { F(0.32, 0.6, 0.05, 0.2, 0.04, 0.26, 0x7a2a24); F(0.32, 0.622, 0.05, 0.17, 0.01, 0.22, 0xefe4c4, 1.2); F(-0.32, 0.61, 0, 0.14, 0.06, 0.14, gold, 1.3); }
+    };
+    // Заалтарный образ у стены: золочёная стена с нишами, в них — фигуры святых, сверху навершие со знаком
+    const retable = (x0, y0, w, h, sh) => {
+      const r0 = wallSide(x0, y0), r = r0 < 0 ? 0 : r0, F = frame(x0, y0, w, h, r, sh, gapW(x0, y0, r0)), L = r & 1 ? h : w, len = L - 0.06, gold = 0xd4a64a, dk = 0x9a7426, cw = len / L;
+      F(0, 0.13, -0.3, len, 0.26, 0.4, 0x8f877b, 1.8, B2);
+      F(0, 0.7, -0.37, len, 0.88, 0.24, dk, 1.2);
+      for (let i = 0; i < L; i++) {
+        const a = -len / 2 + (i + 0.5) * cw, tall = L % 2 === 1 && i === (L - 1) / 2 ? 0.1 : 0, nh = 0.6 + tall;
+        F(a, 0.36 + nh / 2, -0.245, cw - 0.3, nh, 0.02, 0x2a1c12);
+        F(a, 0.36 + nh + 0.025, -0.24, cw - 0.22, 0.05, 0.03, gold, 1.5);
+        F(a, 0.56, -0.215, 0.14, 0.36, 0.05, [0xe8e4d8, 0x3a5a9a, 0x9a3a2a][i % 3], 1.3); F(a, 0.79, -0.215, 0.085, 0.09, 0.05, 0xe8c8a0, 1.3); F(a, 0.8, -0.238, 0.16, 0.16, 0.01, 0xf0c85a, 1.9);
+      }
+      for (let i = 0; i <= L; i++) { const a = Math.max(-len / 2 + 0.05, Math.min(len / 2 - 0.05, -len / 2 + i * cw)); F(a, 0.7, -0.22, 0.08, 0.88, 0.08, gold, 1.35); }
+      F(0, 1.16, -0.35, len + 0.06, 0.05, 0.32, gold, 1.5);
+      F(0, 1.29, -0.37, len * 0.5, 0.2, 0.2, dk, 1.2); F(0, 1.4, -0.37, len * 0.56, 0.04, 0.24, gold, 1.5);
+      F(0, 1.56, -0.37, 0.05, 0.28, 0.05, gold, 1.7); F(0, 1.59, -0.37, 0.2, 0.05, 0.05, gold, 1.7);
     };
     // То, что висит на стене: картина, гобелен, инструменты, щит, травы, карта, зеркало, рога
     Object.entries(decor).forEach(([key, val]) => {
@@ -959,11 +1093,14 @@ export function create(wrap, api) {
         // Лестничный марш в две клетки: первая поднимает до половины стены, вторая — до самого верха
         const { f, idx } = FA, dx = f.dx, dy = f.dy, at4 = (i) => { const gi = idx * 4 + i, o = -0.375 + i * 0.25; return [gi, x + 0.5 + dx * o, y + 0.5 + dy * o]; };
         if (!f.down) {
+          // У тонкой стены ступени шире — доходят до самой стены; у верхнего конца марша — площадка до стены
+          const e1 = thin.has(`${x - dy}_${y + dx}`) ? 0.5 - THIN : 0, e2 = thin.has(`${x + dy}_${y - dx}`) ? 0.5 - THIN : 0, ew = e1 + e2, es = (e1 - e2) / 2, sx0 = -dy * es, sz0 = dx * es;
           for (let i = 0; i < 4; i++) {
             const [gi, px, pz] = at4(i), top = ((gi + 1) / 8) * WALL_H;
-            pbox(B, px, top / 2, pz, dx ? 0.25 : 0.92, top, dx ? 0.92 : 0.25, C3(0x6a4726, sh * (0.86 + 0.14 * (gi % 2))), !!dx);
-            pbox(B, px, top + 0.014, pz, dx ? 0.29 : 0.96, 0.03, dx ? 0.96 : 0.29, C3(0x9c7040, sh), !!dx);
+            pbox(B, px + sx0, top / 2, pz + sz0, dx ? 0.25 : 0.92 + ew, top, dx ? 0.92 + ew : 0.25, C3(0x6a4726, sh * (0.86 + 0.14 * (gi % 2))), !!dx);
+            pbox(B, px + sx0, top + 0.014, pz + sz0, dx ? 0.29 : 0.96 + ew, 0.03, dx ? 0.96 + ew : 0.29, C3(0x9c7040, sh), !!dx);
           }
+          if (idx && thin.has(`${x + dx}_${y + dy}`)) { const g = 0.5 - THIN, px = x + 0.5 + dx * (0.5 + g / 2) + sx0, pz = y + 0.5 + dy * (0.5 + g / 2) + sz0; pbox(B, px, WALL_H / 2, pz, dx ? g : 0.92 + ew, WALL_H, dx ? 0.92 + ew : g, C3(0x6a4726, sh), !!dx); pbox(B, px, WALL_H + 0.014, pz, dx ? g : 0.96 + ew, 0.03, dx ? 0.96 + ew : g, C3(0x9c7040, sh), !!dx); }
           // Перила — с той стороны, где нет стены
           [[-dy, dx], [dy, -dx]].forEach(([sx, sy]) => {
             if (at(x + sx, y + sy) === 'wall') return;
@@ -1021,7 +1158,7 @@ export function create(wrap, api) {
         return;
       }
       if (t === 'board') { // доска заказов: щит на столбах у стены, листы с печатями
-        const r = wallSide(x, y), P = part(x, y, r < 0 ? 0 : r, sh), z = r < 0 ? 0 : -0.38;
+        const r = wallSide(x, y), P = part(x, y, r < 0 ? 0 : r, sh, gapW(x, y, r)), z = r < 0 ? 0 : -0.38;
         P(-0.43, 0.5, z, 0.08, 1, 0.08, 0x4a3018); P(0.43, 0.5, z, 0.08, 1, 0.08, 0x4a3018);
         P(0, 0.62, z, 0.94, 0.62, 0.05, 0x6b4826); P(0, 0.97, z + 0.02, 1, 0.07, 0.16, 0x4a3018);
         for (let i = 0; i < 6; i++) {
@@ -1033,11 +1170,15 @@ export function create(wrap, api) {
       }
       if (done.has(key)) return;
       // Предмет — связное пятно клеток мебели
-      const comp = [], q = [[x, y]]; done.add(key);
-      while (q.length) { const [cx, cy] = q.pop(); comp.push([cx, cy]); D4.forEach(([dx, dy]) => { const k = `${cx + dx}_${cy + dy}`; if (isF(cx + dx, cy + dy) && !done.has(k)) { done.add(k); q.push([cx + dx, cy + dy]); } }); }
+      const comp = [], q = [[x, y]], p0 = S.props[key] || ''; done.add(key);
+      while (q.length) { const [cx, cy] = q.pop(); comp.push([cx, cy]); D4.forEach(([dx, dy]) => { const k = `${cx + dx}_${cy + dy}`; if (isF(cx + dx, cy + dy) && !done.has(k) && (S.props[k] || '') === p0) { done.add(k); q.push([cx + dx, cy + dy]); } }); }
       const xs = comp.map((c) => c[0]), ys = comp.map((c) => c[1]), x0 = Math.min(...xs), y0 = Math.min(...ys), w = Math.max(...xs) - x0 + 1, h = Math.max(...ys) - y0 + 1;
       const rect = comp.length === w * h, room = roomAt(x, y), kind = room ? room.kind : '', wood = WOODS[Math.floor(rnd(x0, y0, 61) * 4)];
       const pset = [...new Set(comp.map(([cx, cy]) => S.props[`${cx}_${cy}`] || ''))], one = pset.length === 1 ? pset[0] : pset.some(Boolean) ? '*' : '';
+      if (one.startsWith('stall')) { stall(x0, y0, w, h, one.split(':')[1] || 'food', sh); return; }
+      if (one === 'pew') { pew(x0, y0, w, h, sh); return; }
+      if (one === 'altar') { altar(x0, y0, w, h, sh); return; }
+      if (one === 'retable') { retable(x0, y0, w, h, sh); return; }
       if (one && !['table', 'desk', 'counter', 'bed'].includes(one)) { comp.forEach(([cx, cy]) => item(cx, cy, S.props[`${cx}_${cy}`] || 'table', S.shade(`${cx}_${cy}`) >= 0 ? S.shade(`${cx}_${cy}`) : sh)); return; }
       const camp = camps.find((c) => Math.abs(x0 + w / 2 - 0.5 - c.cx) <= c.r && Math.abs(y0 + h / 2 - 0.5 - c.cy) <= c.r);
       if (camp) {
@@ -1103,13 +1244,13 @@ export function create(wrap, api) {
         } else comp.forEach(([cx, cy]) => { pbox(B, cx + 0.42, 0.26, cy + 0.5, 0.52, 0.52, 0.52, C3(0x8a5a2b, sh)); pbox(B, cx + 0.72, 0.16, cy + 0.3, 0.32, 0.32, 0.32, C3(0x7a4c26, sh)); });
       } else if (one === 'bed' || (!one && BEDS.includes(kind) && comp.length <= 2)) {
         comp.forEach(([cx, cy]) => { // кровать: изголовьем к стене
-          const r = wallSide(cx, cy), P = part(cx, cy, r < 0 ? 0 : r, sh);
+          const r = wallSide(cx, cy), P = part(cx, cy, r < 0 ? 0 : r, sh, gapW(cx, cy, r));
           P(0, 0.14, 0, 0.84, 0.2, 0.94, 0x5e3d1f); P(0, 0.29, 0.02, 0.76, 0.1, 0.84, 0xd9cfb8);
           P(0, 0.345, 0.18, 0.78, 0.03, 0.52, BLANKETS[Math.floor(rnd(cx, cy, 62) * 5)]); P(0, 0.37, -0.28, 0.5, 0.07, 0.2, 0xf0ebe0); P(0, 0.33, -0.45, 0.84, 0.56, 0.06, 0x4a3018);
         });
       } else if (!one && SHELVES.includes(kind)) {
         comp.forEach(([cx, cy]) => { // полки с книгами и свитками у стены
-          const r = wallSide(cx, cy), P = part(cx, cy, r < 0 ? 0 : r, sh);
+          const r = wallSide(cx, cy), P = part(cx, cy, r < 0 ? 0 : r, sh, gapW(cx, cy, r));
           P(0, 0.5, -0.26, 0.96, 1, 0.42, 0x4a3018);
           [0.2, 0.5, 0.8].forEach((py, row) => { for (let i = 0; i < 5; i++) { const bh = 0.15 + rnd(cx * 5 + i, cy + row, 63) * 0.08; P(-0.36 + i * 0.18, py - 0.11 + bh / 2, -0.04, 0.14, bh, 0.05, BOOKS[Math.floor(rnd(cx + i, cy * 3 + row, 64) * 6)]); } P(0, py - 0.125, -0.04, 0.9, 0.025, 0.06, 0x6b4826); });
         });
@@ -1229,9 +1370,12 @@ export function create(wrap, api) {
     const wall = (x, y) => S.map[`${x}_${y}`] === 'wall', inb = (x, y) => x >= 0 && y >= 0 && x < S.w && y < S.h;
     // Где висит каждый источник: у стены — на держателе (сначала дальняя от камеры стена), иначе — на стойке посреди клетки
     S.lights.forEach((L) => {
-      L.px = L.x; L.pz = L.y; L.py = 0.85; L.dir = null;
+      L.px = L.x; L.pz = L.y; L.py = 0.85; L.dir = null; L.hang = 0;
       if (!L.fix) return;
       let cx = Math.floor(L.x), cy = Math.floor(L.y), dir = null;
+      // Фонарь под навесом лавки и свечи напольного подсвечника — без своей стойки
+      const pr = S.props[`${cx}_${cy}`] || '';
+      if (S.map[`${cx}_${cy}`] === 'furn' && (pr === 'candelabra' || pr.startsWith('stall'))) { L.hang = pr === 'candelabra' ? 1.03 : 1.07; L.py = L.hang; return; }
       if (wall(cx, cy)) { const o = [[0, 1], [1, 0], [-1, 0], [0, -1]].find(([dx, dy]) => inb(cx + dx, cy + dy) && !wall(cx + dx, cy + dy)); if (o) { dir = [-o[0], -o[1]]; cx += o[0]; cy += o[1]; } }
       else dir = [[0, -1], [-1, 0], [1, 0], [0, 1]].find(([dx, dy]) => wall(cx + dx, cy + dy)) || null;
       const fire = fires.find((f) => Math.abs(f.x - L.x) <= 1.6 && Math.abs(f.y - L.y) <= 1.6);
@@ -1244,7 +1388,8 @@ export function create(wrap, api) {
       const add = (geo, mat, x, y, z) => { const m = new THREE.Mesh(geo, mat); m.position.set(x, y, z); lampBox.add(m); return m; };
       const flame = (x, y, z, k = 1, bare = false) => { const a = new THREE.Sprite(flameMat); a.center.set(0.5, 0.08); a.position.set(x, y - 0.07, z); a.userData.flame = [0.17 * k, 0.27 * k]; lampBox.add(a); if (bare) return; const b = new THREE.Sprite(coreMat); b.position.set(x, y, z); b.userData.flame = [0.42 * k, 0.42 * k]; lampBox.add(b); };
       S.lights.filter((L) => L.fix).forEach((L) => {
-        if (L.fire) { flame(L.px, 0.2, L.pz, 1.6, true); flame(L.px + 0.09, 0.17, L.pz - 0.06, 1.05, true); flame(L.px - 0.1, 0.17, L.pz + 0.05, 0.9, true); }
+        if (L.hang) flame(L.x, L.hang, L.y, 0.6);
+        else if (L.fire) { flame(L.px, 0.2, L.pz, 1.6, true); flame(L.px + 0.09, 0.17, L.pz - 0.06, 1.05, true); flame(L.px - 0.1, 0.17, L.pz + 0.05, 0.9, true); }
         else if (L.dir) {
           const [dx, dy] = L.dir, off = thin.has(`${L.cx + dx}_${L.cy + dy}`) ? 1 - THIN : 0.5, wx = L.cx + 0.5 + dx * off, wz = L.cy + 0.5 + dy * off;
           add(plateGeo, ironMat, wx - dx * 0.03, 0.58, wz - dy * 0.03).rotation.y = dx ? Math.PI / 2 : 0;

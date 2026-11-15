@@ -6533,7 +6533,7 @@ function populate(L, o) {
   const pool = (cap) => { const p = inEnv.filter((m) => crNum(m.cr) <= cap); return p.length >= 3 ? p : all.filter((m) => crNum(m.cr) <= cap); };
   // Лагеря — первыми группами (банда своего лагеря); в остальные комнаты — по одной группе
   const camps = (L.rooms || []).filter((r) => r.kind === 'camp');
-  const rooms = (L.rooms || []).filter((r) => !['entrance', 'cave', 'plaza', 'camp', 'hut', 'garden', 'pier', 'market', 'bar', 'stall', 'stage', 'stands', 'reception', 'board', 'landing', 'corridor', 'counter'].includes(r.kind));
+  const rooms = (L.rooms || []).filter((r) => !['entrance', 'cave', 'plaza', 'camp', 'hut', 'garden', 'pier', 'market', 'bar', 'stall', 'stage', 'stands', 'reception', 'board', 'landing', 'corridor', 'counter', 'altar'].includes(r.kind));
   const bossRoom = rooms.find((r) => r.kind === 'boss');
   const auto = ['dungeon'].includes(L.tpl) ? Math.max(2, Math.min(6, Math.round(rooms.length / 2.5))) : L.tpl === 'cave' ? 3 : MAPGEN.TEMPLATES[L.tpl] && MAPGEN.TEMPLATES[L.tpl].kind === 'location' ? 3 : 2;
   const groups = Math.max(camps.length, o.groups > 0 ? o.groups : auto), used = new Set(), centers = [], leads = new Set();
@@ -6588,11 +6588,13 @@ function peacefulNpcs(L, F, tokens, notes, key) {
     ['Commoner', 'зазывала', n_('market') ? 1 : 0, 'market'], ['Spy', 'карманник', chance(0.5) ? 1 : 0, n_('market') ? 'market' : 'road']]
     : T === 'village' ? [['Commoner', 'селянин', Math.min(6, n_('house')), 'house'], ['Commoner', 'трактирщик', 1, 'tavern'], ['Guard', 'дозорный', R_(1, 2), 'road'],
       ['Scout', 'охотник', 1, 'any'], ['Druid', 'знахарка', chance(0.4) ? 1 : 0, 'house'], ['Commoner', 'ребёнок', R_(0, 2), 'any']]
+    : T === 'castle' && (L.floor || 1) > 1 ? [['Noble', 'член семьи владельца', n_('bedroom') ? 1 : 0, 'bedroom'], ['Noble', 'гость замка', Math.min(2, n_('chamber')), 'chamber'], ['Commoner', 'слуга', R_(1, 2), 'corridor'],
+      ['Guard', 'стражник', R_(1, 2), 'corridor'], ['Acolyte', 'библиотекарь', n_('library') ? 1 : 0, 'library'], ['Commoner', 'писарь', n_('office') ? 1 : 0, 'office'], ['Knight', 'советник', n_('council') ? 1 : 0, 'council']]
     : T === 'castle' ? [['Guard', 'стражник у ворот', 2, 'gate'], ['Guard', 'стражник', R_(1, 3), 'any'], ['Guard', 'часовой', Math.min(6, n_('tower')), 'tower'], ['Guard', 'стражник', n_('barracks') * 2, 'barracks'],
       ['Veteran', 'капитан', 1, n_('barracks') ? 'barracks' : 'any'], ['Knight', 'рыцарь', 1, 'hall'], ['Noble', 'владелец замка', 1, 'hall'], ['Noble', 'гость замка', chance(0.4) ? 1 : 0, 'chamber'],
       ['Priest', 'капеллан', n_('chapel') ? 1 : 0, 'chapel'], ['Commoner', 'конюх', n_('stable') ? 1 : 0, 'stable'], ['Commoner', 'повар', n_('kitchen') ? 1 : 0, 'kitchen'],
       ['Commoner', 'садовник', n_('garden') ? 1 : 0, 'garden'], ['Commoner', 'слуга', R_(2, 3), 'any']]
-    : T === 'temple' ? [['Priest', 'настоятель', 1, 'nave'], ['Acolyte', 'послушник', R_(2, 3), 'nave'], ['Acolyte', 'служитель часовни', n_('chapel'), 'chapel'],
+    : T === 'temple' ? [['Priest', 'настоятель', 1, n_('altar') ? 'altar' : 'nave'], ['Acolyte', 'послушник', R_(2, 3), 'nave'], ['Acolyte', 'служитель часовни', n_('chapel'), 'chapel'],
       ['Commoner', 'прихожанин', R_(3, 6), 'nave'], ['Guard', 'храмовый страж', 2, 'gate'], ['Commoner', 'могильщик', 1, 'any']]
     : T === 'manor' ? [['Noble', 'хозяин особняка', 1, 'hall'], ['Noble', 'гость', chance(0.5) ? 1 : 0, 'dining'], ['Commoner', 'дворецкий', 1, 'hall'], ['Commoner', 'повар', n_('kitchen') ? 1 : 0, 'kitchen'],
       ['Commoner', 'слуга', R_(2, 3), 'any'], ['Guard', 'охранник', 2, 'gate'], ['Commoner', 'садовник', n_('garden') ? 1 : 0, 'garden']]
@@ -6610,20 +6612,26 @@ function peacefulNpcs(L, F, tokens, notes, key) {
       ['Noble', 'знатный гость', chance(0.4) ? 1 : 0, 'room'], ['Commoner', 'постоялец', R_(0, 2), 'room'], ['Commoner', 'кухарка', 1, 'kitchen'], ['Commoner', 'конюх', n_('stable') ? 1 : 0, 'stable']];
   // Торговцы: в городе — в лавках и на рынке, в деревне — лавочник, в замке — кузнец в кузнице, в таверне — иногда бродячий торговец
   const big = T === 'city';
+  // Продавец за прилавком торгует тем, что лежит на его лавке
+  const STALL_WHO = { food: ['Commoner', 'торговец снедью', 'general'], potions: ['Commoner', 'алхимик', 'alchemist'], cloth: ['Commoner', 'торговец тканями', 'general'], weapons: ['Commoner', 'оружейник', 'smith'],
+    pottery: ['Commoner', 'гончар', 'general'], curio: ['Mage', 'торговец диковинами', 'curio'], books: ['Commoner', 'книжник', 'alchemist'], herbs: ['Commoner', 'знахарь', 'alchemist'] };
+  const stallShops = roomsOf('stall').filter((r) => r.goods).map((r) => { const [e, role, kind] = STALL_WHO[r.goods] || STALL_WHO.food; return [e, role, 1, r, kind]; });
   const shops = T === 'city' ? [...roomsOf('shop').slice(0, 3).map((r, i) => ['Commoner', ['торговец', 'кузнец', 'алхимик'][i], 1, r, ['general', 'smith', 'alchemist'][i]]),
-    ...roomsOf('market').flatMap((r) => [['Commoner', 'торговец', 1, r, 'general'], ['Commoner', 'алхимик', 1, r, 'alchemist'], ...(chance(0.5) ? [['Commoner', 'оружейник', 1, r, 'smith']] : [])]),
+    ...(stallShops.length ? stallShops : roomsOf('market').flatMap((r) => [['Commoner', 'торговец', 1, r, 'general'], ['Commoner', 'алхимик', 1, r, 'alchemist'], ...(chance(0.5) ? [['Commoner', 'оружейник', 1, r, 'smith']] : [])])),
     // В большом городе — иногда лавка диковин
     ...(big && chance(0.5) ? [['Mage', 'хозяин лавки диковин', 1, roomsOf('shop')[3] || 'any', 'curio']] : [])]
-    : T === 'village' ? [['Commoner', 'лавочник', 1, 'house', 'general']] : T === 'castle' ? [['Commoner', 'кузнец', 1, n_('smithy') ? 'smithy' : 'barracks', 'smith']]
+    : T === 'village' ? [['Commoner', 'лавочник', 1, 'house', 'general']] : T === 'castle' ? ((L.floor || 1) > 1 ? [] : [['Commoner', 'кузнец', 1, n_('smithy') ? 'smithy' : 'barracks', 'smith']])
+    : T === 'fair' && stallShops.length ? stallShops
     : T === 'fair' ? roomsOf('stall').slice(0, 5).map((r, i) => ['Commoner', ['торговец', 'оружейник', 'алхимик', 'торговец', 'знахарь'][i], 1, r, ['general', 'smith', 'alchemist', 'general', 'alchemist'][i]])
     : T === 'house' ? ({ smithy: [['Commoner', 'кузнец', 1, 'counter', 'smith']], shop: [['Commoner', 'торговец', 1, 'counter', 'general']], books: [['Commoner', 'книготорговец', 1, 'counter', 'alchemist']],
       magic: [['Mage', 'хозяин лавки диковин', 1, 'counter', 'curio']], alchemy: [['Commoner', 'алхимик', 1, 'counter', 'alchemist']] }[L.v] || [])
     : T === 'temple' ? [['Acolyte', 'торговец святынями', 1, 'nave', 'alchemist']]
       : chance(0.4) ? [['Commoner', 'бродячий торговец', 1, 'hall', 'general']] : [];
   // Место у мебели (стол, стойка, кровать) в комнате — люди стоят у столов, а не кучей посередине
+  const stallCells = new Set(roomsOf('stall').flatMap((r) => { const a = []; for (let y = r.y; y < r.y + r.h; y++) for (let x = r.x; x < r.x + r.w; x++) a.push(`${x}_${y}`); return a; }));
   const byTable = (r) => {
     const list = [];
-    for (let y = r.y; y < r.y + r.h; y++) for (let x = r.x; x < r.x + r.w; x++) if (F.free(x, y) && [[0, -1], [1, 0], [0, 1], [-1, 0]].some(([dx, dy]) => (L.cells || {})[`${x + dx}_${y + dy}`] === 'furn')) list.push([x, y]);
+    for (let y = r.y; y < r.y + r.h; y++) for (let x = r.x; x < r.x + r.w; x++) if (F.free(x, y) && (r.kind === 'stall' || !stallCells.has(`${x}_${y}`)) && [[0, -1], [1, 0], [0, 1], [-1, 0]].some(([dx, dy]) => (L.cells || {})[`${x + dx}_${y + dy}`] === 'furn')) list.push([x, y]);
     const p = list.length ? pickOne(list) : null;
     if (p) F.take(p[0], p[1]);
     return p;
