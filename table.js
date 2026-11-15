@@ -36,6 +36,7 @@ const TERRAIN = {
   stairs: { n: 'Лестница', color: 'rgba(160,140,110,.55)', ic: '🪜' },
   board: { n: 'Доска заказов', color: 'rgba(120,84,44,.9)', block: true, cover: 2, ic: '📜' },
   well: { n: 'Колодец', color: 'rgba(96,96,104,.9)', block: true, cover: 2, ic: '⛲' },
+  roof: { n: 'Крыша (закрытый дом)', color: '#6e4630', block: true, opaque: true, ic: '🏠' },
 };
 TERRAIN.furn.cover = 2; TERRAIN.tree.cover = 5; TERRAIN.rock.cover = 5;
 // Цвет земли под картой (meta.ground) — задаёт генератор
@@ -650,6 +651,9 @@ function drawCell(g, type, px, py, v) {
   } else if (type === 'stairs') { // ступени
     g.fillStyle = 'rgba(40,30,20,.5)'; for (let i = 0; i < 4; i++) g.fillRect(px + 6 + i * 3, py + 8 + i * 7, CELL - 12 - i * 6, 4);
     g.font = '12px system-ui'; g.fillText('🪜', px + CELL - 15, py + 13);
+  } else if (type === 'roof') { // черепица рядами
+    g.strokeStyle = 'rgba(0,0,0,.35)'; g.lineWidth = 1;
+    for (let r = 0; r < 4; r++) { const yy = py + r * 10; g.beginPath(); g.moveTo(px, yy); g.lineTo(px + CELL, yy); g.stroke(); for (let q = (r % 2) * 5; q < CELL; q += 10) { g.beginPath(); g.moveTo(px + q, yy); g.lineTo(px + q, yy + 10); g.stroke(); } }
   } else if (type === 'well') { // колодец: каменное кольцо с водой
     g.fillStyle = '#8a8680'; g.beginPath(); g.arc(px + c, py + c, 15, 0, Math.PI * 2); g.fill();
     g.fillStyle = '#2f5f8f'; g.beginPath(); g.arc(px + c, py + c, 9, 0, Math.PI * 2); g.fill();
@@ -1137,6 +1141,7 @@ function onDown(e) {
   const note = Object.entries(game.notes || {}).find(([, n]) => n.x === p.x && n.y === p.y);
   if (tool === 'note' && isDM()) { noteDialog(note ? note[0] : null, p.x, p.y); return; }
   if (tool === 'move' && isDM() && !tokEl && note) { noteDialog(note[0]); return; }
+  if (tool === 'move' && !tokEl && !e.shiftKey && portalAt(ck)) { houseDialog(ck); return; }
   if (tool === 'move' && !tokEl && (game.doors || {})[ck]) { toggleDoor(ck, e.shiftKey); return; }
   // Сундук: мастер ставит инструментом и правит нажатием, игрок — открывает, стоя рядом
   const chest = !tokEl && chestAt(p.x, p.y);
@@ -6251,7 +6256,7 @@ function handoutsDialog() {
 /* ---------- Генератор местности и локаций ---------- */
 // mapgen.js строит карту по шаблону и «зерну»; здесь — предпросмотр, сундуки с добычей и замена поля (по желанию — новой сценой)
 // Цвета предпросмотра: стены тёмные, пол светлый — чтобы план читался с первого взгляда
-const PREV_C = { lava: '#e05a14', chasm: '#000', grave: '#8c8c94', mushroom: '#7a46a5', crate: '#8a5a2b', stairs: '#c8b48a', board: '#d9c797', well: '#7a8aa0', wall: '#15120f', floor: '#6e604b', tree: '#2f6b2a', rock: '#7a746a', furn: '#a0662e', road: '#b08a55', bridge: '#8a5a2b', water: '#3c6eaa', thicket: '#2a5a2a', snow: '#dfe6ee', sand: '#c8b27a', slope: '#8a7454', bog: '#4a5a30' };
+const PREV_C = { lava: '#e05a14', chasm: '#000', grave: '#8c8c94', mushroom: '#7a46a5', crate: '#8a5a2b', stairs: '#c8b48a', board: '#d9c797', well: '#7a8aa0', roof: '#7a4a32', wall: '#15120f', floor: '#6e604b', tree: '#2f6b2a', rock: '#7a746a', furn: '#a0662e', road: '#b08a55', bridge: '#8a5a2b', water: '#3c6eaa', thicket: '#2a5a2a', snow: '#dfe6ee', sand: '#c8b27a', slope: '#8a7454', bog: '#4a5a30' };
 const AMB_N = [['bright', '☀ день'], ['dim', '🌆 сумерки'], ['dark', '🌑 темнота']], FOG_N = [['off', 'выключен'], ['vision', 'обзор персонажей'], ['manual', 'только открытое мастером']];
 let genSeed = 0;
 function genDialog() {
@@ -6385,9 +6390,10 @@ async function genApply(res, o) {
   });
   // План комнат и вход — для заселения сейчас и позже («👥 Заселить»)
   // Здание в несколько этажей: зерно и вариант — чтобы следующий этаж повторил контур (см. stairsDialog)
-  const gen = { tpl: res.tpl, rooms: res.rooms, start: res.start, ...(res.floors ? { seed: res.seed, v: res.v || '', floor: res.floor || 1, floors: res.floors } : {}), ...(res.flights ? { flights: res.flights } : {}) };
+  const gen = { tpl: res.tpl, rooms: res.rooms, start: res.start, ...(res.floors ? { seed: res.seed, v: res.v || '', floor: res.floor || 1, floors: res.floors } : {}), ...(res.flights ? { flights: res.flights } : {}),
+    ...(res.props ? { props: res.props, decor: res.decor || null, v: res.v || '' } : {}) };
   upd['meta/gen'] = gen;
-  const P = o.pop ? populate({ w: res.w, h: res.h, cells: res.cells, doors: res.doors, rooms: res.rooms, start: res.start, tpl: res.tpl, floor: res.floor || 1 }, { ...o.pop, keep: Object.values(pcs).map((p) => [p.x, p.y]) }) : null;
+  const P = o.pop ? populate({ w: res.w, h: res.h, cells: res.cells, doors: res.doors, rooms: res.rooms, start: res.start, tpl: res.tpl, floor: res.floor || 1, v: res.v || '' }, { ...o.pop, keep: Object.values(pcs).map((p) => [p.x, p.y]) }) : null;
   if (P) Object.entries(P.tokens).forEach(([id, t]) => { upd[`tokens/${id}`] = t; });
   if (o.asScene) {
     const sid = key('scenes');
@@ -6410,7 +6416,7 @@ async function genApply(res, o) {
 /* ---------- Заселение: противники по уровню группы и NPC ---------- */
 // Где искать существ для шаблона карты (метки env в бестиарии)
 const TPL_ENV = { forest: ['forest'], river: ['forest', 'grassland', 'swamp'], mountains: ['mountain'], plains: ['grassland'], swamp: ['swamp'], desert: ['desert'], coast: ['coast'],
-  dungeon: ['dungeon'], cave: ['underdark'], castle: ['urban', 'dungeon'], city: ['urban'], village: ['urban', 'forest', 'grassland'], tavern: ['urban'], guild: ['urban'],
+  dungeon: ['dungeon'], cave: ['underdark'], castle: ['urban', 'dungeon'], city: ['urban'], village: ['urban', 'forest', 'grassland'], tavern: ['urban'], guild: ['urban'], house: ['urban'],
   pass: ['mountain'], volcano: ['mountain', 'underdark'], ruins: ['dungeon', 'grassland', 'forest'], graveyard: ['dungeon'], crypt: ['dungeon'], temple: ['urban', 'dungeon'],
   tower: ['dungeon', 'urban'], manor: ['urban', 'dungeon'], mine: ['underdark', 'dungeon', 'mountain'], sewer: ['urban', 'dungeon', 'underdark'], underdark: ['underdark'],
   lair: ['mountain', 'underdark'], ship: ['coast'], arena: ['urban'], fair: ['urban'], world: ['grassland'] };
@@ -6527,7 +6533,7 @@ function populate(L, o) {
   const pool = (cap) => { const p = inEnv.filter((m) => crNum(m.cr) <= cap); return p.length >= 3 ? p : all.filter((m) => crNum(m.cr) <= cap); };
   // Лагеря — первыми группами (банда своего лагеря); в остальные комнаты — по одной группе
   const camps = (L.rooms || []).filter((r) => r.kind === 'camp');
-  const rooms = (L.rooms || []).filter((r) => !['entrance', 'cave', 'plaza', 'camp', 'hut', 'garden', 'pier', 'market', 'bar', 'stall', 'stage', 'stands', 'reception', 'board', 'landing', 'corridor'].includes(r.kind));
+  const rooms = (L.rooms || []).filter((r) => !['entrance', 'cave', 'plaza', 'camp', 'hut', 'garden', 'pier', 'market', 'bar', 'stall', 'stage', 'stands', 'reception', 'board', 'landing', 'corridor', 'counter'].includes(r.kind));
   const bossRoom = rooms.find((r) => r.kind === 'boss');
   const auto = ['dungeon'].includes(L.tpl) ? Math.max(2, Math.min(6, Math.round(rooms.length / 2.5))) : L.tpl === 'cave' ? 3 : MAPGEN.TEMPLATES[L.tpl] && MAPGEN.TEMPLATES[L.tpl].kind === 'location' ? 3 : 2;
   const groups = Math.max(camps.length, o.groups > 0 ? o.groups : auto), used = new Set(), centers = [], leads = new Set();
@@ -6596,6 +6602,9 @@ function peacefulNpcs(L, F, tokens, notes, key) {
       : [['Commoner', 'регистратор гильдии', 1, 'reception'], ['Commoner', 'писарь', 1, 'office'], ['Guard', 'страж хранилища', 1, 'reception'], ['Veteran', 'бывалый наёмник', R_(1, 2), 'hall'],
         ['Scout', 'следопыт', R_(1, 2), 'hall'], ['Thug', 'новичок-авантюрист', R_(1, 2), 'board'], ['Mage', 'странствующий маг', chance(0.5) ? 1 : 0, 'hall'], ['Commoner', 'заказчик', R_(1, 2), 'board']])
     : (L.floor || 1) > 1 ? [['Commoner', 'постоялец', R_(1, 3), 'room'], ['Noble', 'знатный гость', chance(0.4) ? 1 : 0, 'room'], ['Commoner', 'слуга', 1, 'corridor']]
+    : T === 'house' ? ({ home: [['Commoner', 'хозяин дома', 1, 'hall'], ['Commoner', 'домочадец', R_(0, 2), 'hall'], ['Commoner', 'ребёнок', chance(0.4) ? 1 : 0, 'room']],
+      smithy: [['Commoner', 'подмастерье', 1, 'shop']], shop: [['Commoner', 'покупатель', R_(0, 2), 'shop']], books: [['Commoner', 'читатель', R_(0, 2), 'shop']], magic: [['Noble', 'покупатель', chance(0.5) ? 1 : 0, 'shop']],
+      alchemy: [['Commoner', 'ученик алхимика', chance(0.6) ? 1 : 0, 'shop']], warehouse: [['Commoner', 'кладовщик', 1, 'warehouse'], ['Guard', 'сторож', 1, 'warehouse']] }[L.v] || [])
     : T === 'arena' ? [['Gladiator', 'гладиатор', 2, 'pit'], ['Commoner', 'зритель', R_(4, 8), 'stands'], ['Guard', 'стражник', 2, 'gate'], ['Noble', 'распорядитель', 1, 'stands']]
     : [['Commoner', 'трактирщик', 1, n_('bar') ? 'bar' : 'hall'], ['Commoner', 'посетитель', R_(4, 7), 'hall'], ['Thug', 'громила', chance(0.4) ? 1 : 0, 'hall'], ['Scout', 'путник', chance(0.5) ? 1 : 0, 'hall'],
       ['Noble', 'знатный гость', chance(0.4) ? 1 : 0, 'room'], ['Commoner', 'постоялец', R_(0, 2), 'room'], ['Commoner', 'кухарка', 1, 'kitchen'], ['Commoner', 'конюх', n_('stable') ? 1 : 0, 'stable']];
@@ -6607,6 +6616,8 @@ function peacefulNpcs(L, F, tokens, notes, key) {
     ...(big && chance(0.5) ? [['Mage', 'хозяин лавки диковин', 1, roomsOf('shop')[3] || 'any', 'curio']] : [])]
     : T === 'village' ? [['Commoner', 'лавочник', 1, 'house', 'general']] : T === 'castle' ? [['Commoner', 'кузнец', 1, n_('smithy') ? 'smithy' : 'barracks', 'smith']]
     : T === 'fair' ? roomsOf('stall').slice(0, 5).map((r, i) => ['Commoner', ['торговец', 'оружейник', 'алхимик', 'торговец', 'знахарь'][i], 1, r, ['general', 'smith', 'alchemist', 'general', 'alchemist'][i]])
+    : T === 'house' ? ({ smithy: [['Commoner', 'кузнец', 1, 'counter', 'smith']], shop: [['Commoner', 'торговец', 1, 'counter', 'general']], books: [['Commoner', 'книготорговец', 1, 'counter', 'alchemist']],
+      magic: [['Mage', 'хозяин лавки диковин', 1, 'counter', 'curio']], alchemy: [['Commoner', 'алхимик', 1, 'counter', 'alchemist']] }[L.v] || [])
     : T === 'temple' ? [['Acolyte', 'торговец святынями', 1, 'nave', 'alchemist']]
       : chance(0.4) ? [['Commoner', 'бродячий торговец', 1, 'hall', 'general']] : [];
   // Место у мебели (стол, стойка, кровать) в комнате — люди стоят у столов, а не кучей посередине
@@ -6617,18 +6628,26 @@ function peacefulNpcs(L, F, tokens, notes, key) {
     if (p) F.take(p[0], p[1]);
     return p;
   };
+  const atDoor = (r, s) => { const [dx, dy] = r.door.split('_').map(Number); return F.near(dx, dy, s, null, 3); }; // у порога закрытого дома
   const place = (where, s) => {
     const room = typeof where === 'object' ? where : null;
+    if (room && room.closed) return atDoor(room, s);
     if (room) return (s === 1 && byTable(room)) || F.near(room.x + Math.floor(room.w / 2), room.y + Math.floor(room.h / 2), s, room, 6);
     if (where === 'gate') return F.near(L.start.x, L.start.y, s, null, 9);
     if (['road', 'any'].includes(where)) { const list = F.cells(where === 'road' ? (v) => v === 'road' : (v) => !v || ['road', 'floor', 'sand', 'bridge'].includes(v)); const p = list.length ? pickOne(list) : null; if (p) F.take(p[0], p[1]); return p; }
     const rs = roomsOf(where);
     if (!rs.length) return null;
     const r = pickOne(rs);
+    if (r.closed) return atDoor(r, s);
     return (s === 1 && byTable(r)) || F.near(r.x + Math.floor(r.w / 2), r.y + Math.floor(r.h / 2), s, r, 6);
   };
+  // Торговцы закрытых лавок ждут покупателей внутри (появятся, когда отряд войдёт), на улице их нет
+  const anyClosed = (L.rooms || []).some((r) => r.closed);
+  const shopsOut = anyClosed ? shops.filter(([, , , where]) => (typeof where === 'object' ? !where.closed : !['house', 'shop'].includes(where))) : shops;
   const who = [], usedNames = new Set();
-  [...plan, ...shops].forEach(([e, role, k, where, shop]) => {
+  // …как и трактирщик, жрец, хозяин усадьбы и кладовщик — они внутри своих зданий
+  const planOut = anyClosed ? plan.filter(([, , , where]) => !['tavern', 'temple', 'manor', 'warehouse'].includes(where)) : plan;
+  [...planOut, ...shopsOut].forEach(([e, role, k, where, shop]) => {
     const mon = BEST().find((m) => m.e === e);
     if (!mon) return;
     for (let i = 0; i < k; i++) {
@@ -6749,7 +6768,7 @@ function popDialog() {
   $('#pOk').onclick = () => {
     const pcs = Object.values(game.tokens).filter((t) => t.kind === 'pc');
     const start = G && G.start ? G.start : pcs.length ? { x: Math.round(pcs.reduce((s, t) => s + t.x, 0) / pcs.length), y: Math.round(pcs.reduce((s, t) => s + t.y, 0) / pcs.length) } : { x: 1, y: 1 };
-    const L = { w: W(), h: H(), cells: game.map || {}, doors: game.doors || {}, rooms: G && G.tpl === $('#pT').value ? G.rooms || [] : [], start, tpl: $('#pT').value, floor: (G && G.floor) || 1 };
+    const L = { w: W(), h: H(), cells: game.map || {}, doors: game.doors || {}, rooms: G && G.tpl === $('#pT').value ? G.rooms || [] : [], start, tpl: $('#pT').value, floor: (G && G.floor) || 1, v: (G && G.v) || '' };
     const P = populate(L, { ...popOptsRead(), keep: Object.values(game.tokens).flatMap((t) => { const s = t.size || 1, out = []; for (let dy = 0; dy < s; dy++) for (let dx = 0; dx < s; dx++) out.push([t.x + dx, t.y + dy]); return out; }) });
     app.closeModal();
     popApply(P);
@@ -7123,6 +7142,50 @@ function stairsDialog(k) {
     const sid2 = await genApply({ ...res, tpl: t }, { lvl: partyLevel(), amb: res.amb, fog: res.fog, asScene: true, name, clearNpc: true, peaceful: !!T[t].peaceful,
       pop: pop ? { lvl: partyLevel(), n: players, diff: 1, groups: 0, peaceful: !!T[t].peaceful, hidden: false } : null, worldFrom: (game.meta || {}).worldFrom || null, links: Object.fromEntries(backs.map((b) => [b, cur])) });
     if (sid2) await R.update(ref(gpath()), Object.fromEntries(here.map((c) => [`sceneData/${cur}/links/${c}`, sid2])));
+  };
+}
+
+/* ---------- Закрытые дома: интерьер — отдельная сцена ---------- */
+// На карте поселения дом стоит под крышей; его дверь — переход. Мастер нажимает на дверь: интерьер создаётся при первом входе
+// (снаружи дом маленький, внутри просторный) и привязывается к двери; дверь наружу в интерьере ведёт обратно
+const HOUSE_IN = { house: ['house', 'home'], warehouse: ['house', 'warehouse'], tavern: ['tavern', 'small'], temple: ['temple', ''], manor: ['manor', ''], guild: ['guild', ''] };
+const HOUSE_N = { home: 'дом', smithy: 'кузница', shop: 'лавка', books: 'книжная лавка', magic: 'лавка диковин', alchemy: 'лавка алхимика', warehouse: 'склад', tavern: 'таверна', temple: 'храм', manor: 'особняк', guild: 'гильдия приключенцев' };
+const closedRoom = (k) => (((game.meta || {}).gen || {}).rooms || []).find((r) => r.closed && r.door === k) || null;
+// Переход: дверь закрытого дома или любая привязанная к сцене клетка, кроме лестницы (у той своё окно)
+const portalAt = (k) => (!!((game.meta || {}).links || {})[k] && (game.map || {})[k] !== 'stairs') || (!!(game.doors || {})[k] && !!closedRoom(k));
+let houseAsk = 0;
+function houseDialog(k) {
+  const sid = ((game.meta || {}).links || {})[k], linked = sid && (game.scenes || {})[sid], room = closedRoom(k);
+  if (!isDM()) {
+    const t = myTok(), [sx, sy] = k.split('_').map(Number), near = t && Math.max(Math.abs(t.x - sx), Math.abs(t.y - sy)) <= 1;
+    if (near && Date.now() - houseAsk > 15000) { houseAsk = Date.now(); addLog({ kind: 'sys', txt: `🚪 ${t.name} хочет войти в дверь` }); app.toast('🚪 Мастер получил просьбу — он проведёт отряд'); }
+    else app.toast(near ? '🚪 Мастер уже знает — ждите' : '🚪 Подойдите к двери вплотную и нажмите — мастер проведёт отряд');
+    return;
+  }
+  const T = MAPGEN.TEMPLATES, curN = ((game.scenes || {})[(game.meta || {}).scene] || {}).n || 'Сцена';
+  const [tpl0, v0] = room ? (room.kind === 'shop' ? ['house', room.shop || 'shop'] : HOUSE_IN[room.kind] || ['house', 'home']) : ['house', 'home'];
+  const opts = [...T.house.variants.map(([v, n]) => [`house:${v}`, `🏠 ${n}`]), ['tavern:small', T.tavern.n], ['temple:', T.temple.n], ['manor:', T.manor.n], ['guild:', T.guild.n]];
+  const what = HOUSE_N[tpl0 === 'house' ? v0 : tpl0] || 'дом';
+  app.openModal(`<div><h2>🚪 ${linked ? 'Дверь' : `Вход: ${esc(what)}`}</h2>
+    ${linked ? `<p>Ведёт в «<b>${esc(linked.n)}</b>».</p>` : `<p class="muted small">Дом закрыт. Внутреннее помещение создаётся при первом входе и станет отдельной сценой; дверь наружу в нём приведёт обратно сюда.</p>
+    <div class="form-grid"><label style="grid-column:1/-1">Что внутри<select id="hsT">${opts.map(([val, n]) => `<option value="${val}" ${val === `${tpl0}:${v0}` ? 'selected' : ''}>${esc(n)}</option>`).join('')}</select></label>
+      <label style="grid-column:1/-1">Название<input id="hsN" value="${esc(`${curN}: ${what}`)}"></label>
+      <label class="check" style="grid-column:1/-1"><input type="checkbox" id="hsPop" checked> Заселить (хозяева, торговцы)</label></div>`}
+    <div class="modal-actions"><button data-act="closeModal">Закрыть</button>${linked ? `<button class="danger" id="hsUnlink">Отвязать</button><button class="primary" id="hsGo">🚪 Перейти</button>` : '<button class="primary" id="hsNew">🚪 Войти</button>'}</div></div>`);
+  if ($('#hsT')) $('#hsT').onchange = () => { const [t, v] = $('#hsT').value.split(':'); $('#hsN').value = `${curN}: ${HOUSE_N[t === 'house' ? v : t] || 'дом'}`; };
+  if ($('#hsGo')) $('#hsGo').onclick = async () => { app.closeModal(); await loadScene(sid); addLog({ kind: 'sys', txt: `🚪 Отряд переходит: ${linked.n}` }); };
+  if ($('#hsUnlink')) $('#hsUnlink').onclick = async () => { await R.update(ref(gpath('meta/links')), { [k]: null }); app.closeModal(); };
+  if ($('#hsNew')) $('#hsNew').onclick = async () => {
+    const [t, v] = $('#hsT').value.split(':'), name = $('#hsN').value.trim() || 'Дом', pop = $('#hsPop').checked;
+    app.closeModal();
+    const cur = await saveScene(), res = MAPGEN.generate(t, { seed: Math.floor(Math.random() * 1e9), variant: v });
+    // Обратный путь: дверь интерьера, а у карт со двором (таверна, храм) — клетка, где появляется отряд
+    const back = res.exit ? `${res.exit.x}_${res.exit.y}` : `${res.start.x}_${res.start.y}`;
+    const players = Object.values(game.members || {}).filter((m) => m.role !== 'dm').length || 4;
+    const sid2 = await genApply({ ...res, tpl: t }, { lvl: partyLevel(), amb: res.amb, fog: res.fog, asScene: true, name, clearNpc: true, peaceful: !!T[t].peaceful,
+      pop: pop ? { lvl: partyLevel(), n: players, diff: 1, groups: 0, peaceful: !!T[t].peaceful, hidden: false } : null, worldFrom: (game.meta || {}).worldFrom || null, links: { [back]: cur } });
+    if (sid2) await R.update(ref(gpath()), { [`sceneData/${cur}/links/${k}`]: sid2 });
+    if (sid2 && !res.exit) app.toast('Чтобы вернуться, нажмите на клетку, где появился отряд');
   };
 }
 
@@ -7613,7 +7676,7 @@ function renderTools() {
   const hasMine = user && game.tokens[`pc_${user.uid}`];
   $('#tblBoard').dataset.tool = tool; // курсор поля соответствует инструменту
   const b = (a, label, title, on) => `<button class="${on ? 'on' : ''}" data-tbl="${a}" title="${title}">${label}${on && /Свободно|Вид игроков/.test(label) ? ' ✓' : ''}</button>`;
-  const brushes = ['tree', 'rock', 'bush', 'road', 'sand', 'bridge', 'furn', 'floor', 'crate', 'grave', 'mushroom', 'stairs', 'board', 'well', 'lava', 'chasm'], rough = ['thicket', 'bog', 'rubble', 'slope', 'snow', 'ice'];
+  const brushes = ['tree', 'rock', 'bush', 'road', 'sand', 'bridge', 'furn', 'floor', 'crate', 'grave', 'mushroom', 'stairs', 'board', 'well', 'roof', 'lava', 'chasm'], rough = ['thicket', 'bog', 'rubble', 'slope', 'snow', 'ice'];
   const handouts = isDM() || hoMine().length ? b('handouts', `📜 Материалы${!isDM() && hoMine().length ? ` (${hoMine().length})` : ''}`, isDM() ? 'Показать игрокам картинку, письмо или карту' : 'Что показывал мастер') : '';
   const base = t('move', '✋ Двигать', 'Перетаскивайте токены; шаг — WASD или стрелки') + t('ruler', '📏 Линейка', 'Протяните, чтобы измерить расстояние')
     + b('keys', '⌨', 'Клавиши: шаг WASD, атака Q, заклинание E, спасбросок Alt… — посмотреть и переназначить (K)')
@@ -8557,7 +8620,7 @@ document.addEventListener('change', (e) => {
 /* ---------- Объёмный вид ---------- */
 // table3d.js только рисует: слои поля идут на пол текстурами, стены и существа — объёмные. Правила, ввод и
 // синхронизация остаются здесь. Модуль (и Three.js) подгружается при первом включении
-const PROP3D = new Set(['wall', 'rock', 'tree', 'crate', 'furn', 'grave', 'mushroom', 'bridge', 'bush', 'thicket', 'rubble', 'snow', 'stairs', 'bog', 'ice', 'lava', 'board', 'well']);
+const PROP3D = new Set(['wall', 'rock', 'tree', 'crate', 'furn', 'grave', 'mushroom', 'bridge', 'bush', 'thicket', 'rubble', 'snow', 'stairs', 'bog', 'ice', 'lava', 'board', 'well', 'roof']);
 // Яркость клетки для стен и препятствий: −1 — игрок её ещё не видел (не рисовать)
 function cellShade(k) {
   if (!fogVis) return 1;
@@ -8577,7 +8640,7 @@ function g3State() {
     ...Object.values(game.tokens || {}).filter((t) => t.lt && !(t.hidden && !isDM()) && !fogHides(t)).map((t) => ({ x: t.x + (t.size || 1) / 2, y: t.y + (t.size || 1) / 2, r: ((+t.lt.b || 0) + (+t.lt.d || 0)) / FT() }))];
   // rocky — каменная земля под открытым небом (горы, перевал), а не плиты подземелья; rooms — что за комнаты (кровати, стойки)
   const gen = (game.meta || {}).gen || {}, rocky = (game.meta || {}).ground === 'stone' && (gen.tpl ? ['mountains', 'pass', 'volcano'].includes(gen.tpl) : (f.amb || 'bright') !== 'dark');
-  return { rocky, rooms: gen.rooms || [], tpl: gen.tpl || '', flights: gen.flights || [], w: W(), h: H(), bg: !!bgImg, ground: (game.meta || {}).ground || '', map: bgImg ? {} : game.map || {}, doors: game.doors || {}, chests: Object.values(game.chests || {}).map((C) => ({ x: C.x, y: C.y, o: !!C.o, l: +C.lock && !C.lk ? 1 : 0 })), drops: Object.values(game.drops || {}).map((D) => ({ x: D.x, y: D.y })), lights: lights.filter((L) => cellShade(`${Math.floor(L.x)}_${Math.floor(L.y)}`) >= 0), amb, shade: cellShade };
+  return { rocky, rooms: gen.rooms || [], tpl: gen.tpl || '', flights: gen.flights || [], props: gen.props || {}, decor: gen.decor || {}, w: W(), h: H(), bg: !!bgImg, ground: (game.meta || {}).ground || '', map: bgImg ? {} : game.map || {}, doors: game.doors || {}, chests: Object.values(game.chests || {}).map((C) => ({ x: C.x, y: C.y, o: !!C.o, l: +C.lock && !C.lk ? 1 : 0 })), drops: Object.values(game.drops || {}).map((D) => ({ x: D.x, y: D.y })), lights: lights.filter((L) => cellShade(`${Math.floor(L.x)}_${Math.floor(L.y)}`) >= 0), amb, shade: cellShade };
 }
 // Области, которые держатся на поле, и стены заклинаний — для частиц и объёмных стен; только видимые клетки
 function g3Zones() {
