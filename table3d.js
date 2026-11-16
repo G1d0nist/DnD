@@ -8,7 +8,7 @@ import { clone as skinClone } from 'three/addons/utils/SkeletonUtils.js';
 const MODEL_DIR = 'lab/models/';
 // Имя существа → файл модели и рост в клетках (для размера «Средний»)
 // (волк — по началу имени: «Гигантский паук-волк» и «Оборотень-волк» — другие существа)
-const MODELS = [[/гоблин/i, 'goblin', 0.9], [/^\s*(волк|лютоволк|ворг)/i, 'wolf', 0.62]];
+const MODELS = [[/гоблин/i, 'goblin', 0.9], [/^\s*(волк|лютоволк|ворг)/i, 'wolf', 0.62], [/бандит/i, 'bandit', 1.05]];
 const PITCH = (55 * Math.PI) / 180, FOV = 35, WALL_H = 0.9, BASE_H = 0.07;
 const BLOOM = [0.7, 0.5, 0.95]; // свечение: сила, радиус, порог яркости
 const AMB = { bright: { hemi: 1.15, sun: 2.3, col: 0xffe6c4 }, dim: { hemi: 0.6, sun: 1.0, col: 0xc9b6d6 }, dark: { hemi: 0.5, sun: 0.6, col: 0x7f94d6 } };
@@ -1486,7 +1486,8 @@ export function create(wrap, api) {
       if (t.dead && !animated(gl)) return; // мёртвым без анимации смерти — медальон с черепом
       const m = animated(gl) ? skinClone(gl.scene) : gl.scene.clone(true), b = new THREE.Box3().setFromObject(m), k = (hit[2] * s) / (b.max.y - b.min.y);
       m.scale.setScalar(k); b.setFromObject(m); const c = b.getCenter(new THREE.Vector3());
-      m.position.set(-c.x, -b.min.y, -c.z);
+      // Анимированные модели собраны с телом в начале координат (оружие в вытянутой руке не сдвигает их с подставки)
+      if (animated(gl)) m.position.set(0, -b.min.y, 0); else m.position.set(-c.x, -b.min.y, -c.z);
       m.traverse((o) => { if (o.isMesh) { o.castShadow = o.receiveShadow = true; if (o.isSkinnedMesh) o.frustumCulled = false; } });
       const h = new THREE.Group(); h.add(m);
       T.fig.remove(g); T.body = h; T.fig.add(h); T.faceMat = null; T.mats = []; T.spin = true; T.top = hit[2] * s; T.pick.scale.y = T.top + 0.1;
