@@ -3,6 +3,7 @@
 // стены и препятствия поднимаются над клетками, существа — фигурки на подставках.
 import * as THREE from 'three';
 import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
+import { clone as skinClone } from 'three/addons/utils/SkeletonUtils.js';
 
 const MODEL_DIR = 'lab/models/';
 // Имя существа → файл модели и рост в клетках (для размера «Средний»)
@@ -1427,7 +1428,19 @@ export function create(wrap, api) {
 
   // ---------- Существа ----------
   const toks = new Map(), loader = new GLTFLoader(), modelCache = {};
-  const model = (file) => (modelCache[file] = modelCache[file] || new Promise((ok) => loader.load(`${MODEL_DIR}${file}.glb`, (g) => ok(g.scene), undefined, () => ok(null))));
+  const model = (file) => (modelCache[file] = modelCache[file] || new Promise((ok) => loader.load(`${MODEL_DIR}${file}.glb`, (g) => ok(g), undefined, () => ok(null))));
+  // Анимации модели (клипы в .glb): idle и walk по кругу, attack и hit один раз, death — до конца и лежит
+  const ONCE = { attack: 1, hit: 1, death: 1 };
+  function play(T, name, fade = 0.2, at = 0) {
+    const A = T.anim; if (!A || !A.acts[name] || A.cur === name && !ONCE[name]) return;
+    const a = A.acts[name], prev = A.cur && A.acts[A.cur];
+    a.reset(); a.time = at; a.setLoop(ONCE[name] ? THREE.LoopOnce : THREE.LoopRepeat, Infinity); a.clampWhenFinished = !!ONCE[name];
+    a.enabled = true; a.setEffectiveWeight(1); a.play();
+    if (prev && prev !== a) prev.crossFadeTo(a, fade, false);
+    A.cur = name; kick(300);
+  }
+  // Что фигурка делает сама по себе: лежит, идёт или стоит
+  const baseAnim = (T) => (T.t.dead || T.t.down ? 'death' : T.mt < 1 ? 'walk' : 'idle');
   const ringGeo = new THREE.RingGeometry(0.47, 0.54, 48); ringGeo.rotateX(-Math.PI / 2);
   const turnGeo = new THREE.RingGeometry(0.57, 0.62, 48); turnGeo.rotateX(-Math.PI / 2);
   const pickMat = new THREE.MeshBasicMaterial({ colorWrite: false, depthWrite: false });
@@ -1454,6 +1467,7 @@ export function create(wrap, api) {
   function buildBody(T, t) {
     const s = t.size, col = new THREE.Color(t.color), g = new THREE.Group();
     if (T.body) { T.fig.remove(T.body); T.body.traverse((o) => { if (o.userData.own) { o.material.map && o.material.map.dispose(); o.material.dispose(); o.geometry.dispose(); } }); }
+    if (T.anim) { T.anim.mixer.stopAllAction(); T.anim = null; }
     T.mats = []; T.spin = false;
     const add = (geo, mat, x, y, z) => { const m = new THREE.Mesh(geo, mat); m.position.set(x, y, z); m.castShadow = true; m.userData.own = true; g.add(m); T.mats.push(mat); return m; };
     const r = 0.4 * s, cy = 0.3 * s + r, face = faceCanvas(t);
@@ -1465,13 +1479,24 @@ export function create(wrap, api) {
     g.rotation.order = 'YXZ'; g.rotation.x = -0.2;
     T.body = g; T.fig.add(g);
     const hit = MODELS.find(([re]) => re.test(t.name || ''));
-    if (hit && !t.dead) model(hit[1]).then((src) => {
-      if (!src || T.body !== g || !toks.has(T.id)) return;
-      const m = src.clone(true), b = new THREE.Box3().setFromObject(m), k = (hit[2] * s) / (b.max.y - b.min.y);
+    const animated = (gl) => gl && gl.animations && gl.animations.length;
+    if (hit) model(hit[1]).then((gl) => {
+      if (!gl || T.body !== g || !toks.has(T.id)) return;
+      if (t.dead && !animated(gl)) return; // мёртвым без анимации смерти — медальон с черепом
+      const m = animated(gl) ? skinClone(gl.scene) : gl.scene.clone(true), b = new THREE.Box3().setFromObject(m), k = (hit[2] * s) / (b.max.y - b.min.y);
       m.scale.setScalar(k); b.setFromObject(m); const c = b.getCenter(new THREE.Vector3());
-      m.position.set(-c.x, -b.min.y, -c.z); m.traverse((o) => { if (o.isMesh) o.castShadow = o.receiveShadow = true; });
+      m.position.set(-c.x, -b.min.y, -c.z);
+      m.traverse((o) => { if (o.isMesh) { o.castShadow = o.receiveShadow = true; if (o.isSkinnedMesh) o.frustumCulled = false; } });
       const h = new THREE.Group(); h.add(m);
       T.fig.remove(g); T.body = h; T.fig.add(h); T.faceMat = null; T.mats = []; T.spin = true; T.top = hit[2] * s; T.pick.scale.y = T.top + 0.1;
+      if (animated(gl)) {
+        const mixer = new THREE.AnimationMixer(m), acts = {};
+        gl.animations.forEach((clip) => { acts[clip.name] = mixer.clipAction(clip); });
+        T.anim = { mixer, acts, cur: null };
+        const base = baseAnim(T);
+        // Уже мёртвый (или без сознания) при появлении — сразу лежит, без падения
+        play(T, base, 0, base === 'death' ? acts.death.getClip().duration : Math.random() * 2);
+      }
       kick();
     });
   }
@@ -1488,7 +1513,7 @@ export function create(wrap, api) {
     return T;
   }
   function dropTok(T) {
-    scene.remove(T.root); T.lab.remove(); toks.delete(T.id);
+    scene.remove(T.root); T.lab.remove(); toks.delete(T.id); if (T.anim) T.anim.mixer.stopAllAction();
     T.root.traverse((o) => { if (o.userData.own) { o.material.map && o.material.map.dispose(); o.material.dispose(); o.geometry.dispose(); } });
     T.base.geometry.dispose(); T.base.material.dispose(); T.sel.material.dispose(); T.turn.material.dispose(); T.pick.geometry.dispose();
   }
@@ -1498,7 +1523,8 @@ export function create(wrap, api) {
     list.forEach((t) => {
       seen.add(t.id);
       const fresh = !toks.has(t.id), T = fresh ? makeTok(t.id) : toks.get(t.id), s = t.size;
-      const sig = `${s}|${t.color}|${t.img || ''}|${t.ic || ''}|${t.name}|${t.dead}`;
+      // У анимированной модели смерть не пересобирает фигурку — она проигрывает падение
+      const sig = `${s}|${t.color}|${t.img || ''}|${t.ic || ''}|${t.name}|${T.anim ? '' : t.dead}`;
       if (sig !== T.sig) {
         T.sig = sig; T.base.scale.set(s, 1, s); T.base.material.color.set(t.color); T.sel.scale.set(s, 1, s); T.turn.scale.set(s, 1, s);
         buildBody(T, t); T.pick.scale.set(s, T.top + 0.1, s); T.pick.position.y = (T.top + 0.1) / 2 + BASE_H;
@@ -1520,7 +1546,11 @@ export function create(wrap, api) {
     stale = true; zoneStale = true; kick(1100);
   }
   function dragTo(id, x, y) { const T = toks.get(id); if (!T) return; T.pos.set(x + T.t.size / 2, 0, y + T.t.size / 2); T.to.copy(T.pos); T.mt = 1; T.lift = 1; kick(); }
-  function hit(id, miss) { const T = toks.get(id); if (!T) return; if (miss) T.miss = 0.32; else T.hit = 0.34; kick(500); }
+  function hit(id, miss) {
+    const T = toks.get(id); if (!T) return;
+    if (miss) T.miss = 0.32; else if (T.anim && T.anim.acts.hit && !T.t.dead && !T.t.down) play(T, 'hit', 0.08); else T.hit = 0.34;
+    kick(500);
+  }
 
   // ---------- Камера ----------
   const cur = { x: 0, z: 0, d: 0, yaw: 0, pitch: PITCH, ok: false }, tan = Math.tan((FOV * Math.PI) / 360);
@@ -1722,7 +1752,11 @@ export function create(wrap, api) {
     kick(1500);
     if (o.kind === 'melee') {
       // Выпад атакующего и дуга удара у цели
-      if (TA) { TA.lg = 0.24; const d = Math.hypot(b.x - a.x, b.z - a.z) || 1; TA.ldx = (b.x - a.x) / d; TA.ldz = (b.z - a.z) / d; TA.yaw = Math.atan2(TA.ldx, TA.ldz); }
+      if (TA) {
+        const d = Math.hypot(b.x - a.x, b.z - a.z) || 1; TA.ldx = (b.x - a.x) / d; TA.ldz = (b.z - a.z) / d; TA.yaw = Math.atan2(TA.ldx, TA.ldz);
+        // Модель со своим ударом рубит сама (с середины замаха, чтобы клинок дошёл к вспышке), остальные делают выпад
+        if (TA.anim && TA.anim.acts.attack) play(TA, 'attack', 0.06, 0.18); else TA.lg = 0.24;
+      }
       const g = new THREE.Group(), m = addM(arcG, hot(E.c[0], 2.5), 0); scene.remove(m); g.add(m); g.position.copy(b); g.rotation.order = 'YXZ'; g.rotation.x = -0.5; g.rotation.y = cur.yaw; scene.add(g);
       const s = o.crit ? 1.9 : 1.35;
       addFx({ dur: 0.3, delay: 0.08, update() { const f = this.t / 0.3; m.rotation.z = 2.6 - 3.4 * ease(f); m.scale.setScalar(s * (0.7 + 0.5 * f)); m.material.opacity = Math.sin(Math.PI * Math.min(1, f * 1.15)); }, end() { scene.remove(g); m.material.dispose(); } });
@@ -1730,6 +1764,7 @@ export function create(wrap, api) {
       return 200;
     }
     if (o.kind === 'bolt' && E.n === 'lightning') { bolt(a, b, E.c[0], 0.4, 2); if (o.hit) impact(b, E, o.crit); return 120; }
+    if (o.kind === 'throw' && TA && TA.anim && TA.anim.acts.attack) { TA.yaw = Math.atan2(b.x - a.x, b.z - a.z); play(TA, 'attack', 0.06, 0.18); }
     const magic = o.kind === 'bolt', dur = clamp(dist / (magic ? 14 : o.kind === 'throw' ? 12 : 26), 0.18, 0.75), arc = magic ? dist * 0.04 : o.kind === 'throw' ? dist * 0.16 : dist * 0.06;
     const mesh = new THREE.Mesh(magic ? orbG : o.kind === 'throw' ? knifeG : arrowG, new THREE.MeshBasicMaterial({ color: magic ? hot(E.c[0], 3.5) : o.kind === 'throw' ? 0xd8dde4 : 0xd8c8a0, toneMapped: !magic }));
     scene.add(mesh);
@@ -1794,7 +1829,15 @@ export function create(wrap, api) {
     toks.forEach((T) => {
       const t = T.t;
       if (T.mt < 1) { T.mt = Math.min(1, T.mt + dt / T.dur); const f = T.mt * T.mt * (3 - 2 * T.mt); T.pos.lerpVectors(T.from, T.to, f); busy = true; }
-      const hop = T.mt < 1 ? Math.sin(Math.PI * T.mt) * 0.14 : 0, lift = T.id === dragId ? 0.25 : 0;
+      if (T.anim) {
+        // Удар и вздрагивание доигрываются до конца, потом — обратно к своему: стоять, идти или лежать
+        const A = T.anim, base = baseAnim(T), a = A.acts[A.cur];
+        if (A.cur === 'attack' || A.cur === 'hit') { if (!a || a.time >= a.getClip().duration - 0.02) play(T, base, 0.25); }
+        else if (A.cur !== base) play(T, base, base === 'death' ? 0.12 : A.cur === 'death' ? 0.6 : 0.2);
+        A.mixer.update(dt);
+        if (A.cur !== 'idle' && !(A.cur === 'death' && A.acts.death.time >= A.acts.death.getClip().duration)) busy = true;
+      }
+      const hop = T.mt < 1 && !T.anim ? Math.sin(Math.PI * T.mt) * 0.14 : 0, lift = T.id === dragId ? 0.25 : 0;
       let ox = 0;
       if (T.hit > 0) { T.hit -= dt; ox = Math.sin(T.hit * 60) * 0.07 * Math.max(0, T.hit / 0.34); busy = true; }
       if (T.miss > 0) { T.miss -= dt; ox = Math.sin((Math.max(0, T.miss) / 0.32) * Math.PI) * 0.2; busy = true; }
@@ -1804,8 +1847,9 @@ export function create(wrap, api) {
       if (T.lg > 0) { T.lg -= dt; const q = Math.sin((Math.max(0, T.lg) / 0.24) * Math.PI) * 0.3; T.root.position.x += T.ldx * q; T.root.position.z += T.ldz * q; busy = true; } // выпад при ударе
       T.fig.position.set(ox, BASE_H + hop + lift + Math.min(2, (t.alt || 0) / 10), 0);
       // Без сознания — фигурка лежит
-      const lie = t.down ? 1 : 0; T.lie = (T.lie || 0) + (lie - (T.lie || 0)) * Math.min(1, dt * 8); if (Math.abs(lie - T.lie) > 0.01) busy = true;
-      T.fig.rotation.z = T.lie * 1.35; T.fig.position.x += T.lie * 0.2 * t.size;
+      // (модель с анимацией смерти ложится сама — её не наклоняем, только опускаем подпись)
+      const lie = (t.down || (T.anim && t.dead)) ? 1 : 0; T.lie = (T.lie || 0) + (lie - (T.lie || 0)) * Math.min(1, dt * 8); if (Math.abs(lie - T.lie) > 0.01) busy = true;
+      if (!T.anim) { T.fig.rotation.z = T.lie * 1.35; T.fig.position.x += T.lie * 0.2 * t.size; } else T.fig.rotation.z = 0;
       T.body.rotation.y = T.spin ? T.yaw : cur.yaw; // модель смотрит, куда шла; медальон — всегда лицом к камере
       if (T.turn.visible) { T.turn.material.opacity = 0.55 + 0.4 * Math.sin(time * 4); const k = t.size * (1 + 0.04 * Math.sin(time * 4)); T.turn.scale.set(k, 1, k); }
       const p = project(T.pos.x, T.pos.z, (T.top + BASE_H) * (1 - T.lie * 0.6) + 0.12 + hop + lift + sy), lx = Math.round(p.x), ly = Math.round(p.y);
@@ -1859,5 +1903,5 @@ export function create(wrap, api) {
   }
   // Для проверок: прогнать кадры без requestAnimationFrame (в скрытой вкладке он стоит)
   function step(k = 1, dt = 1 / 30) { resize(); for (let i = 0; i < k; i++) update(dt); draw(); }
-  return { setOn, tokens, tex, ground, pick, project, tokTop, dragTo, hit, kick, step, attack, burst, fx: fxBox, refresh() { stale = true; kick(); }, info: () => ({ toks: toks.size, props: propBox.children.reduce((a, m) => a + m.count, 0), walls: wallMesh ? wallMesh.geometry.index.count / 3 : 0, ground: [groundCv.width, groundCv.height], liquids: Object.keys(liquids).filter((k) => liquids[k].mesh && liquids[k].mesh.visible), doors: doorBox.children.length, lamps: LAMPS.filter((L) => L.intensity > 0).length, sparks: SPARK.ps.length, smoke: SMOKE.ps.length, fx: FX.length, zones: zones.map((z) => z.kind), zoneMeshes: zoneBox.children.length, calls: renderer.info.render.calls, tris: renderer.info.render.triangles, cam: { ...cur } }) };
+  return { setOn, tokens, tex, ground, pick, project, tokTop, dragTo, hit, kick, step, attack, burst, fx: fxBox, refresh() { stale = true; kick(); }, info: () => ({ toks: toks.size, props: propBox.children.reduce((a, m) => a + m.count, 0), walls: wallMesh ? wallMesh.geometry.index.count / 3 : 0, ground: [groundCv.width, groundCv.height], liquids: Object.keys(liquids).filter((k) => liquids[k].mesh && liquids[k].mesh.visible), doors: doorBox.children.length, lamps: LAMPS.filter((L) => L.intensity > 0).length, sparks: SPARK.ps.length, smoke: SMOKE.ps.length, fx: FX.length, zones: zones.map((z) => z.kind), zoneMeshes: zoneBox.children.length, anims: [...toks.values()].filter((T) => T.anim).map((T) => `${T.id}:${T.anim.cur}`), calls: renderer.info.render.calls, tris: renderer.info.render.triangles, cam: { ...cur } }) };
 }
