@@ -7,7 +7,8 @@ import { clone as skinClone } from 'three/addons/utils/SkeletonUtils.js';
 
 const MODEL_DIR = 'lab/models/';
 // Имя существа → файл модели и рост в клетках (для размера «Средний»)
-const MODELS = [[/гоблин/i, 'goblin', 0.9]];
+// (волк — по началу имени: «Гигантский паук-волк» и «Оборотень-волк» — другие существа)
+const MODELS = [[/гоблин/i, 'goblin', 0.9], [/^\s*(волк|лютоволк|ворг)/i, 'wolf', 0.62]];
 const PITCH = (55 * Math.PI) / 180, FOV = 35, WALL_H = 0.9, BASE_H = 0.07;
 const BLOOM = [0.7, 0.5, 0.95]; // свечение: сила, радиус, порог яркости
 const AMB = { bright: { hemi: 1.15, sun: 2.3, col: 0xffe6c4 }, dim: { hemi: 0.6, sun: 1.0, col: 0xc9b6d6 }, dark: { hemi: 0.5, sun: 0.6, col: 0x7f94d6 } };
