@@ -121,6 +121,57 @@ const MAPGEN = (() => {
     out.rooms.push({ x: x + 1, y: y + 1, w: w - 2, h: h - 2, kind: 'house', ...(closed ? { closed: 1, door: `${d[0]}_${d[1]}` } : {}) });
     return d;
   }
+  // Починка проходимости: в комнату, куда нельзя дойти от входа, прорубается дверь в сторону открытого двора,
+  // а если такой стороны нет — с пути убираются деревья, ящики и кусты
+  const HARD = new Set(['wall', 'tree', 'rock', 'furn', 'lava', 'chasm', 'grave', 'mushroom', 'crate', 'board', 'well', 'roof', 'water']);
+  const SOFT = new Set(['tree', 'crate', 'bush', 'mushroom']);
+  function reachFrom(G, s0) {
+    const ok = (x, y) => x >= 0 && y >= 0 && x < G.w && y < G.h && !HARD.has(G.get(x, y));
+    const seen = new Set([`${s0.x}_${s0.y}`]), q = [[s0.x, s0.y]];
+    while (q.length) {
+      const [x, y] = q.pop();
+      [[1, 0], [-1, 0], [0, 1], [0, -1]].forEach(([dx, dy]) => { const k = `${x + dx}_${y + dy}`; if (!seen.has(k) && ok(x + dx, y + dy)) { seen.add(k); q.push([x + dx, y + dy]); } });
+    }
+    return seen;
+  }
+  function fixReach(G, out, box) {
+    if (!out.start) return;
+    const inRoom = (r, set) => { for (let y = r.y; y < r.y + r.h; y++) for (let x = r.x; x < r.x + r.w; x++) if (set.has(`${x}_${y}`)) return true; return false; };
+    for (let pass = 0; pass < 12; pass++) {
+      const seen = reachFrom(G, out.start);
+      const r = out.rooms.find((q) => !q.closed && !q.unreach && q.w > 0 && q.h > 0 && !inRoom(q, seen) && G.get(q.x, q.y) !== undefined && [...Array(q.w * q.h).keys()].some((i) => !HARD.has(G.get(q.x + (i % q.w), q.y + Math.floor(i / q.w)))));
+      if (!r) return;
+      // 1) Стена комнаты, за которой — достижимая клетка: там новая дверь
+      const cand = [];
+      for (let x = r.x; x < r.x + r.w; x++) { cand.push([x, r.y - 1, x, r.y - 2, x, r.y]); cand.push([x, r.y + r.h, x, r.y + r.h + 1, x, r.y + r.h - 1]); }
+      for (let y = r.y; y < r.y + r.h; y++) { cand.push([r.x - 1, y, r.x - 2, y, r.x, y]); cand.push([r.x + r.w, y, r.x + r.w + 1, y, r.x + r.w - 1, y]); }
+      const good = cand.filter(([wx, wy, ox, oy, ix, iy]) => G.get(wx, wy) === 'wall' && seen.has(`${ox}_${oy}`) && !HARD.has(G.get(ix, iy)) && (!box || (ox > box[0] && oy > box[1] && ox < box[2] && oy < box[3])));
+      if (good.length) {
+        const [wx, wy] = good[Math.floor(good.length / 2)];
+        G.set(wx, wy, G.get(wx + 1, wy) === 'floor' || G.get(wx - 1, wy) === 'floor' || G.get(wx, wy + 1) === 'floor' || G.get(wx, wy - 1) === 'floor' ? 'floor' : '');
+        out.doors[`${wx}_${wy}`] = { o: 0 };
+        continue;
+      }
+      // 2) Путь до достижимого через мягкие преграды: их убираем
+      const start = [];
+      for (let y = r.y; y < r.y + r.h; y++) for (let x = r.x; x < r.x + r.w; x++) if (!HARD.has(G.get(x, y))) start.push([x, y]);
+      const prev = new Map(start.map(([x, y]) => [`${x}_${y}`, null])), q = [...start];
+      let hit = null;
+      while (q.length && !hit) {
+        const [x, y] = q.shift();
+        for (const [dx, dy] of [[1, 0], [-1, 0], [0, 1], [0, -1]]) {
+          const nx = x + dx, ny = y + dy, k = `${nx}_${ny}`, c = G.get(nx, ny);
+          if (prev.has(k) || nx < 0 || ny < 0 || nx >= G.w || ny >= G.h) continue;
+          if (HARD.has(c) && !SOFT.has(c) && !out.doors[k]) continue;
+          prev.set(k, `${x}_${y}`);
+          if (seen.has(k)) { hit = k; break; }
+          q.push([nx, ny]);
+        }
+      }
+      if (!hit) { r.unreach = 1; continue; }
+      for (let k = hit; k; k = prev.get(k)) { const [x, y] = k.split('_').map(Number); if (SOFT.has(G.get(x, y))) G.set(x, y, ''); }
+    }
+  }
   const fits = (G, x, y, w, h, ok = (v) => v === '' || v === 'bush') => {
     if (x < 1 || y < 1 || x + w >= G.w || y + h >= G.h) return false;
     for (let j = y - 1; j <= y + h; j++) for (let i = x - 1; i <= x + w; i++) if (!ok(G.get(i, j))) return false;
@@ -1093,6 +1144,7 @@ const MAPGEN = (() => {
     // Снаружи — лес и луг
     for (let y = 0; y < G.h; y++) for (let x = 0; x < G.w; x++) if (G.g[y][x] === '' && (x < ox0 - 2 || x > ox1 + 2 || y < oy0 - 2 || y > oy1 + 2) && R.ch(0.07)) G.g[y][x] = 'tree';
     out.ground = 'grass'; out.start = { x: gx, y: G.h - 1 };
+    fixReach(G, out, [ox0, oy0, ox1, oy1]);
   }
   // Участки разного размера: режем прямоугольник, пока он больше max (иногда — и меньший, для разнообразия)
   function splitLots(R, x, y, w, h, maxW, maxH, minS, out = []) {
@@ -1380,6 +1432,7 @@ const MAPGEN = (() => {
     blobs(G, R, 'tree', Math.round((G.w * G.h) / 160), 1, 2, 0.6);
     blobs(G, R, 'bush', 3, 1, 1, 0.5);
     out.ground = 'grass'; out.amb = 'dim'; out.start = { x: ex, y: G.h - 1 };
+    fixReach(G, out, [x0 - 1, y0 - 1, G.w, G.h]);
   }
 
   // Гильдия приключенцев: зал со стойкой регистрации и доской заказов; за стойкой — канцелярия и хранилище, в углу — лестница.
@@ -1434,7 +1487,7 @@ const MAPGEN = (() => {
   // out.props — что за предмет стоит в клетке мебели, out.decor — что висит на стене ('вид:сторона')
   function house(G, R, o, out) {
     const rv = R.pick(['home', 'home', 'smithy', 'shop', 'books', 'magic', 'alchemy']), v = o.variant || rv;
-    const SZ = { home: [14, 11], smithy: [17, 13], shop: [16, 12], books: [18, 13], magic: [16, 12], alchemy: [16, 12], warehouse: [18, 12] }[v] || [14, 11];
+    const SZ = { home: [14, 11], smithy: [17, 13], shop: [16, 12], books: [18, 13], magic: [16, 12], alchemy: [16, 12], warehouse: [18, 12], tavern: [20, 14], chapel: [15, 18], guildhall: [20, 15] }[v] || [14, 11];
     const bw = Math.min(G.w - 2, SZ[0] + R.i(0, 2)), bh = Math.min(G.h - 2, SZ[1] + R.i(0, 1));
     const x0 = Math.floor((G.w - bw) / 2), y0 = Math.floor((G.h - bh) / 2), x1 = x0 + bw - 1, y1 = y0 + bh - 1;
     for (let y = 0; y < G.h; y++) for (let x = 0; x < G.w; x++) G.set(x, y, x < x0 || x > x1 || y < y0 || y > y1 ? 'chasm' : x === x0 || x === x1 || y === y0 || y === y1 ? 'wall' : '');
@@ -1445,6 +1498,7 @@ const MAPGEN = (() => {
     const ix0 = x0 + 1, ix1 = x1 - 1, iy0 = y0 + 1, iy1 = y1 - 1, ex = x0 + Math.floor(bw / 2);
     G.set(ex, y1, ''); out.doors[`${ex}_${y1}`] = { o: 0 }; out.exit = { x: ex, y: y1 };
     let hy0 = iy0;
+    const bdx = []; // двери задних комнат: клетку под ними в зале оставляем свободной
     if (v !== 'warehouse') {
       // Задние комнаты
       const yb = iy0 + 3, xm = ix0 + Math.floor((ix1 - ix0) * (0.42 + R.f() * 0.16));
@@ -1454,11 +1508,11 @@ const MAPGEN = (() => {
       const bed = (r, locked) => { put(r.x, r.y, 'bed'); if (r.w >= 5 && R.ch(0.6)) put(r.x + r.w - 1, r.y, 'bed'); put(r.x + Math.floor(r.w / 2), r.y, 'wardrobe'); lay(r.x + 1, r.y + 1, 'rug'); out.rooms.push({ ...r, kind: 'room' }); return locked; };
       const store = (r, chests) => { for (let x = r.x; x < r.x + r.w; x++) if (R.ch(0.6)) G.set(x, r.y, 'crate'); if (R.ch(0.5)) G.set(r.x, r.y + 2, 'crate'); for (let i = 0; i < chests; i++) out.chests.push({ x: r.x + r.w - 1 - i, y: r.y + 2 }); out.rooms.push({ ...r, kind: 'store' }); };
       const office = (r) => { put(r.x + Math.floor(r.w / 2), r.y + 1, 'desk'); for (let x = r.x; x < r.x + r.w; x++) put(x, r.y, 'books'); out.chests.push({ x: r.x, y: r.y + 2 }); out.rooms.push({ ...r, kind: 'office' }); };
-      const plan = { home: ['bed', 'bed'], smithy: ['bed', 'store'], shop: ['store', 'bed'], books: ['office', 'bed'], magic: ['vault', 'bed'], alchemy: ['store', 'bed'] }[v] || ['bed', 'store'];
+      const plan = { home: ['bed', 'bed'], smithy: ['bed', 'store'], shop: ['store', 'bed'], books: ['office', 'bed'], magic: ['vault', 'bed'], alchemy: ['store', 'bed'], tavern: ['store', 'bed'], chapel: ['office', 'store'], guildhall: ['office', 'vault'] }[v] || ['bed', 'store'];
       [A, B].forEach((r, i) => {
         const k = plan[i], dx = R.i(r.x + 1, r.x + r.w - 2), lock = k === 'vault' || (k !== 'bed' && R.ch(0.4));
-        G.set(dx, yb, ''); out.doors[`${dx}_${yb}`] = { o: 0, ...(lock ? { l: 1 } : {}) };
-        if (k === 'bed') bed(r); else if (k === 'office') office(r); else store(r, k === 'vault' ? 2 : R.ch(0.5) ? 1 : 0);
+        G.set(dx, yb, ''); out.doors[`${dx}_${yb}`] = { o: 0, ...(lock ? { l: 1 } : {}) }; bdx.push(dx);
+        if (k === 'bed') bed(r); else if (k === 'office') office(r); else store(r, k === 'vault' ? 2 : R.ch(0.5) ? 1 : 0); if (G.get(dx, yb - 1) === 'crate') G.set(dx, yb - 1, ''); // проход от двери в кладовую
         out.lights.push({ x: r.x + r.w - 1, y: r.y + 1, b: 10, d: 10 });
       });
       hy0 = yb + 1;
@@ -1484,6 +1538,33 @@ const MAPGEN = (() => {
       out.rooms.push({ x: ex + 2, y: hy0, w: ix1 - ex - 1, h: 2, kind: 'counter' });
       shelfE('rack', hy0 + 3); put(ex + 3, iy1, 'armor');
       [ix0 + 2, ix0 + 4, ex - 1].forEach((x) => hang(x, wy, 'tools', 's')); hang(x0, hy0 + 5, 'tools', 'e'); hang(x1, hy0 + 1, 'shield', 'w');
+    } else if (v === 'tavern') {
+      // Зал таверны: стойка с бочками справа, очаг слева, столы рядами
+      for (let x = ex + 2; x <= ix1 - 1; x++) put(x, hy0 + 2, 'counter');
+      out.rooms.push({ x: ex + 2, y: hy0, w: ix1 - ex - 1, h: 2, kind: 'bar' });
+      G.set(ix1, hy0, 'crate'); G.set(ix1 - 1, hy0, 'crate');
+      G.set(ix0, hy0 + 2, 'rock'); G.set(ix0, hy0 + 3, 'rock'); out.lights.push({ x: ix0 + 1, y: hy0 + 2, b: 20, d: 20 });
+      for (let y = hy0 + 4; y <= iy1 - 2; y += 3) for (let x = ix0 + 2; x <= ix1 - 2; x += 4) if (Math.abs(x - ex) > 1 && Math.abs(x + 1 - ex) > 1) { put(x, y, 'table'); put(x + 1, y, 'table'); }
+      lay(ex, iy1 - 1, 'rug');
+      hang(ix0 + 2, wy, 'antlers', 's'); hang(x0, hy0 + 5, 'shield', 'e'); hang(x1, iy1 - 2, 'painting', 'w'); hang(ex - 2, wy, 'painting', 's');
+    } else if (v === 'chapel') {
+      // Часовня: алтарь и запрестольный образ в дальнем конце, свечи, кафедра, скамьи по обе стороны прохода
+      for (let i = ex - 1; i <= ex + 1; i++) { put(i, hy0, 'retable'); put(i, hy0 + 1, 'altar'); }
+      [ex - 3, ex + 3].forEach((i) => { put(i, hy0 + 1, 'candelabra'); out.lights.push({ x: i, y: hy0 + 1, b: 20, d: 20 }); });
+      put(ex - 3, hy0 + 3, 'lectern');
+      out.rooms.push({ x: ex - 2, y: hy0 + 2, w: 5, h: 2, kind: 'altar' });
+      for (let y = hy0 + 5; y <= iy1 - 2; y += 2) { for (let x = ix0 + 1; x <= ex - 2; x++) put(x, y, 'pew'); for (let x = ex + 2; x <= ix1 - 1; x++) put(x, y, 'pew'); }
+      for (let y = hy0 + 2; y <= iy1; y++) lay(ex, y, 'rug');
+      hang(x0, hy0 + 4, 'tapestry', 'e'); hang(x1, hy0 + 4, 'tapestry', 'w'); hang(x0, iy1 - 2, 'tapestry', 'e'); hang(x1, iy1 - 2, 'tapestry', 'w');
+    } else if (v === 'guildhall') {
+      // Гильдия: стойка регистратора, доска заданий у стены, столы для сделок, стойка с оружием
+      for (let x = ix0 + 4; x <= ex + 2; x++) put(x, hy0 + 1, 'counter');
+      out.rooms.push({ x: ix0 + 4, y: hy0, w: ex - ix0 - 1, h: 1, kind: 'reception' });
+      for (let y = hy0 + 3; y <= hy0 + 5; y++) G.set(ix0, y, 'board');
+      out.rooms.push({ x: ix0 + 1, y: hy0 + 3, w: 2, h: 3, kind: 'board' });
+      [[ex + 3, hy0 + 4], [ex + 3, iy1 - 2], [ex - 4, iy1 - 2]].forEach(([x, y]) => { put(x, y, 'table'); put(x + 1, y, 'table'); });
+      shelfE('rack', hy0 + 2);
+      hang(ex - 1, wy, 'map', 's'); hang(ex + 4, wy, 'shield', 's'); hang(x0, iy1 - 1, 'painting', 'e');
     } else if (v === 'warehouse') {
       for (let y = iy0 + 1; y <= iy1 - 2; y += 3) for (let x = ix0 + 1; x <= ix1 - 1; x++) if (Math.abs(x - ex) > 1 && R.ch(0.8)) { G.set(x, y, 'crate'); if (R.ch(0.5)) G.set(x, y + 1, 'crate'); }
       put(ix1, iy1, 'desk'); out.chests.push({ x: ix0, y: iy0 });
@@ -1496,10 +1577,11 @@ const MAPGEN = (() => {
       if (v === 'magic') { [[ex - 3, hy0 + 3], [ex + 3, hy0 + 3], [ex - 3, iy1 - 1], [ex + 3, iy1 - 1]].forEach(([x, y], i) => put(x, y, i % 2 ? 'orb' : 'pedestal')); for (let y = hy0 + 3; y <= hy0 + 4; y++) for (let x = ex - 1; x <= ex + 1; x++) lay(x, y, 'rug'); hang(ix0 + 2, wy, 'tapestry', 's'); hang(ix1 - 2, wy, 'tapestry', 's'); hang(ex, wy, 'mirror', 's'); }
       if (v === 'alchemy') { put(ex - 3, hy0 + 3, 'alembic'); put(ex - 2, hy0 + 3, 'alembic'); put(ex + 3, hy0 + 4, 'cauldron'); G.set(ix1 - 1, iy1, 'crate'); hang(ix0 + 2, wy, 'herbs', 's'); hang(ix1 - 2, wy, 'herbs', 's'); hang(ex + 2, wy, 'herbs', 's'); }
     }
-    out.rooms.push({ ...hall, kind: v === 'home' ? 'hall' : v === 'warehouse' ? 'warehouse' : 'shop' });
+    bdx.forEach((x) => { if (G.get(x, hy0) !== '') { G.set(x, hy0, ''); delete out.props[`${x}_${hy0}`]; } });
+    out.rooms.push({ ...hall, kind: v === 'home' || v === 'tavern' || v === 'guildhall' ? 'hall' : v === 'chapel' ? 'nave' : v === 'warehouse' ? 'warehouse' : 'shop' });
     out.lights.push({ x: ex - 1, y: iy1, b: 15, d: 15 }, { x: ix1 - 1, y: hy0, b: 15, d: 15 });
     // Пол: в кузнице и у алхимика каменный, в остальных — дощатый
-    out.ground = v === 'smithy' || v === 'alchemy' ? '' : 'wood'; out.amb = 'dim'; out.start = { x: ex, y: iy1 };
+    out.ground = v === 'smithy' || v === 'alchemy' || v === 'chapel' ? '' : 'wood'; out.amb = 'dim'; out.start = { x: ex, y: iy1 };
   }
 
   // variants — особенности на выбор ('' — случайно); rot — карту можно повернуть (ворота, море, вход — с любой стороны)
@@ -1522,7 +1604,7 @@ const MAPGEN = (() => {
     tavern: { n: '🍺 Таверна', kind: 'location', fn: tavern, w: 34, h: 26, chests: false, peaceful: true, minW: 22, minH: 18, rot: true, connect: true,
       variants: [['small', 'корчма'], ['inn', 'постоялый двор'], ['big', 'большая таверна']] },
     house: { n: '🏠 Дом или лавка (внутри)', kind: 'location', fn: house, w: 22, h: 17, chests: false, peaceful: true, minW: 20, minH: 15,
-      variants: [['home', 'жилой дом'], ['smithy', 'кузница'], ['shop', 'лавка: снаряжение и припасы'], ['books', 'книжная лавка'], ['magic', 'лавка диковин'], ['alchemy', 'лавка алхимика'], ['warehouse', 'склад']] },
+      variants: [['home', 'жилой дом'], ['smithy', 'кузница'], ['shop', 'лавка: снаряжение и припасы'], ['books', 'книжная лавка'], ['magic', 'лавка диковин'], ['alchemy', 'лавка алхимика'], ['warehouse', 'склад'], ['tavern', 'таверна (зал)'], ['chapel', 'храм (часовня)'], ['guildhall', 'гильдия (зал)']] },
     guild: { n: '🛡 Гильдия приключенцев', kind: 'location', fn: guild, w: 36, h: 26, chests: false, peaceful: true, minW: 28, minH: 24, rot: true, connect: true },
     pass: { n: '🏔 Перевал', kind: 'terrain', fn: pass, w: 40, h: 26, variants: [['bridge', 'мост над пропастью'], ['pass', 'горная тропа'], ['snow', 'заснеженный, с пропастью']] },
     volcano: { n: '🌋 Вулкан', kind: 'terrain', fn: volcano, w: 38, h: 28 },

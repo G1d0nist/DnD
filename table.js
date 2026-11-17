@@ -666,6 +666,48 @@ function drawCell(g, type, px, py, v) {
   }
   g.restore();
 }
+// Крыши закрытых домов в 2D: каждая сплошная прямоугольная крыша — двускатная, конёк вдоль длинной стороны,
+// черепица (в городе и замке) или солома (в деревне) рядами вдоль конька, освещённый скат светлее, иногда труба
+function roofs2d(g) {
+  const map = game.map || {}, seen = new Set(), tpl = ((game.meta || {}).gen || {}).tpl || '';
+  const tiles = /city|castle|manor|guild|temple|ruins/.test(tpl);
+  Object.keys(map).forEach((k0) => {
+    if (map[k0] !== 'roof' || seen.has(k0)) return;
+    const comp = [], q = [k0]; seen.add(k0);
+    while (q.length) { const k = q.pop(); comp.push(k); const [x, y] = k.split('_').map(Number); [[1, 0], [-1, 0], [0, 1], [0, -1]].forEach(([dx, dy]) => { const n = `${x + dx}_${y + dy}`; if (map[n] === 'roof' && !seen.has(n)) { seen.add(n); q.push(n); } }); }
+    const xs = comp.map((k) => +k.split('_')[0]), ys = comp.map((k) => +k.split('_')[1]);
+    const x0 = Math.min(...xs), y0 = Math.min(...ys), w = Math.max(...xs) - x0 + 1, h = Math.max(...ys) - y0 + 1;
+    if (comp.length !== w * h) return; // неровная крыша остаётся черепицей по клеткам
+    const px = x0 * CELL, py = y0 * CELL, W2 = w * CELL, H2 = h * CELL, along = w >= h, hash = (x0 * 31 + y0 * 17) % 7;
+    const base = tiles ? ['#7a3a28', '#6e4434', '#5e4a3c'][hash % 3] : ['#8c6c36', '#7e6232', '#94743e'][hash % 3];
+    const shade = (c, k) => { const n = parseInt(c.slice(1), 16), f = (v) => Math.max(0, Math.min(255, Math.round(v * k))); return `rgb(${f(n >> 16)},${f((n >> 8) & 255)},${f(n & 255)})`; };
+    g.save();
+    // Два ската: верхний/левый в тени, нижний/правый освещён
+    const half = along ? H2 / 2 : W2 / 2;
+    g.fillStyle = shade(base, 0.72); if (along) g.fillRect(px, py, W2, half); else g.fillRect(px, py, half, H2);
+    g.fillStyle = shade(base, 1.08); if (along) g.fillRect(px, py + half, W2, H2 - half); else g.fillRect(px + half, py, W2 - half, H2);
+    // Ряды черепицы или соломы вдоль конька
+    g.strokeStyle = 'rgba(0,0,0,.28)'; g.lineWidth = 1;
+    const step = tiles ? 7 : 5, len = along ? W2 : H2, depth = along ? H2 : W2;
+    for (let d = step; d < depth; d += step) {
+      if (Math.abs(d - depth / 2) < step / 2) continue;
+      g.beginPath(); if (along) { g.moveTo(px, py + d); g.lineTo(px + W2, py + d); } else { g.moveTo(px + d, py); g.lineTo(px + d, py + H2); } g.stroke();
+      if (tiles) for (let t = ((d / step) % 2) * 5; t < len; t += 10) { g.beginPath(); if (along) { g.moveTo(px + t, py + d - step); g.lineTo(px + t, py + d); } else { g.moveTo(px + d - step, py + t); g.lineTo(px + d, py + t); } g.stroke(); }
+    }
+    if (!tiles) { g.strokeStyle = 'rgba(255,230,160,.12)'; for (let t = 3; t < len; t += 4) { g.beginPath(); if (along) { g.moveTo(px + t, py + 2); g.lineTo(px + t - 2, py + H2 - 2); } else { g.moveTo(px + 2, py + t); g.lineTo(px + W2 - 2, py + t - 2); } g.stroke(); } }
+    // Конёк
+    g.strokeStyle = shade(base, 0.45); g.lineWidth = 5; g.beginPath(); if (along) { g.moveTo(px + 3, py + half); g.lineTo(px + W2 - 3, py + half); } else { g.moveTo(px + half, py + 3); g.lineTo(px + half, py + H2 - 3); } g.stroke();
+    g.strokeStyle = 'rgba(255,230,180,.25)'; g.lineWidth = 1.5; g.beginPath(); if (along) { g.moveTo(px + 3, py + half + 2); g.lineTo(px + W2 - 3, py + half + 2); } else { g.moveTo(px + half + 2, py + 3); g.lineTo(px + half + 2, py + H2 - 3); } g.stroke();
+    // Свес крыши и тень от него
+    g.strokeStyle = 'rgba(0,0,0,.55)'; g.lineWidth = 2; g.strokeRect(px + 1, py + 1, W2 - 2, H2 - 2);
+    // Труба на большой крыше
+    if (w * h >= 6 && hash % 3 !== 0) {
+      const cx = along ? px + W2 * (0.25 + (hash % 2) * 0.5) - 7 : px + half + 6, cy = along ? py + half - 20 : py + H2 * (0.3 + (hash % 2) * 0.4) - 7;
+      g.fillStyle = '#5a554e'; g.fillRect(cx, cy, 14, 14); g.fillStyle = '#2a2622'; g.fillRect(cx + 3, cy + 3, 8, 8); g.strokeStyle = 'rgba(0,0,0,.6)'; g.lineWidth = 1; g.strokeRect(cx + 0.5, cy + 0.5, 13, 13);
+    }
+    g.restore();
+  });
+}
 function drawTerrain() {
   if (!game) return;
   const cv = $('#tblTerrain'), g = cv.getContext('2d'), bg = bgSet();
@@ -695,6 +737,7 @@ function drawTerrain() {
     }
     if (!bgImg && !(g3on && PROP3D.has(type))) drawCell(g, type, x * CELL, y * CELL, (x * 7 + y * 13) % 5); // в объёмном виде препятствия стоят на поле сами
   });
+  if (!own3 && !bgImg) roofs2d(g);
   // Двери: закрытая — створка поперёк клетки, открытая — откинута к краю; запертая — с замком
   // В объёмном виде двери, светильники, сундуки и мешки стоят на поле сами
   if (!g3on) Object.entries(game.doors || {}).forEach(([k, d]) => {
@@ -6607,7 +6650,11 @@ function peacefulNpcs(L, F, tokens, notes, key) {
     : (L.floor || 1) > 1 ? [['Commoner', 'постоялец', R_(1, 3), 'room'], ['Noble', 'знатный гость', chance(0.4) ? 1 : 0, 'room'], ['Commoner', 'слуга', 1, 'corridor']]
     : T === 'house' ? ({ home: [['Commoner', 'хозяин дома', 1, 'hall'], ['Commoner', 'домочадец', R_(0, 2), 'hall'], ['Commoner', 'ребёнок', chance(0.4) ? 1 : 0, 'room']],
       smithy: [['Commoner', 'подмастерье', 1, 'shop']], shop: [['Commoner', 'покупатель', R_(0, 2), 'shop']], books: [['Commoner', 'читатель', R_(0, 2), 'shop']], magic: [['Noble', 'покупатель', chance(0.5) ? 1 : 0, 'shop']],
-      alchemy: [['Commoner', 'ученик алхимика', chance(0.6) ? 1 : 0, 'shop']], warehouse: [['Commoner', 'кладовщик', 1, 'warehouse'], ['Guard', 'сторож', 1, 'warehouse']] }[L.v] || [])
+      alchemy: [['Commoner', 'ученик алхимика', chance(0.6) ? 1 : 0, 'shop']], warehouse: [['Commoner', 'кладовщик', 1, 'warehouse'], ['Guard', 'сторож', 1, 'warehouse']],
+      tavern: [['Commoner', 'трактирщик', 1, 'bar'], ['Commoner', 'посетитель', R_(3, 6), 'hall'], ['Thug', 'громила', chance(0.4) ? 1 : 0, 'hall'], ['Scout', 'путник', chance(0.5) ? 1 : 0, 'hall'], ['Commoner', 'кухарка', 1, 'store']],
+      chapel: [['Priest', 'жрец', 1, 'altar'], ['Acolyte', 'послушник', R_(1, 2), 'nave'], ['Commoner', 'прихожанин', R_(2, 5), 'nave']],
+      guildhall: [['Commoner', 'регистратор гильдии', 1, 'reception'], ['Commoner', 'писарь', 1, 'office'], ['Veteran', 'бывалый наёмник', R_(1, 2), 'hall'], ['Scout', 'следопыт', R_(1, 2), 'hall'],
+        ['Thug', 'новичок-авантюрист', R_(1, 2), 'board'], ['Commoner', 'заказчик', R_(1, 2), 'board']] }[L.v] || [])
     : T === 'arena' ? [['Gladiator', 'гладиатор', 2, 'pit'], ['Commoner', 'зритель', R_(4, 8), 'stands'], ['Guard', 'стражник', 2, 'gate'], ['Noble', 'распорядитель', 1, 'stands']]
     : [['Commoner', 'трактирщик', 1, n_('bar') ? 'bar' : 'hall'], ['Commoner', 'посетитель', R_(4, 7), 'hall'], ['Thug', 'громила', chance(0.4) ? 1 : 0, 'hall'], ['Scout', 'путник', chance(0.5) ? 1 : 0, 'hall'],
       ['Noble', 'знатный гость', chance(0.4) ? 1 : 0, 'room'], ['Commoner', 'постоялец', R_(0, 2), 'room'], ['Commoner', 'кухарка', 1, 'kitchen'], ['Commoner', 'конюх', n_('stable') ? 1 : 0, 'stable']];
@@ -6625,7 +6672,7 @@ function peacefulNpcs(L, F, tokens, notes, key) {
     : T === 'fair' && stallShops.length ? stallShops
     : T === 'fair' ? roomsOf('stall').slice(0, 5).map((r, i) => ['Commoner', ['торговец', 'оружейник', 'алхимик', 'торговец', 'знахарь'][i], 1, r, ['general', 'smith', 'alchemist', 'general', 'alchemist'][i]])
     : T === 'house' ? ({ smithy: [['Commoner', 'кузнец', 1, 'counter', 'smith']], shop: [['Commoner', 'торговец', 1, 'counter', 'general']], books: [['Commoner', 'книготорговец', 1, 'counter', 'alchemist']],
-      magic: [['Mage', 'хозяин лавки диковин', 1, 'counter', 'curio']], alchemy: [['Commoner', 'алхимик', 1, 'counter', 'alchemist']] }[L.v] || [])
+      magic: [['Mage', 'хозяин лавки диковин', 1, 'counter', 'curio']], alchemy: [['Commoner', 'алхимик', 1, 'counter', 'alchemist']], chapel: [['Acolyte', 'торговец святынями', 1, 'nave', 'alchemist']] }[L.v] || [])
     : T === 'temple' ? [['Acolyte', 'торговец святынями', 1, 'nave', 'alchemist']]
       : chance(0.4) ? [['Commoner', 'бродячий торговец', 1, 'hall', 'general']] : [];
   // Место у мебели (стол, стойка, кровать) в комнате — люди стоят у столов, а не кучей посередине
@@ -7157,8 +7204,8 @@ function stairsDialog(k) {
 /* ---------- Закрытые дома: интерьер — отдельная сцена ---------- */
 // На карте поселения дом стоит под крышей; его дверь — переход. Мастер нажимает на дверь: интерьер создаётся при первом входе
 // (снаружи дом маленький, внутри просторный) и привязывается к двери; дверь наружу в интерьере ведёт обратно
-const HOUSE_IN = { house: ['house', 'home'], warehouse: ['house', 'warehouse'], tavern: ['tavern', 'small'], temple: ['temple', ''], manor: ['manor', ''], guild: ['guild', ''] };
-const HOUSE_N = { home: 'дом', smithy: 'кузница', shop: 'лавка', books: 'книжная лавка', magic: 'лавка диковин', alchemy: 'лавка алхимика', warehouse: 'склад', tavern: 'таверна', temple: 'храм', manor: 'особняк', guild: 'гильдия приключенцев' };
+const HOUSE_IN = { house: ['house', 'home'], warehouse: ['house', 'warehouse'], tavern: ['house', 'tavern'], temple: ['house', 'chapel'], manor: ['manor', ''], guild: ['house', 'guildhall'] };
+const HOUSE_N = { home: 'дом', smithy: 'кузница', shop: 'лавка', books: 'книжная лавка', magic: 'лавка диковин', alchemy: 'лавка алхимика', warehouse: 'склад', tavern: 'таверна', chapel: 'храм', guildhall: 'гильдия приключенцев', temple: 'храм', manor: 'особняк', guild: 'гильдия приключенцев' };
 const closedRoom = (k) => (((game.meta || {}).gen || {}).rooms || []).find((r) => r.closed && r.door === k) || null;
 // Переход: дверь закрытого дома или любая привязанная к сцене клетка, кроме лестницы (у той своё окно)
 const portalAt = (k) => (!!((game.meta || {}).links || {})[k] && (game.map || {})[k] !== 'stairs') || (!!(game.doors || {})[k] && !!closedRoom(k));
