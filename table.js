@@ -7462,12 +7462,19 @@ function snd(kind) {
     else if (kind === 'turn') { tone(660, 0.12, 'sine', 0, 0, 0.5); tone(990, 0.18, 'sine', 0.11, 0, 0.5); }
   } catch (e) { /* звук недоступен — молча */ }
 }
+function dice3dOf(e) {
+  let off = false; try { off = localStorage.getItem('dnd55-dice3d') === '0'; } catch (er) { /* нет хранилища */ }
+  if (off || calm()) return;
+  import('./dice3d.js').then((m) => m.roll(m.parse(e.detail || (e.nat ? `к20 [${e.nat}]` : ''), e.cls || (e.crit ? 'crit' : '')))).catch(() => {});
+}
 function fxLog() {
   if (!game) return;
   logList().slice().reverse().forEach((e) => {
     if (!animated.has(e.k)) {
       animated.add(e.k);
       if ((e.t || 0) < openedAt || Date.now() - (e.t || 0) > 15000) { if (e.down) skulls.add(e.k); return; }
+      // Чужой бросок — объёмные кости и у меня (свои уже показал лист)
+      if (e.by !== user.uid && (e.kind === 'roll' || e.kind === 'atk' || (e.kind === 'save' && e.detail)) && (isDM() || !e.dmOnly)) dice3dOf(e);
       if (e.kind === 'atk' && e.graze) fxHit(e.tgt, e.dmg, {});
       else if (e.kind === 'atk') fxAttack(e);
       else if (e.kind === 'heal') { floatText(e.tgt, `+${e.heal}`, 'fx-heal'); const c = g3on && !calm() && tokCenter(e.tgt); if (c) g3.burst({ shape: 'target', x: c.x / CELL, y: c.y / CELL, r: c.s / CELL / 2, color: '#5a9e5a' }); }

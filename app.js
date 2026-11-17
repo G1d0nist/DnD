@@ -1507,7 +1507,15 @@ function rollDice(label, expr, emp = 0) {
 }
 // rollMute > 0 — бросок сделан столом (атака, спасбросок), он сам пишет его в общий журнал
 let rollMute = 0;
+// Объёмные кости (dice3d.js) — поверх страницы; выключаются галочкой в панели костей
+let dice3dMod = null;
+function showDice(detail, cls) {
+  if (lsGet('dnd55-dice3d') === '0') return;
+  const go = (m) => { try { m.roll(m.parse(detail, cls)); } catch (e) { /* без объёмных костей */ } };
+  if (dice3dMod) go(dice3dMod); else import('./dice3d.js').then((m) => { dice3dMod = m; go(m); }).catch(() => {});
+}
 function logRoll(label, total, detail, cls = '') {
+  showDice(detail, cls);
   rollLog.unshift({ label, total, detail, cls, t: new Date().toLocaleTimeString('ru', { hour: '2-digit', minute: '2-digit' }) });
   rollLog.length = Math.min(rollLog.length, 60);
   renderLog();
@@ -4225,6 +4233,8 @@ function bindEvents() {
     if ((e.ctrlKey || e.metaKey) && e.code === 'KeyZ' && !e.shiftKey && !typing && $('#modal').hidden) { e.preventDefault(); undo(); }
   });
   $('#hpAmount').addEventListener('keydown', (e) => { if (e.key === 'Enter') { e.preventDefault(); tracked('урон', () => ACT.damage()); save(); render(); } });
+  $('#dice3dOn').checked = lsGet('dnd55-dice3d') !== '0';
+  $('#dice3dOn').addEventListener('change', (e) => lsSet('dnd55-dice3d', e.target.checked ? '1' : '0'));
   $('#charSelect').addEventListener('change', (e) => { state.current = e.target.value; openSet.clear(); pendingConc = 0; abilEdit = false; save(false); render(); });
   $('#importFile').addEventListener('change', async (e) => {
     const f = e.target.files[0];

@@ -236,6 +236,10 @@ button.stat:hover { background: linear-gradient(180deg, rgba(60,48,34,.6), rgba(
 :where(#tab-main, #tab-combat, #tab-spells, #tab-inventory, #tab-features, #tab-notes) .pip { flex: none; min-width: 0; width: 20px; height: 20px; padding: 0; border-radius: 50%; border: 2px solid var(--gold); background: linear-gradient(135deg, var(--gold-hi), var(--gold-lo)); font-size: 0; }
 :where(#tab-main, #tab-combat, #tab-spells, #tab-inventory, #tab-features, #tab-notes) .pip.sq { border-radius: 4px; }
 
+/* Объёмные кости — прозрачный холст поверх всего, мышь проходит насквозь */
+.dice3d { position: fixed; inset: 0; width: 100vw; height: 100vh; z-index: 70; pointer-events: none; opacity: 0; transition: opacity .3s; }
+@media print { .dice3d { display: none; } }
+
 /* ---------- Выбор персонажа ---------- */
 .cpk-btn { display: inline-flex; align-items: center; gap: 8px; max-width: 260px; padding: 3px 10px 3px 4px; border-radius: 99px; }
 .cpk-mini { flex: none; width: 28px; height: 28px; border-radius: 50%; overflow: hidden; display: flex; align-items: center; justify-content: center;
