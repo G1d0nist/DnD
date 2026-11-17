@@ -1050,6 +1050,16 @@ function cloudHides(t, id) {
   if (d <= 5 || (s.bs && d <= s.bs)) return false;
   return fog || !((s.ts && d <= s.ts) || (s.ds && d <= s.ds));
 }
+// Защитные заклинания на существе — в объёмном виде полупрозрачная сфера своего цвета вокруг фигурки
+const AURA3 = { 'Огненный щит': ['#ff7a2a', 'fire'], 'Доспех Агатиса': ['#9fdcff', 'ice'], 'Щит веры': ['#f2cf6a', 'holy'], 'Щит': ['#9a86ff', 'force'],
+  'Каменная кожа': ['#b8a988', 'stone'], 'Дубовая кора': ['#8fae5a', 'stone'], 'Защита от энергии': ['#7fd6ff', 'force'], 'Защита от оружия': ['#d6dde6', 'force'],
+  'Защита от зла и добра': ['#f3e7b0', 'holy'], 'Убежище': ['#ffffff', 'holy'] };
+function aura3(id) {
+  const f = fxOf(id).map(([, e]) => e).find((e) => AURA3[e.n]);
+  if (!f) return null;
+  const [c, k] = AURA3[f.n];
+  return f.n === 'Огненный щит' && /холод/.test(f.retalType || '') ? { c: '#7fc8ff', k: 'ice' } : { c, k };
+}
 function renderTokens() {
   const box = $('#tblTokens'), cur = currentEntry();
   const seen = new Set(), list3 = [];
@@ -1087,7 +1097,7 @@ function renderTokens() {
     if (g3on) list3.push({ id, x: t.x, y: t.y, size: s, color: t.kind === 'npc' ? SIDE_COLOR[t.side || 'enemy'] : t.color || '#d4a64a', img: t.img || '', ic: t.ic || '', name: t.name || '',
       label: `${esc(label || '')}${fxOf(id).filter(([, f]) => f.ic).slice(0, 4).map(([, f]) => f.ic).join('')}${(t.cond || []).length ? ` <span class="tok-cond">●${t.cond.length}</span>` : ''}`,
       look: t.kind === 'pc' && !t.comp && !t.wild ? t.look || null : null,
-      pct: t.hpMax ? pct : null, down, dead, sel: selId === id, turn: !!(cur && cur.tokenId === id), ghost: !!(t.hidden || invis || banned), alt: +t.alt || 0, cls: `side-${team(t)} ${t.kind}` });
+      aura: dead ? null : aura3(id), pct: t.hpMax ? pct : null, down, dead, sel: selId === id, turn: !!(cur && cur.tokenId === id), ghost: !!(t.hidden || invis || banned), alt: +t.alt || 0, cls: `side-${team(t)} ${t.kind}` });
   });
   if (g3on) g3.tokens(list3, drag && drag.kind === 'token' ? drag.id : null);
   $$('[data-tok]', box).forEach((el) => { if (!seen.has(el.dataset.tok)) el.remove(); });
@@ -4059,13 +4069,32 @@ function wallEject() {
 const WALL_STYLE = { fire: ['rgba(255,110,30,.78)', 'rgba(255,220,90,.75)'], thorns: ['rgba(40,90,30,.85)', 'rgba(140,200,90,.8)'], blades: ['rgba(150,160,175,.6)', 'rgba(240,245,255,.9)'],
   force: ['rgba(150,110,230,.18)', 'rgba(190,160,255,.9)'], stone: ['rgba(120,113,102,.95)', 'rgba(60,55,48,.8)'], ice: ['rgba(170,215,245,.82)', 'rgba(255,255,255,.9)'],
   wind: ['rgba(200,220,235,.15)', 'rgba(230,240,250,.8)'], prism: ['', ''] };
+// Общий контур набора клеток со свечением (объёмный вид): только внешние края, без сетки внутри
+function glowCells(g, keys, col, fill) {
+  const set = new Set(keys);
+  g.save();
+  if (fill) { g.fillStyle = fill; set.forEach((k) => { const [x, y] = k.split('_').map(Number); g.fillRect(x * CELL, y * CELL, CELL, CELL); }); }
+  g.beginPath();
+  set.forEach((k) => {
+    const [x, y] = k.split('_').map(Number), px = x * CELL, py = y * CELL;
+    if (!set.has(`${x}_${y - 1}`)) { g.moveTo(px, py); g.lineTo(px + CELL, py); }
+    if (!set.has(`${x}_${y + 1}`)) { g.moveTo(px, py + CELL); g.lineTo(px + CELL, py + CELL); }
+    if (!set.has(`${x - 1}_${y}`)) { g.moveTo(px, py); g.lineTo(px, py + CELL); }
+    if (!set.has(`${x + 1}_${y}`)) { g.moveTo(px + CELL, py); g.lineTo(px + CELL, py + CELL); }
+  });
+  g.lineCap = 'round'; g.setLineDash([]);
+  g.shadowColor = col; g.shadowBlur = 14; g.strokeStyle = col; g.lineWidth = 4; g.globalAlpha = 0.85; g.stroke();
+  g.shadowBlur = 0; g.strokeStyle = 'rgba(255,240,210,.9)'; g.lineWidth = 1.2; g.stroke();
+  g.restore();
+}
 function drawWall(g, A) {
   const [fill, line] = WALL_STYLE[(A.wall || {}).style || ((cast && cast.info.wall) || {}).style] || ['rgba(212,166,74,.5)', '#d4a64a'], prism = ((A.wall || (cast && cast.info.wall) || {}).style) === 'prism';
+  if (g3on && !A.preview) { glowCells(g, [...(A.cells || []), ...(A.band || [])], prism ? '#ffffff' : ((A.wall || {}).style === 'fire' ? '#ff4a14' : line), (A.band || []).length ? 'rgba(255,90,30,.14)' : null); return; }
   (A.band || []).forEach((k) => { const [x, y] = k.split('_').map(Number); g.fillStyle = 'rgba(255,120,40,.16)'; g.fillRect(x * CELL, y * CELL, CELL, CELL); });
   (A.cells || []).forEach((k, i) => {
     const [x, y] = k.split('_').map(Number), px = x * CELL, py = y * CELL;
-    // Объёмный вид: стена стоит на поле сама (пламя, камень, лёд) — на полу остаётся только тонкий контур клеток
-    if (g3on && !A.preview) { g.globalAlpha = 0.45; g.strokeStyle = prism ? 'rgba(255,255,255,.8)' : line; g.lineWidth = 1.5; g.strokeRect(px + 2, py + 2, CELL - 4, CELL - 4); g.globalAlpha = 1; return; }
+    // Объёмный вид: стена стоит на поле сама (пламя, камень, лёд) — контур рисуется ниже, общий для всей стены
+    if (g3on && !A.preview) return;
     g.fillStyle = prism ? `hsla(${(i * 47) % 360},90%,60%,.75)` : fill;
     g.fillRect(px + 1, py + 1, CELL - 2, CELL - 2);
     g.strokeStyle = prism ? 'rgba(255,255,255,.8)' : line; g.lineWidth = 2; g.setLineDash(A.preview ? [5, 4] : []);
@@ -7487,7 +7516,7 @@ function fxLog() {
       else if (e.kind === 'atk') fxAttack(e);
       else if (e.kind === 'heal') { floatText(e.tgt, `+${e.heal}`, 'fx-heal'); const c = g3on && !calm() && tokCenter(e.tgt); if (c) g3.burst({ shape: 'target', x: c.x / CELL, y: c.y / CELL, r: c.s / CELL / 2, color: '#5a9e5a' }); }
       else if (e.kind === 'dmg') fxHit(e.tgt, e.dmg, {});
-      else if (e.kind === 'area' && e.fx) fxArea(e.fx);
+      else if (e.kind === 'area' && e.fx) { fxArea(e.fx); if (g3on && !calm()) { const cid = Object.keys(game.tokens || {}).find((id) => game.tokens[id].name === e.who); if (cid) g3.rune(cid, e.fx.color); } }
       else if (e.kind === 'save' && e.res) e.res.forEach((r, i) => setTimeout(() => fxHit(r.id, r.dmg, { saved: r.ok, down: r.down }), 200 + i * 140));
       // Звук к событию журнала; кто-то упал — низкий гул следом
       if (e.kind === 'atk') snd(e.crit ? 'crit' : e.hit ? 'hit' : 'miss');
@@ -8125,9 +8154,9 @@ function renderHud() {
   if (!fullOn) return;
   const id = hudTokId(), t = id && game.tokens[id], dm = isDM(), fight = inFight();
   const side = `<div class="hud-right">
-      ${fight && t && isTurnOf(id) && !dm ? '<button class="primary hud-end" data-tbl="endTurn">✓ Закончить ход<small>Пробел</small></button>'
-        : fight && dm ? '<button class="primary hud-end" data-tbl="next">▶ Дальше<small>Пробел</small></button>'
-        : fight ? `<div class="hud-wait">Ходит: <b>${esc((currentEntry() || {}).name || '')}</b></div>` : dm && initList().length ? '<button class="primary hud-end" data-tbl="startFight">⚔ Начать бой</button>' : '<div class="hud-wait">Вне боя</div>'}
+      ${fight && t && isTurnOf(id) && !dm ? `<button class="primary hud-end" data-tbl="endTurn">${window.ic('check')}<span>Закончить ход</span><small>Пробел</small></button>`
+        : fight && dm ? `<button class="primary hud-end" data-tbl="next">${window.ic('play')}<span>Дальше</span><small>Пробел</small></button>`
+        : fight ? `<div class="hud-wait">Ходит: <b>${esc((currentEntry() || {}).name || '')}</b></div>` : dm && initList().length ? `<button class="primary hud-end" data-tbl="startFight">${window.ic('crossed')}<span>Начать бой</span></button>` : '<div class="hud-wait">Вне боя</div>'}
       <div class="row gap"><button data-tbl="hudSide" title="Журнал, чат, очередь и игроки">📜</button><button data-tbl="keys" title="Клавиши (K)">⌨</button><button data-tbl="full" title="Выйти из полноэкранного режима">✕</button></div></div>`;
   if (!t) { box.innerHTML = `<div class="hud-left"><div class="muted small">${dm ? 'Выделите существо — здесь появятся его действия' : 'Поставьте персонажа на поле'}</div></div><div class="hud-mid"></div>${side}`; return; }
   const e = econ(id), mv = moveInfo(id), pct = Math.max(0, Math.min(1, (t.hp || 0) / (t.hpMax || 1))), ch = !dm && charOf(t);
