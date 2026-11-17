@@ -596,6 +596,21 @@ export function create(wrap, api) {
       g.fillStyle = 'rgba(150,20,20,.85)'; g.font = `${Math.round(s * 0.28)}px serif`; g.textAlign = 'center'; g.textBaseline = 'middle';
       for (let i = 0; i < 10; i++) { const a = (i / 10) * Math.PI * 2; g.save(); g.translate(cx + Math.cos(a) * rad * 0.82, cy + Math.sin(a) * rad * 0.82); g.rotate(a + Math.PI / 2); g.fillText('ᚱᚦᛟᛉᚹᛞᛗᛚᛜᛝ'[i], 0, 0); g.restore(); }
     }));
+    // Нажимные плиты (зал-ловушка), россыпи монет (сокровищница), кандалы на полу камеры
+    decals('plate').forEach(([x, y]) => {
+      const X = x * s, Y = y * s, m = s * 0.12; g.fillStyle = 'rgba(0,0,0,.35)'; g.fillRect(X + m - 1, Y + m - 1, s - 2 * m + 2, s - 2 * m + 2);
+      g.fillStyle = 'rgba(150,140,125,.55)'; g.fillRect(X + m, Y + m, s - 2 * m, s - 2 * m); g.strokeStyle = 'rgba(30,24,20,.6)'; g.lineWidth = s / 32; g.strokeRect(X + m, Y + m, s - 2 * m, s - 2 * m);
+      g.strokeStyle = 'rgba(60,50,40,.45)'; g.beginPath(); g.arc(X + s / 2, Y + s / 2, s * 0.14, 0, 6.29); g.moveTo(X + s / 2, Y + s * 0.3); g.lineTo(X + s / 2, Y + s * 0.7); g.stroke();
+    });
+    decals('gold').forEach(([x, y]) => {
+      const Rg = mulberry(x * 211 + y * 97);
+      for (let i = 0; i < 26; i++) { const px = (x + 0.15 + Rg() * 0.7) * s, py = (y + 0.15 + Rg() * 0.7) * s, r = s * (0.03 + Rg() * 0.025); g.fillStyle = Rg() < 0.8 ? `rgba(${220 + Rg() * 30},${170 + Rg() * 40},${50 + Rg() * 30},.95)` : 'rgba(210,215,225,.9)'; g.beginPath(); g.ellipse(px, py, r, r * 0.8, 0, 0, 6.29); g.fill(); g.strokeStyle = 'rgba(90,60,10,.5)'; g.lineWidth = 1; g.stroke(); }
+    });
+    decals('shackle').forEach(([x, y]) => {
+      const X = (x + 0.5) * s, Y = (y + 0.25) * s; g.strokeStyle = 'rgba(70,70,78,.9)'; g.lineWidth = s / 28;
+      for (let i = 0; i < 6; i++) { g.beginPath(); g.ellipse(X + (i - 2.5) * s * 0.07, Y + Math.sin(i) * s * 0.02, s * 0.035, s * 0.022, 0, 0, 6.29); g.stroke(); }
+      [-1, 1].forEach((q) => { g.beginPath(); g.arc(X + q * s * 0.24, Y + s * 0.05, s * 0.06, 0, 6.29); g.stroke(); });
+    });
     decals('blood').forEach(([x, y]) => {
       const Rb = mulberry(x * 131 + y * 71), X = (x + 0.5) * s, Y = (y + 0.5) * s;
       for (let i = 0; i < 7; i++) { const r = s * (i ? 0.04 + Rb() * 0.08 : 0.2 + Rb() * 0.1), ox = i ? (Rb() - 0.5) * s * 0.8 : 0, oy = i ? (Rb() - 0.5) * s * 0.8 : 0; g.fillStyle = `rgba(${70 + Rb() * 30},6,6,${0.6 + Rb() * 0.25})`; g.beginPath(); g.ellipse(X + ox, Y + oy, r, r * (0.6 + Rb() * 0.4), Rb() * 3, 0, 6.29); g.fill(); }
@@ -940,8 +955,8 @@ export function create(wrap, api) {
     // Закрытые дома (под крышей) и то, что висит на стенах: по карте генератора, а в замке, особняке, храме — само, понемногу
     const roofs = S.rooms.filter((r) => r.closed).map((r) => { let sh = -1; for (let y = r.y - 1; y <= r.y + r.h; y++) for (let x = r.x - 1; x <= r.x + r.w; x++) sh = Math.max(sh, S.shade(`${x}_${y}`)); return { r, sh }; }).filter((q) => q.sh >= 0);
     const decor = { ...S.decor }, auto = AUTO_DECOR[`${S.tpl}:${S.v}`] || AUTO_DECOR[S.tpl];
-    if (auto && !Object.keys(decor).length) Object.keys(S.map).forEach((k) => {
-      if (S.map[k] !== 'wall' || S.doors[k]) return;
+    if (auto && (!Object.keys(decor).length || DUNG.includes(S.tpl))) Object.keys(S.map).forEach((k) => {
+      if (S.map[k] !== 'wall' || S.doors[k] || decor[k]) return;
       const [x, y] = k.split('_').map(Number); if (rnd(x, y, 76) > (DUNG.includes(S.tpl) ? 0.06 : 0.14)) return;
       const r = [2, 1, 3, 0].find((q) => S.map[`${x + D4[q][0]}_${y + D4[q][1]}`] === 'floor'); if (r == null) return;
       decor[k] = `${auto[Math.floor(rnd(x, y, 77) * auto.length)]}:${'nesw'[r]}`;
@@ -1198,6 +1213,7 @@ export function create(wrap, api) {
       else if (kind === 'shield') { P(0, 0.6, z, 0.3, 0.36, 0.03, q < 0.5 ? 0x8a2f2a : 0x2f4f7a, 1.2); P(0, 0.6, f, 0.06, 0.36, 0.02, gold); P(0, 0.62, f, 0.3, 0.06, 0.02, gold); }
       else if (kind === 'herbs') { P(0, 0.82, z, 0.7, 0.025, 0.03, 0x4a3018); for (let i = 0; i < 5; i++) P(-0.28 + i * 0.14, 0.7, z, 0.07, 0.2, 0.05, [0x5a8a3a, 0x8a9a3a, 0x6a7a2a, 0xa08a3a, 0x7a5a8a][i]); }
       else if (kind === 'map') { P(0, 0.58, z, 0.54, 0.38, 0.015, 0xe2d3a8, 1.2); P(-0.1, 0.64, f, 0.2, 0.012, 0.01, 0x6a4a2a); P(0.08, 0.56, f, 0.012, 0.14, 0.01, 0x6a4a2a); P(0.05, 0.5, f, 0.22, 0.012, 0.01, 0x3a5a8a); P(0.15, 0.66, f, 0.035, 0.035, 0.01, 0xa03020); }
+      else if (kind === 'lever') { P(0, 0.5, z, 0.2, 0.26, 0.04, 0x3a3a42); P(0, 0.5, f, 0.08, 0.08, 0.04, 0x2a2a30); const up = q < 0.5; P(0, up ? 0.6 : 0.4, f - 0.06, 0.04, 0.22, 0.04, 0x6a6a72, 1.2); P(0, up ? 0.71 : 0.29, f - 0.1, 0.07, 0.07, 0.07, 0x8a2f2a, 1.3); }
       else if (kind === 'relief') { P(0, 0.55, z, 0.62, 0.66, 0.03, 0x8a847a); P(0, 0.55, f, 0.54, 0.58, 0.02, 0x7c766c); P(0, 0.72, f - 0.012, 0.1, 0.1, 0.02, 0xa29c92); P(0, 0.56, f - 0.012, 0.14, 0.22, 0.02, 0x9a948a); [-1, 1].forEach((s) => P(s * 0.12, 0.6, f - 0.012, 0.05, 0.16, 0.02, 0x9a948a)); P(0, 0.38, f - 0.012, 0.16, 0.12, 0.02, 0x8a847a); P(0, 0.86, f, 0.66, 0.04, 0.04, 0x6e6860); P(0, 0.24, f, 0.66, 0.04, 0.04, 0x6e6860); }
       else if (kind === 'chains') { [-0.16, 0.16].forEach((a) => { P(a, 0.86, z, 0.06, 0.06, 0.04, 0x2a2a30); for (let i = 0; i < 5; i++) P(a, 0.8 - i * 0.07, f, 0.035, 0.06, 0.035, 0x5a5a62, 1.1); P(a, 0.42, f, 0.11, 0.05, 0.05, 0x4a4a52, 1.1); }); }
       else if (kind === 'mirror') { P(0, 0.6, z, 0.36, 0.5, 0.03, gold); P(0, 0.6, f, 0.28, 0.42, 0.02, 0xbfd4dc, 1.5); }
@@ -2093,7 +2109,10 @@ export function create(wrap, api) {
   const puff = (x, z, c, a, size = 1.1) => SMOKE.emit({ x, y: rr(0.2, 1.2), z, vx: rr(-0.15, 0.15), vy: rr(0, 0.25), vz: rr(-0.15, 0.15), life: rr(1.4, 2.2), size: rr(0.8, 1.2) * size, grow: 0.3, a, c });
   // [частиц в секунду на клетку, что испускать]
   const ZK = {
-    'wall-fire': [7, (x, z) => (Math.random() < 0.5 ? flame(x, z, 0.6) : mote(x, z, pickOf(FIRE)))], 'wall-wind': [9, (x, z) => SPARK.emit({ x, y: rr(0.1, 1.1), z, vx: rr(-2.5, 2.5), vy: rr(0, 0.8), vz: rr(-2.5, 2.5), drag: 0.94, life: rr(0.3, 0.6), size: rr(0.1, 0.2), a: 0.35, c: [0.8, 0.9, 1] })],
+    'wall-fire': [8, (x, z) => { const r = Math.random();
+      if (r < 0.45) SPARK.emit({ x, y: rr(0.3, 1.6), z, vx: rr(-0.35, 0.35), vy: rr(0.8, 1.9), vz: rr(-0.35, 0.35), drag: 0.97, life: rr(0.8, 1.6), size: rr(0.04, 0.08), a: 1, c: pickOf(FIRE) }); // искры
+      else if (r < 0.62) SMOKE.emit({ x, y: rr(1.5, 2.1), z, vx: rr(-0.1, 0.1), vy: rr(0.4, 0.8), life: rr(1.6, 2.6), size: rr(0.6, 1), grow: 0.8, a: 0.16, c: [0.12, 0.1, 0.09] }); // дым над пламенем
+      else flame(x, z, 0.5); }], 'wall-wind': [9, (x, z) => SPARK.emit({ x, y: rr(0.1, 1.1), z, vx: rr(-2.5, 2.5), vy: rr(0, 0.8), vz: rr(-2.5, 2.5), drag: 0.94, life: rr(0.3, 0.6), size: rr(0.1, 0.2), a: 0.35, c: [0.8, 0.9, 1] })],
     'wall-blades': [8, (x, z) => SPARK.emit({ x, y: rr(0.2, 1.1), z, vx: rr(-1, 1), vz: rr(-1, 1), life: rr(0.12, 0.3), size: rr(0.08, 0.16), c: [1, 1, 1] })],
     'wall-force': [1.2, (x, z) => mote(x, z, [0.7, 0.5, 1])], 'wall-prism': [2.5, (x, z) => mote(x, z, hot([1, 1, 1], 1).setHSL(Math.random(), 0.9, 0.6).toArray())],
     dark: [2.6, (x, z) => puff(x, z, [0.01, 0.01, 0.02], 0.85, 1.15)], cloud: [1.7, (x, z) => puff(x, z, [0.72, 0.74, 0.78], 0.32, 1.2)], glyph: [1.5, (x, z) => mote(x, z, [1, 0.85, 0.45])],
@@ -2395,32 +2414,72 @@ export function create(wrap, api) {
     return true;
   }
 
-  // ---------- Стена огня: завеса пламени вдоль клеток ----------
-  // Лента вертикальных полос по цепочке клеток; пламя — шум, бегущий вверх, раскалённое ядро внизу, рваные языки вверху
+  // ---------- Стена огня: живые языки пламени вдоль клеток ----------
+  // Языки — плоскости, всегда повёрнутые к камере (сверху не превращаются в полоски), у каждого свой шум, рост и мерцание;
+  // под стеной — тлеющие угли и тёплое свечение земли, гаснущее с расстоянием
   const fireTime = { value: 0 };
   const fireMat = new THREE.ShaderMaterial({
     uniforms: { uTime: fireTime, uGlow: { value: 1 } },
-    vertexShader: `varying vec2 vUv; void main(){ vUv = uv; gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0); }`,
+    vertexShader: `attribute vec3 iPos; attribute vec3 iSz; uniform float uTime; varying vec2 vUv; varying float vSeed;
+      void main(){ vUv = uv; vSeed = iSz.z;
+        float fl = 1.0 + 0.13 * sin(uTime * 6.7 + iSz.z * 31.0) * sin(uTime * 3.9 + iSz.z * 17.0);
+        vec4 mv = viewMatrix * vec4(iPos, 1.0);
+        mv.xy += vec2(position.x * iSz.x, (position.y - 0.1) * iSz.y * fl);
+        gl_Position = projectionMatrix * mv; }`,
     fragmentShader: `#define OCT 4
-      uniform float uTime, uGlow; varying vec2 vUv;
+      uniform float uTime, uGlow; varying vec2 vUv; varying float vSeed;
       ${GLSL_NOISE}
       void main(){
-        float y = vUv.y, x = vUv.x;
-        float wob = fbm(vec2(x * 0.7, uTime * 0.45));
-        float tongues = 0.5 + 0.5 * sin(x * 5.5 + wob * 7.0 + sin(uTime * 1.3 + x) * 0.6);
-        float n = fbm(vec2(x * 2.3, y * 1.7 - uTime * 2.1));
-        float f = (n * 1.35 + 0.1) * mix(1.0, tongues, smoothstep(0.05, 0.6, y)) * (1.0 - y * 0.92) * 1.55 - y * 0.12;
-        f *= smoothstep(0.0, 0.05, y);
-        float a = smoothstep(0.34, 0.74, f);
-        vec3 c = mix(vec3(0.7, 0.06, 0.01), vec3(1.0, 0.42, 0.05), smoothstep(0.3, 0.7, f));
-        c = mix(c, vec3(1.0, 0.86, 0.45), smoothstep(0.85, 1.15, f));
-        gl_FragColor = vec4(c * a * (0.42 + 0.33 * uGlow), a * 0.8);
+        float y = vUv.y, s = vSeed * 23.0;
+        float n1 = fbm(vec2(vUv.x * 1.6 + s, y * 1.4 - uTime * 1.9 + s));
+        float n2 = fbm(vec2(vUv.x * 4.0 - s, y * 3.2 - uTime * 3.1));
+        // Язык качается и изгибается целиком, верх рвётся шумом на клочья
+        float x = vUv.x - 0.5 + (n1 - 0.5) * 0.7 * y + sin(uTime * 1.7 + s + y * 3.0) * 0.08 * y;
+        float w = 0.44 * pow(max(1.0 - y, 0.0), 0.6) * smoothstep(0.0, 0.2, y) + 0.001;
+        float f = (1.0 - abs(x) / w) * 1.1 + (n2 - 0.5) * (0.7 + 1.1 * y) - y * 0.45;
+        float a = smoothstep(0.0, 0.38, f) * smoothstep(0.0, 0.12, y);
+        if (a < 0.003) discard;
+        vec3 c = mix(vec3(0.45, 0.03, 0.0), vec3(0.95, 0.3, 0.02), smoothstep(0.0, 0.5, f));
+        c = mix(c, vec3(1.0, 0.62, 0.18), smoothstep(0.5, 0.95, f) * (1.0 - y * 0.8));
+        c = mix(c, vec3(1.0, 0.88, 0.55), smoothstep(1.0, 1.35, f) * (1.0 - y));
+        // Обычное наложение, а не сложение: где языки стоят друг за другом (стена вдоль взгляда), огонь не выгорает в белое
+        gl_FragColor = vec4(c * mix(0.95, 1.15, uGlow), a * 0.92);
       }`,
-    transparent: true, depthWrite: false, blending: THREE.AdditiveBlending, side: THREE.DoubleSide, toneMapped: false,
+    transparent: true, depthWrite: false, toneMapped: false,
+  });
+  const fireQuad = new THREE.PlaneGeometry(1, 1).translate(0, 0.5, 0);
+  // Мягкий ореол за пламенем (складывается со светом — даёт сияние и подсвечивает воздух над стеной)
+  const fireHalo = new THREE.ShaderMaterial({
+    uniforms: { uTime: fireTime, uGlow: { value: 1 } },
+    vertexShader: fireMat.vertexShader,
+    fragmentShader: `uniform float uTime, uGlow; varying vec2 vUv; varying float vSeed;
+      void main(){
+        vec2 p = (vUv - vec2(0.5, 0.36)) * vec2(1.0, 0.8); float r = length(p) * 2.0;
+        float a = pow(max(1.0 - r, 0.0), 2.2) * (0.85 + 0.15 * sin(uTime * 5.0 + vSeed * 40.0));
+        gl_FragColor = vec4(vec3(1.0, 0.42, 0.1) * a * mix(0.4, 0.5, uGlow), 1.0);
+      }`,
+    transparent: true, depthWrite: false, blending: THREE.AdditiveBlending, toneMapped: false,
+  });
+  // Земля у стены: угли под самим пламенем и тёплый отсвет вокруг
+  const fireGround = new THREE.ShaderMaterial({
+    uniforms: { uTime: fireTime, uGlow: { value: 1 } },
+    vertexShader: `attribute float aD; varying float vD; varying vec2 vW; void main(){ vD = aD; vec4 w = modelMatrix * vec4(position, 1.0); vW = w.xz; gl_Position = projectionMatrix * viewMatrix * w; }`,
+    fragmentShader: `#define OCT 4
+      uniform float uTime, uGlow; varying float vD; varying vec2 vW;
+      ${GLSL_NOISE}
+      void main(){
+        float n = fbm(vW * 2.2 + vec2(uTime * 0.15, -uTime * 0.25)), m = fbm(vW * 6.0 - vec2(0.0, uTime * 0.4));
+        float fl = 0.85 + 0.15 * sin(uTime * 7.0 + n * 5.0) * sin(uTime * 4.1);
+        float glow = exp(-vD * 1.4) * fl * (0.6 + 0.4 * n);
+        float coal = smoothstep(0.6, 0.15, vD) * smoothstep(0.42, 0.75, m) * (0.7 + 0.5 * sin(uTime * 3.0 + m * 12.0));
+        vec3 c = vec3(1.0, 0.38, 0.08) * glow * 0.9 + mix(vec3(0.7, 0.08, 0.0), vec3(1.0, 0.6, 0.15), m) * coal * mix(0.9, 1.6, uGlow);
+        gl_FragColor = vec4(c, 1.0);
+      }`,
+    transparent: true, depthWrite: false, blending: THREE.AdditiveBlending, toneMapped: false,
   });
   function fireCurtain(cells) {
     if (!cells.length) return;
-    fireMat.uniforms.uGlow.value = glowK ? 1 : 0.3;
+    fireMat.uniforms.uGlow.value = fireGround.uniforms.uGlow.value = fireHalo.uniforms.uGlow.value = glowK ? 1 : 0.3;
     // Цепочки соседних клеток (в т.ч. по диагонали) — отдельные ленты
     const runs = []; let run = [];
     cells.forEach(([x, y], i) => {
@@ -2429,6 +2488,7 @@ export function create(wrap, api) {
       run.push([x + 0.5, y + 0.5]);
     });
     runs.push(run);
+    const runsPts = [];
     runs.forEach((pts) => {
       // Концы продлены на полклетки, чтобы пламя закрывало крайние клетки
       if (pts.length === 1) pts = [[pts[0][0] - 0.5, pts[0][1]], [pts[0][0] + 0.5, pts[0][1]]];
@@ -2436,18 +2496,40 @@ export function create(wrap, api) {
         const e = (a, b) => { const dx = a[0] - b[0], dy = a[1] - b[1], l = Math.hypot(dx, dy) || 1; return [a[0] + (dx / l) * 0.5, a[1] + (dy / l) * 0.5]; };
         pts = [e(pts[0], pts[1]), ...pts, e(pts[pts.length - 1], pts[pts.length - 2])];
       }
-      [[0, 1.9, 0], [0.18, 1.35, 0.37], [-0.18, 1.45, 0.71]].forEach(([off, H, ph]) => {
-        const pos = [], uv = [], idx = []; let u = ph * 7;
-        pts.forEach((p, i) => {
-          const q = pts[Math.min(pts.length - 1, i + 1)], o = pts[Math.max(0, i - 1)], dx = q[0] - o[0], dy = q[1] - o[1], l = Math.hypot(dx, dy) || 1, nx = -dy / l, ny = dx / l;
-          if (i) u += Math.hypot(p[0] - pts[i - 1][0], p[1] - pts[i - 1][1]);
-          pos.push(p[0] + nx * off, 0, p[1] + ny * off, p[0] + nx * off, H, p[1] + ny * off); uv.push(u * 0.9, 0, u * 0.9, 1);
-          if (i) { const b = (i - 1) * 2; idx.push(b, b + 1, b + 2, b + 1, b + 3, b + 2); }
-        });
-        const g = new THREE.BufferGeometry(); g.setAttribute('position', new THREE.Float32BufferAttribute(pos, 3)); g.setAttribute('uv', new THREE.Float32BufferAttribute(uv, 2)); g.setIndex(idx);
-        const m = new THREE.Mesh(g, fireMat); m.renderOrder = 6; m.frustumCulled = false; m.userData.geo = true; m.userData.fire = true; zoneBox.add(m);
-      });
+      // Языки пламени через каждые ~0.3 клетки: высокие в середине, низкие и широкие у основания, концы стены ниже
+      const iPos = [], iSz = [], total = pts.reduce((s, p, i) => s + (i ? Math.hypot(p[0] - pts[i - 1][0], p[1] - pts[i - 1][1]) : 0), 0);
+      const add = (x, z, w, h) => { iPos.push(x, 0.04, z); iSz.push(w, h, Math.random()); };
+      let walked = 0;
+      for (let i = 1; i < pts.length; i++) {
+        const a = pts[i - 1], b = pts[i], L = Math.hypot(b[0] - a[0], b[1] - a[1]); if (!L) continue;
+        const nx = -(b[1] - a[1]) / L, nz = (b[0] - a[0]) / L, step = 0.4;
+        for (let d = (walked ? step - (walked % step) : 0); d <= L + 1e-6; d += step) {
+          const t = d / L, x = a[0] + (b[0] - a[0]) * t, z = a[1] + (b[1] - a[1]) * t, along = walked + d;
+          const end = Math.min(1, Math.min(along, total - along) / 0.7 + 0.35), j = rr(-0.1, 0.1);
+          const big = Math.random() < 0.35; add(x + nx * j, z + nz * j, rr(0.9, 1.3), (big ? rr(1.9, 2.5) : rr(1.1, 1.7)) * end);
+          if (Math.random() < 0.45) { const k = rr(-0.22, 0.22); add(x + nx * k + rr(-0.15, 0.15), z + nz * k, rr(0.6, 0.9), rr(0.6, 1) * end); }
+        }
+        walked += L;
+      }
+      // Ореол — крупные мягкие пятна света через каждые ~0.8 клетки (за языками)
+      const hPos = [], hSz = [];
+      for (let i = 0; i < iPos.length / 3; i += 2) if (iSz[i * 3 + 1] > 0.9) { hPos.push(iPos[i * 3], 0.04, iPos[i * 3 + 2]); hSz.push(2.2, iSz[i * 3 + 1] * 1.25, Math.random()); }
+      const inst = (P, Z, mat, order) => {
+        const g = new THREE.InstancedBufferGeometry(); g.setIndex(fireQuad.index.clone()); g.setAttribute('position', fireQuad.attributes.position.clone()); g.setAttribute('uv', fireQuad.attributes.uv.clone());
+        g.setAttribute('iPos', new THREE.InstancedBufferAttribute(new Float32Array(P), 3)); g.setAttribute('iSz', new THREE.InstancedBufferAttribute(new Float32Array(Z), 3)); g.instanceCount = P.length / 3;
+        const m = new THREE.Mesh(g, mat); m.renderOrder = order; m.frustumCulled = false; m.userData.geo = true; m.userData.fire = true; zoneBox.add(m);
+      };
+      if (hPos.length) inst(hPos, hSz, fireHalo, 5);
+      inst(iPos, iSz, fireMat, 6);
+      runsPts.push(pts);
     });
+    // Свечение земли: клетки до двух от стены; у каждой вершины — расстояние до линии пламени
+    const segD = (px, pz) => { let best = 9; runsPts.forEach((pts) => { for (let i = 1; i < pts.length; i++) { const [ax, az] = pts[i - 1], [bx, bz] = pts[i], dx = bx - ax, dz = bz - az, l2 = dx * dx + dz * dz || 1, t = Math.max(0, Math.min(1, ((px - ax) * dx + (pz - az) * dz) / l2)); best = Math.min(best, Math.hypot(px - ax - dx * t, pz - az - dz * t)); } }); return best; };
+    const near = new Set(); cells.forEach(([x, y]) => { for (let dy = -2; dy <= 2; dy++) for (let dx = -2; dx <= 2; dx++) near.add(`${x + dx}_${y + dy}`); });
+    const pos = [], dd = [], idx = []; let n = 0;
+    near.forEach((k) => { const [x, z] = k.split('_').map(Number); [[0, 0], [1, 0], [0, 1], [1, 1]].forEach(([a, b]) => { pos.push(x + a, 0.016, z + b); dd.push(segD(x + a, z + b)); }); idx.push(n, n + 2, n + 1, n + 1, n + 2, n + 3); n += 4; });
+    const gg = new THREE.BufferGeometry(); gg.setAttribute('position', new THREE.Float32BufferAttribute(pos, 3)); gg.setAttribute('aD', new THREE.Float32BufferAttribute(dd, 1)); gg.setIndex(idx);
+    const gm = new THREE.Mesh(gg, fireGround); gm.renderOrder = 2; gm.userData.geo = true; gm.userData.fire = true; zoneBox.add(gm);
   }
 
   // ---------- Рунный круг под заклинателем ----------

@@ -929,12 +929,12 @@ const MAPGEN = (() => {
   // Подземелье: комнаты, коридоры между ними, двери (иногда запертые), факелы, места для сундуков
   // Темы подземелья: виды комнат (кроме входа и логова), как стоят колонны, свет, особенности
   const DTHEME = {
-    classic: { n: 'старое подземелье', kinds: ['hall', 'hall', 'crypt', 'storage', 'shrine'], pillars: ['corners', 'rows', 'rows', 'center', 'none', 'ring'], lights: 0, shapes: ['rect', 'rect', 'round', 'oct', 'ell', 'cross', 'niche'] },
-    fort: { n: 'заброшенная крепость', kinds: ['barracks', 'armory', 'guard', 'mess', 'storage', 'hall'], pillars: ['corners', 'none', 'none', 'rows'], lights: 0.5, shapes: ['rect', 'rect', 'rect', 'ell', 'ell', 'oct'] },
-    temple: { n: 'древний храм', kinds: ['hall', 'statues', 'shrine', 'fountain', 'statues', 'hall'], pillars: ['rows', 'rows', 'ring', 'center'], lights: 0.2, mosaic: 1, shapes: ['round', 'oct', 'cross', 'niche', 'rect', 'round'] },
-    cult: { n: 'логово культа', kinds: ['ritual', 'cells', 'shrine', 'storage', 'hall', 'cells'], pillars: ['none', 'corners', 'center'], lights: 0, blood: 1, shapes: ['round', 'oct', 'rect', 'ell', 'niche'] },
-    tomb: { n: 'гробница', kinds: ['niches', 'crypt', 'niches', 'statues', 'crypt'], pillars: ['rows', 'none', 'corners'], lights: 0, shapes: ['niche', 'niche', 'cross', 'oct', 'rect'] },
-    flooded: { n: 'затопленные руины', kinds: ['pool', 'hall', 'pool', 'storage', 'crypt', 'hall'], pillars: ['corners', 'rows', 'center', 'none'], lights: 0, shapes: ['round', 'ell', 'rect', 'oct', 'cross'] },
+    classic: { n: 'старое подземелье', kinds: ['hall', 'hall', 'crypt', 'storage', 'shrine'], pillars: ['corners', 'rows', 'rows', 'center', 'none', 'ring'], lights: 0, shapes: ['rect', 'rect', 'round', 'oct', 'ell', 'cross', 'niche'], special: ['chasm', 'river', 'traps', 'library', 'prison', 'throne', 'lab', 'treasury', 'puzzle'] },
+    fort: { n: 'заброшенная крепость', kinds: ['barracks', 'armory', 'guard', 'mess', 'storage', 'hall'], pillars: ['corners', 'none', 'none', 'rows'], lights: 0.5, shapes: ['rect', 'rect', 'rect', 'ell', 'ell', 'oct'], special: ['prison', 'throne', 'treasury', 'traps', 'library'] },
+    temple: { n: 'древний храм', kinds: ['hall', 'statues', 'shrine', 'fountain', 'statues', 'hall'], pillars: ['rows', 'rows', 'ring', 'center'], lights: 0.2, mosaic: 1, shapes: ['round', 'oct', 'cross', 'niche', 'rect', 'round'], special: ['puzzle', 'traps', 'library', 'chasm', 'treasury'] },
+    cult: { n: 'логово культа', kinds: ['ritual', 'cells', 'shrine', 'storage', 'hall', 'cells'], pillars: ['none', 'corners', 'center'], lights: 0, blood: 1, shapes: ['round', 'oct', 'rect', 'ell', 'niche'], special: ['prison', 'lab', 'traps', 'puzzle', 'library'] },
+    tomb: { n: 'гробница', kinds: ['niches', 'crypt', 'niches', 'statues', 'crypt'], pillars: ['rows', 'none', 'corners'], lights: 0, shapes: ['niche', 'niche', 'cross', 'oct', 'rect'], special: ['traps', 'treasury', 'puzzle', 'chasm'] },
+    flooded: { n: 'затопленные руины', kinds: ['pool', 'hall', 'pool', 'storage', 'crypt', 'hall'], pillars: ['corners', 'rows', 'center', 'none'], lights: 0, shapes: ['round', 'ell', 'rect', 'oct', 'cross'], special: ['river', 'chasm', 'treasury', 'traps'] },
   };
   function dungeon(G, R, o, out) {
     for (let y = 0; y < G.h; y++) for (let x = 0; x < G.w; x++) G.g[y][x] = 'wall';
@@ -1011,8 +1011,16 @@ const MAPGEN = (() => {
       if (side1 === 'wall' && side2 === 'wall' && R.ch(0.65)) out.doors[`${x}_${y}`] = { o: 0, ...(R.ch(0.15) ? { l: 1 } : {}) };
     }
     for (let y = 0; y < G.h; y++) for (let x = 0; x < G.w; x++) if (G.g[y][x] === 'corr') G.g[y][x] = 'floor';
+    // Особые комнаты (одна-две на карту, по теме): провал с мостом, подземная река, зал-ловушка, библиотека, тюрьма,
+    // тронный зал, лаборатория, сокровищница, комната-загадка
+    const special = new Map(), spPool = TH.special.slice();
+    const spCand = rooms.map((r, i) => i).filter((i) => i > 0 && i < rooms.length - 1 && rooms[i].w >= 5 && rooms[i].h >= 5 && rooms[i].shape !== 'round' && rooms[i].shape !== 'cross');
+    for (let n = 0; n < (rooms.length >= 9 ? 2 : 1) && spCand.length && spPool.length; n++) {
+      const i = spCand.splice(R.i(0, spCand.length - 1), 1)[0], k = spPool.splice(R.i(0, spPool.length - 1), 1)[0]; special.set(i, k);
+    }
+    const notes = out.notes = [], spUndo = [];
     rooms.forEach((r, i) => {
-      const kind = i === 0 ? 'entrance' : i === rooms.length - 1 ? 'boss' : R.pick(TH.kinds);
+      const kind = i === 0 ? 'entrance' : i === rooms.length - 1 ? 'boss' : special.get(i) || R.pick(TH.kinds);
       out.rooms.push({ ...r, kind });
       if (R.ch(0.55) || i === 0) out.lights.push({ x: r.x, y: r.y, b: 20, d: 20 }); // факел в углу
       // Колонны в больших залах, вода в святилище
@@ -1073,6 +1081,63 @@ const MAPGEN = (() => {
       if (kind === 'pool') for (let y = r.y; y < r.y + r.h; y++) for (let x = r.x; x < r.x + r.w; x++) if (G.get(x, y) === 'floor' && Math.hypot((x - mx) / (r.w / 2), (y - my) / (r.h / 2)) < 0.85 + R.f() * 0.25) G.set(x, y, 'water');
       if (kind === 'crypt') { if (r.w >= r.h) { put(mx - 1, my, null, 'grave'); if (R.ch(0.5)) put(mx + 1, my, null, 'grave'); } else { put(mx, my - 1, null, 'grave'); if (R.ch(0.5)) put(mx, my + 1, null, 'grave'); } }
       if (kind === 'boss' && R.ch(0.6)) put(mx, r.y, 'throne');
+      // ---- Особые комнаты ----
+      const undo = { cells: [], doors: [] }, setU = (x, y, t) => { undo.cells.push([x, y, G.get(x, y)]); G.set(x, y, t); };
+      const longX = r.w >= r.h;
+      if (kind === 'chasm' || kind === 'river') {
+        // Полоса поперёк длинной стороны, мост — посередине; провал не пройти, реку — вброд
+        const t = kind === 'chasm' ? 'chasm' : 'water', wB = kind === 'chasm' ? 2 : R.i(2, 3);
+        for (let a = 0; a < wB; a++) for (let b = 0; b < (longX ? r.h : r.w); b++) {
+          const x = longX ? mx - Math.floor(wB / 2) + a : r.x + b, y = longX ? r.y + b : my - Math.floor(wB / 2) + a;
+          if (G.get(x, y) !== 'floor') continue;
+          setU(x, y, (longX ? y === my : x === mx) ? 'bridge' : t);
+        }
+        if (kind === 'chasm') notes.push({ x: mx, y: my, ic: '⚠', txt: 'Провал: узкий мост без перил. Толчок или неудачный рывок на мосту — спасбросок Ловкости СЛ {dc}, при провале падение в пропасть ({fall} дробящего урона)' });
+        spUndo.push(undo);
+      }
+      if (kind === 'traps') {
+        for (let y = r.y + 1; y < r.y + r.h - 1; y++) for (let x = r.x + 1; x < r.x + r.w - 1; x++) if ((x + y) % 2 === 0 && G.get(x, y) === 'floor' && !P[`${x}_${y}`] && R.ch(0.55)) P[`${x}_${y}`] = 'plate';
+        notes.push({ x: mx, y: my, ic: '⚠', txt: 'Зал-ловушка: нажимные плиты (они на полу). Заметить подвох — Мудрость (Внимательность) СЛ {dc}; наступил на плиту — из стен бьёт пламя: спасбросок Ловкости СЛ {dc}, при провале {dmg} огнём (при успехе половина)' });
+      }
+      if (kind === 'library') { alongWalls(R.i(4, 7), (x, y) => put(x, y, 'books')); put(mx, my, 'lectern'); if (R.ch(0.6)) put(mx + (longX ? 2 : 0), my + (longX ? 0 : 2), 'table'); }
+      if (kind === 'lab') { put(mx, my, 'cauldron'); alongWalls(R.i(2, 3), (x, y) => put(x, y, R.ch(0.5) ? 'alembic' : 'potions')); out.lights.push({ x: mx, y: my, b: 5, d: 10 }); }
+      if (kind === 'throne') {
+        // Трон у дальней стены (если там вход — у противоположной), к нему ковровая дорожка, по сторонам колонны и свечи
+        const spot = [[mx, r.y, 1], [mx - 1, r.y, 1], [mx + 1, r.y, 1], [mx, r.y + r.h - 1, -1], [mx - 1, r.y + r.h - 1, -1], [mx + 1, r.y + r.h - 1, -1]].find(([x, y]) => put(x, y, 'throne'));
+        if (spot) {
+          const [tx, ty, d] = spot;
+          for (let y = ty + d; y >= r.y && y < r.y + r.h; y += d) if (G.get(tx, y) === 'floor' && !P[`${tx}_${y}`]) P[`${tx}_${y}`] = 'rug';
+          for (let y = ty + d; y >= r.y + 1 && y < r.y + r.h - 1; y += 2 * d) { pillar(tx - 2, y); pillar(tx + 2, y); }
+          [-1, 1].forEach((q) => { if (put(tx + q, ty, 'candelabra')) out.lights.push({ x: tx + q, y: ty, b: 10, d: 10 }); });
+        }
+      }
+      if (kind === 'treasury') {
+        // Все двери в сокровищницу заперты; внутри сундуки и россыпи монет
+        Object.keys(out.doors).forEach((k) => { const [x, y] = k.split('_').map(Number); if (x >= r.x - 1 && x <= r.x + r.w && y >= r.y - 1 && y <= r.y + r.h) out.doors[k].l = 1; });
+        for (let n = 0; n < R.i(2, 3); n++) { const x = R.i(r.x, r.x + r.w - 1), y = r.y; if (G.get(x, y) === 'floor' && !P[`${x}_${y}`] && !out.chests.some((c) => c.x === x && c.y === y)) out.chests.push({ x, y, room: i, boss: n === 0 }); }
+        for (let n = 0; n < R.i(3, 6); n++) { const x = R.i(r.x, r.x + r.w - 1), y = R.i(r.y + 1, r.y + r.h - 1); if (G.get(x, y) === 'floor' && !P[`${x}_${y}`]) P[`${x}_${y}`] = 'gold'; }
+        notes.push({ x: mx, y: my, ic: '💰', txt: 'Сокровищница: двери заперты — Ловкость (воровские инструменты) СЛ {dc} или выломать: Сила (Атлетика) СЛ {dc2}' });
+      }
+      if (kind === 'puzzle') {
+        put(mx, my, 'orb');
+        // Три рычага на стене комнаты
+        const D = { n: [0, -1], e: [1, 0], s: [0, 1], w: [-1, 0] }, walls = [];
+        for (let y = r.y; y < r.y + r.h; y++) for (let x = r.x; x < r.x + r.w; x++) if (G.get(x, y) === 'floor') Object.entries(D).forEach(([sd, [dx, dy]]) => { if (G.get(x + dx, y + dy) === 'wall' && !out.doors[`${x + dx}_${y + dy}`]) walls.push([`${x + dx}_${y + dy}`, { n: 's', s: 'n', e: 'w', w: 'e' }[sd]]); });
+        const dec = out.decor || (out.decor = {});
+        for (let n = 0; n < 3 && walls.length; n++) { const [k, sd] = walls.splice(R.i(0, walls.length - 1), 1)[0]; if (!dec[k]) dec[k] = `lever:${sd}`; }
+        const order = [1, 2, 3].sort(() => R.f() - 0.5).join('-');
+        notes.push({ x: mx, y: my, ic: '👁', txt: `Комната-загадка: три рычага на стенах и сфера на постаменте. Верный порядок ${order} — сфера светится, под постаментом открывается тайник. Неверный — разряд из сферы: спасбросок Ловкости СЛ {dc}, при провале {dmg} молнией` });
+      }
+      if (kind === 'prison') {
+        // Камеры вдоль глухой длинной стены: перегородки и решётчатые двери (часть заперта)
+        const top = [...Array(r.w).keys()].every((a) => G.get(r.x + a, r.y - 1) === 'wall' && !corrSet.has(`${r.x + a}_${r.y}`) && !corrSet.has(`${r.x + a}_${r.y + 1}`) && !corrSet.has(`${r.x + a}_${r.y + 2}`));
+        if (r.shape === 'rect' && r.h >= 6 && r.w >= 5 && top) {
+          for (let a = 0; a < r.w; a++) { const x = r.x + a, cellX = a % 3; if (cellX === 2) { setU(x, r.y, 'wall'); setU(x, r.y + 1, 'wall'); setU(x, r.y + 2, 'wall'); } else if (cellX === 0 && a + 1 < r.w && (a + 2) % 3 !== 0) { setU(x, r.y + 2, 'floor'); const k = `${x}_${r.y + 2}`; out.doors[k] = { o: 0, ...(R.ch(0.6) ? { l: 1 } : {}) }; undo.doors.push(k); } else if (cellX === 0) { setU(x, r.y, 'wall'); setU(x, r.y + 1, 'wall'); setU(x, r.y + 2, 'wall'); } else setU(x, r.y + 2, 'wall'); }
+          for (let a = 0; a + 1 < r.w; a += 3) if (R.ch(0.5)) P[`${r.x + a}_${r.y}`] = 'shackle';
+          spUndo.push(undo);
+        } else alongWalls(R.i(2, 4), (x, y) => put(x, y, 'cage'));
+        notes.push({ x: mx, y: my, ic: '🚪', txt: 'Тюрьма: двери камер окованы, часть заперта (Ловкость, воровские инструменты СЛ {dc}). В камерах могут сидеть пленники — расспросите их' });
+      }
       if (kind === 'boss' && theme === 'cult') { decal(1, 'circle'); if (!P[`${mx}_${my}`] || P[`${mx}_${my}`] === 'circle') put(mx, my, 'altar'); }
       if (kind === 'boss' && theme === 'tomb') put(mx, my, null, 'grave');
       if (i === 0 || R.ch(0.5)) { const pool_ = TH.lights; if (pool_ > 0 && R.ch(pool_)) out.lights.push({ x: r.x + r.w - 1, y: r.y + r.h - 1, b: 20, d: 20 }); }
@@ -1096,7 +1161,14 @@ const MAPGEN = (() => {
       for (let y = 1; y < G.h - 1; y++) for (let x = 1; x < G.w - 1; x++) if (G.g[y][x] === 'floor' && !inR(x, y) && !out.doors[`${x}_${y}`] && R.ch(0.22)) G.g[y][x] = 'water';
       for (let n = 0; n < Math.round(rooms.length / 2); n++) { const q = R.pick(rooms), x = R.i(q.x, q.x + q.w - 1), y = R.i(q.y, q.y + q.h - 1); if (G.get(x, y) === 'floor') G.set(x, y, 'rubble'); }
     }
-    if (rooms.length) { const [sx, sy] = cen(rooms[0]); unblock(G, out, sx, sy, placed); }
+    if (rooms.length) {
+      const [sx, sy] = cen(rooms[0]);
+      // Провал или камеры отрезали часть карты — эта особая комната отменяется (снова обычный пол)
+      const lost = () => { const block = (x, y) => ['wall', 'furn', 'crate', 'grave', 'chasm'].includes(G.get(x, y)), seen = new Set([`${sx}_${sy}`]), q = [[sx, sy]]; while (q.length) { const [x, y] = q.pop(); [[1, 0], [-1, 0], [0, 1], [0, -1]].forEach(([dx, dy]) => { const k = `${x + dx}_${y + dy}`; if (!seen.has(k) && G.inb(x + dx, y + dy) && !block(x + dx, y + dy)) { seen.add(k); q.push([x + dx, y + dy]); } }); } for (let y = 0; y < G.h; y++) for (let x = 0; x < G.w; x++) if (!block(x, y) && G.get(x, y) !== '' && !seen.has(`${x}_${y}`)) return true; return false; };
+      unblock(G, out, sx, sy, placed);
+      for (const u of spUndo) { if (!lost()) break; u.cells.slice().reverse().forEach(([x, y, t]) => G.set(x, y, t)); u.doors.forEach((k) => delete out.doors[k]); }
+      unblock(G, out, sx, sy, placed);
+    }
     // Обломки не ложатся на сундуки и на место входа
     out.chests.forEach((c) => { if (G.get(c.x, c.y) === 'rubble') G.set(c.x, c.y, 'floor'); });
     out.ground = 'stone'; out.amb = 'dark'; out.fog = 'vision';

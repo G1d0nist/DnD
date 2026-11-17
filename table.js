@@ -591,7 +591,7 @@ function loadBg(src) {
 }
 // Рисунок клетки поверх заливки (без карты-подложки): крона дерева, валун, кустики, доски моста, стол; v — разнообразие
 // Предметы обстановки в плоском виде (вид предмета — в meta.gen.props): свой значок вместо рамки «мебели»
-const PROPS2D = Object.fromEntries(['pillar', 'pillar_b', 'barrel', 'statue', 'urn', 'cage', 'altar', 'candelabra', 'throne', 'rack', 'armor', 'bed', 'table'].map((k) => [k, 1]));
+const PROPS2D = Object.fromEntries(['pillar', 'pillar_b', 'barrel', 'statue', 'urn', 'cage', 'altar', 'candelabra', 'throne', 'rack', 'armor', 'bed', 'table', 'books', 'potions', 'lectern', 'cauldron', 'alembic', 'orb'].map((k) => [k, 1]));
 function drawProp(g, p, px, py, v) {
   const c = CELL / 2, X = px + c, Y = py + c, circ = (x, y, r, fill, stroke, lw = 1.5) => { g.beginPath(); g.arc(x, y, r, 0, Math.PI * 2); if (fill) { g.fillStyle = fill; g.fill(); } if (stroke) { g.strokeStyle = stroke; g.lineWidth = lw; g.stroke(); } };
   g.save();
@@ -607,6 +607,11 @@ function drawProp(g, p, px, py, v) {
   else if (p === 'rack') { g.fillStyle = '#5e3d1f'; g.fillRect(px + 4, py + 6, CELL - 8, 5); g.strokeStyle = '#b8bcc4'; g.lineWidth = 2; [10, 20, 30].forEach((dx) => { g.beginPath(); g.moveTo(px + dx, py + 10); g.lineTo(px + dx, py + 32); g.stroke(); }); }
   else if (p === 'armor') { circ(X, Y - 9, 5, '#8a8e96', 'rgba(0,0,0,.4)', 1); g.fillStyle = '#9aa0a8'; g.fillRect(X - 9, Y - 4, 18, 14); g.fillStyle = '#5e3d1f'; g.fillRect(X - 2, Y + 10, 4, 6); }
   else if (p === 'bed') { g.fillStyle = '#5e3d1f'; g.fillRect(px + 5, py + 3, CELL - 10, CELL - 6); g.fillStyle = ['#8a2f2a', '#2f4f7a', '#3d6b3a', '#6a3f7a', '#8a6a2a'][v]; g.fillRect(px + 7, py + 14, CELL - 14, CELL - 19); g.fillStyle = '#e8dcc0'; g.fillRect(px + 8, py + 6, CELL - 16, 7); }
+  else if (p === 'books' || p === 'potions') { g.fillStyle = '#4a3018'; g.fillRect(px + 3, py + 6, CELL - 6, CELL - 12); const cols = p === 'books' ? ['#7a2a24', '#2a4a6a', '#34582e', '#6a5a2a', '#4a2e5a'] : ['#c83a3a', '#3a8ac8', '#4ac86a', '#c8a03a', '#9a4ac8']; for (let i = 0; i < 6; i++) { g.fillStyle = cols[i % 5]; if (p === 'books') g.fillRect(px + 6 + i * 5, py + 9, 4, CELL - 18); else { g.beginPath(); g.arc(px + 8 + i * 5, py + c, 2.2, 0, Math.PI * 2); g.fill(); } } }
+  else if (p === 'lectern') { g.fillStyle = '#4a3018'; g.fillRect(X - 3, Y - 2, 6, 14); g.fillStyle = '#e8dcc0'; g.fillRect(X - 11, Y - 10, 22, 11); g.strokeStyle = '#7a5230'; g.lineWidth = 1; g.beginPath(); g.moveTo(X, Y - 10); g.lineTo(X, Y + 1); g.stroke(); }
+  else if (p === 'cauldron') { circ(X, Y, 13, '#1e1e22', '#4a4a52', 2); circ(X, Y, 9, '#4a8a3a'); circ(X - 3, Y - 2, 2, '#9ad86a'); circ(X + 4, Y + 3, 1.5, '#9ad86a'); }
+  else if (p === 'alembic') { g.fillStyle = '#5e3d1f'; g.fillRect(px + 3, py + 8, CELL - 6, CELL - 16); [[-10, '#5ac8f0'], [0, '#c85af0'], [10, '#5af08a']].forEach(([dx, col]) => circ(X + dx, Y, 4, col, 'rgba(255,255,255,.5)', 1)); }
+  else if (p === 'orb') { g.fillStyle = '#5e5850'; g.fillRect(px + 8, py + 8, CELL - 16, CELL - 16); circ(X, Y, 7, '#9a6cf0', 'rgba(255,255,255,.6)', 1.5); circ(X - 2, Y - 2, 2, 'rgba(255,255,255,.7)'); }
   else if (p === 'table') { g.fillStyle = '#7a5230'; g.fillRect(px + 3, py + 7, CELL - 6, CELL - 14); g.strokeStyle = 'rgba(0,0,0,.4)'; g.strokeRect(px + 3, py + 7, CELL - 6, CELL - 14); circ(X - 6, Y, 3, '#b9a07a'); circ(X + 7, Y - 2, 2.5, '#d8cdb4'); }
   g.restore();
 }
@@ -614,7 +619,7 @@ function drawProp(g, p, px, py, v) {
 function drawDecals(g) {
   const P = ((game.meta || {}).gen || {}).props || {};
   Object.entries(P).forEach(([k, p]) => {
-    if (!['mosaic', 'circle', 'blood'].includes(p) || ((game.map || {})[k] && game.map[k] !== 'floor')) return;
+    if (!['mosaic', 'circle', 'blood', 'plate', 'gold', 'shackle', 'rug'].includes(p) || ((game.map || {})[k] && game.map[k] !== 'floor')) return;
     const [x, y] = k.split('_').map(Number), px = x * CELL, py = y * CELL, has = (a, b) => P[`${a}_${b}`] === p;
     g.save();
     if (p === 'mosaic') {
@@ -627,6 +632,15 @@ function drawDecals(g) {
       if (!has(x, y + 1)) { g.beginPath(); g.moveTo(px, py + CELL - 2); g.lineTo(px + CELL, py + CELL - 2); g.stroke(); }
       if (!has(x - 1, y)) { g.beginPath(); g.moveTo(px + 2, py); g.lineTo(px + 2, py + CELL); g.stroke(); }
       if (!has(x + 1, y)) { g.beginPath(); g.moveTo(px + CELL - 2, py); g.lineTo(px + CELL - 2, py + CELL); g.stroke(); }
+    } else if (p === 'plate') {
+      g.fillStyle = 'rgba(150,140,125,.5)'; g.fillRect(px + 5, py + 5, CELL - 10, CELL - 10); g.strokeStyle = 'rgba(30,24,20,.7)'; g.lineWidth = 1.5; g.strokeRect(px + 5, py + 5, CELL - 10, CELL - 10);
+      if (isDM() && !fogPreview) { g.font = '12px system-ui'; g.fillText('⚠', px + CELL / 2 - 6, py + CELL / 2 + 5); }
+    } else if (p === 'gold') {
+      [[12, 14], [24, 11], [18, 24], [28, 27], [10, 28], [22, 18]].forEach(([dx, dy], i) => { g.fillStyle = i % 4 ? '#e8b84a' : '#d8dce4'; g.beginPath(); g.arc(px + dx, py + dy, 3.2, 0, Math.PI * 2); g.fill(); g.strokeStyle = 'rgba(90,60,10,.6)'; g.lineWidth = 1; g.stroke(); });
+    } else if (p === 'shackle') {
+      g.strokeStyle = '#5a5a62'; g.lineWidth = 2; g.beginPath(); g.moveTo(px + 8, py + 10); g.lineTo(px + 32, py + 10); g.stroke(); [10, 30].forEach((dx) => { g.beginPath(); g.arc(px + dx, py + 14, 3.5, 0, Math.PI * 2); g.stroke(); });
+    } else if (p === 'rug') {
+      g.fillStyle = 'rgba(122,42,38,.8)'; g.fillRect(px + 4, py, CELL - 8, CELL); g.fillStyle = 'rgba(200,160,74,.8)'; g.fillRect(px + 4, py, 3, CELL); g.fillRect(px + CELL - 7, py, 3, CELL);
     } else {
       g.fillStyle = 'rgba(110,10,10,.7)'; [[20, 20, 9], [11, 27, 4], [29, 12, 3.5], [31, 28, 2.5]].forEach(([dx, dy, r]) => { g.beginPath(); g.arc(px + dx, py + dy, r, 0, Math.PI * 2); g.fill(); });
     }
@@ -4140,7 +4154,18 @@ function glowCells(g, keys, col, fill) {
 }
 function drawWall(g, A) {
   const [fill, line] = WALL_STYLE[(A.wall || {}).style || ((cast && cast.info.wall) || {}).style] || ['rgba(212,166,74,.5)', '#d4a64a'], prism = ((A.wall || (cast && cast.info.wall) || {}).style) === 'prism';
-  if (g3on && !A.preview) { glowCells(g, [...(A.cells || []), ...(A.band || [])], prism ? '#ffffff' : ((A.wall || {}).style === 'fire' ? '#ff4a14' : line), (A.band || []).length ? 'rgba(255,90,30,.14)' : null); return; }
+  // Объёмный вид, стена огня: пламя и отсвет на земле рисует сцена; здесь — только тонкая пунктирная граница опасной стороны
+  if (g3on && !A.preview && (A.wall || {}).style === 'fire') {
+    const own = new Set(A.band || []), all = new Set([...own, ...(A.cells || [])]);
+    g.save(); g.beginPath();
+    own.forEach((k) => { const [x, y] = k.split('_').map(Number), px = x * CELL, py = y * CELL;
+      if (!all.has(`${x}_${y - 1}`)) { g.moveTo(px, py); g.lineTo(px + CELL, py); }
+      if (!all.has(`${x}_${y + 1}`)) { g.moveTo(px, py + CELL); g.lineTo(px + CELL, py + CELL); }
+      if (!all.has(`${x - 1}_${y}`)) { g.moveTo(px, py); g.lineTo(px, py + CELL); }
+      if (!all.has(`${x + 1}_${y}`)) { g.moveTo(px + CELL, py); g.lineTo(px + CELL, py + CELL); } });
+    g.setLineDash([7, 6]); g.lineWidth = 1.6; g.strokeStyle = 'rgba(255,150,80,.55)'; g.stroke(); g.restore(); return;
+  }
+  if (g3on && !A.preview) { glowCells(g,[...(A.cells || []), ...(A.band || [])], prism ? '#ffffff' : ((A.wall || {}).style === 'fire' ? '#ff4a14' : line), (A.band || []).length ? 'rgba(255,90,30,.14)' : null); return; }
   (A.band || []).forEach((k) => { const [x, y] = k.split('_').map(Number); g.fillStyle = 'rgba(255,120,40,.16)'; g.fillRect(x * CELL, y * CELL, CELL, CELL); });
   (A.cells || []).forEach((k, i) => {
     const [x, y] = k.split('_').map(Number), px = x * CELL, py = y * CELL;
@@ -6525,6 +6550,11 @@ async function genApply(res, o) {
   const gen = { tpl: res.tpl, rooms: res.rooms, start: res.start, ...(res.floors ? { seed: res.seed, v: res.v || '', floor: res.floor || 1, floors: res.floors } : {}), ...(res.flights ? { flights: res.flights } : {}),
     ...(res.props ? { props: res.props, decor: res.decor || null, v: res.v || '' } : {}) };
   upd['meta/gen'] = gen;
+  // Заметки мастеру от генератора (ловушки, загадки, сокровищница): СЛ и урон — по уровню группы
+  if (res.notes && res.notes.length) {
+    const dc = [12, 14, 16, 18][tier], dmg = ['2d10', '4d10', '10d10', '18d10'][tier], fall = ['3d6', '6d6', '10d6', '15d6'][tier];
+    upd.notes = Object.fromEntries(res.notes.map((N) => [key('notes'), { x: N.x, y: N.y, ic: N.ic, txt: N.txt.replace(/\{dc\}/g, dc).replace(/\{dc2\}/g, dc + 3).replace(/\{dmg\}/g, dmg).replace(/\{fall\}/g, fall) }]));
+  }
   const P = o.pop ? populate({ w: res.w, h: res.h, cells: res.cells, doors: res.doors, rooms: res.rooms, start: res.start, tpl: res.tpl, floor: res.floor || 1, v: res.v || '' }, { ...o.pop, keep: Object.values(pcs).map((p) => [p.x, p.y]) }) : null;
   if (P) Object.entries(P.tokens).forEach(([id, t]) => { upd[`tokens/${id}`] = t; });
   if (o.asScene) {
