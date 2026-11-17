@@ -12,6 +12,8 @@ const MODEL_DIR = 'lab/models/';
 // Пока есть только латы и головы человека и дварфа; остальные виды берут голову человека, но свой рост и ширину.
 // Оружие, щиты и луки сделаны в Blender из примитивов (lab/models/in/scripts/weapons.py).
 const PC_HEAD = { 'Человек': 'human', 'Дварф': 'dwarf' };
+// Женские головы по виду (пол берётся из листа); пока нет — берётся общая голова вида
+const PC_HEAD_F = {};
 const PC_FORM = { 'Дварф': [0.84, 1.14], 'Гном': [0.66, 1], 'Полурослик': [0.68, 1], 'Голиаф': [1.2, 1.08], 'Орк': [1.1, 1.08], 'Драконорождённый': [1.1, 1.05] };
 // Оружие по названию первой атаки (порядок важен: частные названия раньше общих). Лук — в левой руке, щит — на левом предплечье
 const PC_WPN = [[/двуручн\S* меч|большой меч|фальшион|эспадон/i, 'greatsword'], [/рапир|шпаг/i, 'rapier'], [/скимитар|ятаган|сабл|шамшир/i, 'scimitar'],
@@ -28,7 +30,7 @@ const PC_HEAVY = new Set(['ring', 'chain', 'splint', 'plate', 'halfplate', 'brea
 function pcParts(L) {
   const [h, w] = PC_FORM[L.sp] || [1, 1];
   const k = (PC_WPN.find(([re]) => re.test(L.w || '')) || [])[1] || '';
-  const parts = [[`pc_head_${PC_HEAD[L.sp] || 'human'}`, 'head']];
+  const parts = [[`pc_head_${(L.sex === 'f' && PC_HEAD_F[L.sp]) || PC_HEAD[L.sp] || 'human'}`, 'head']];
   if (k) parts.push([`wpn_${k}`, PC_LEFT.has(k) ? 'hand.L' : 'hand.R']);
   if (L.sh && !PC_BOTH.has(k)) parts.push([PC_HEAVY.has(L.arm) ? 'shield_heater' : 'shield_round', 'forearm.L']);
   return { body: 'pc_plate', parts, ranged: /bow$/.test(k), h: 1.02 * h, w };

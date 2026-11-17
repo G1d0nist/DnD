@@ -23,7 +23,7 @@ function blankChar() {
   return {
     id: uid(),
     updatedAt: Date.now(),
-    info: { name: 'Новый персонаж', cls: '', subclass: '', level: 1, species: '', background: '', alignment: '', xp: 0, size: 'Средний', clsApplied: '' },
+    info: { name: 'Новый персонаж', cls: '', subclass: '', level: 1, species: '', background: '', alignment: '', xp: 0, size: 'Средний', sex: '', clsApplied: '' },
     abil,
     saves: Object.fromEntries(Object.keys(abil).map((k) => [k, false])),
     skills: {},
@@ -322,7 +322,7 @@ window.dndApp = {
       // Базовые характеристики — мастер видит и меняет их со стола
       abil: Object.fromEntries(ABILITIES.map((a) => [a.k, +c.abil[a.k] || 10])),
       // Облик фигурки в 3D: вид, надетый доспех, щит и первое оружие из атак
-      look: c.shape ? null : { sp: (speciesOf(c) || {}).n || '', arm: wearingArmor(c) ? c.armor.id : '', sh: !!c.armor.shield,
+      look: c.shape ? null : { sp: (speciesOf(c) || {}).n || '', sex: c.info.sex === 'Женский' ? 'f' : c.info.sex === 'Мужской' ? 'm' : '', arm: wearingArmor(c) ? c.armor.id : '', sh: !!c.armor.shield,
         w: ((c.attacks || []).find((a) => WEAPONS.some((w) => String(a.n || '').toLowerCase().includes(w.n.toLowerCase()))) || {}).n || '' } };
   },
   // Добыча со стола: золото — в кошелёк, магический предмет — как из каталога, прочее — в инвентарь; возвращает название
