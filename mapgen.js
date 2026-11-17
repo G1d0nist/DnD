@@ -951,9 +951,30 @@ const MAPGEN = (() => {
         }
         return true;
       };
-      if (r.w >= 7 && r.h >= 5 && R.ch(0.5)) [[2, 1], [r.w - 3, 1], [2, r.h - 2], [r.w - 3, r.h - 2]].forEach(([dx, dy]) => { if (safe(r.x + dx, r.y + dy)) G.set(r.x + dx, r.y + dy, 'rock'); });
-      if (kind === 'shrine') G.set(r.x + Math.floor(r.w / 2), r.y + Math.floor(r.h / 2), 'water');
-      if (kind === 'storage') for (let k = 0; k < 3; k++) { const fx = r.x + R.i(0, r.w - 1); if (safe(fx, r.y)) G.set(fx, r.y, 'furn'); }
+      // Убранство по назначению комнаты (на клетке — «мебель», вид предмета — в props): колонны в залах, бочки и ящики в кладовой,
+      // саркофаг в склепе, алтарь в святилище, трон в логове. Где сколько колонн и как стоят — каждый раз по-разному
+      const P = out.props || (out.props = {}), [mx, my] = cen(r);
+      const put = (x, y, p, t = 'furn') => { if (!safe(x, y) || G.get(x, y) !== 'floor') return false; G.set(x, y, t); if (p) P[`${x}_${y}`] = p; return true; };
+      const pillar = (x, y) => { if (put(x, y, R.ch(0.15) ? 'pillar_b' : 'pillar') && P[`${x}_${y}`] === 'pillar_b') { const [dx, dy] = R.pick([[1, 0], [-1, 0], [0, 1], [0, -1]]); if (safe(x + dx, y + dy) && G.get(x + dx, y + dy) === 'floor') G.set(x + dx, y + dy, 'rubble'); } };
+      if ((kind === 'hall' || kind === 'boss' || kind === 'entrance') && r.w >= 6 && r.h >= 5) {
+        const pat = R.pick(['corners', 'rows', 'rows', 'center', 'none', 'ring']);
+        if (pat === 'corners') [[1, 1], [r.w - 2, 1], [1, r.h - 2], [r.w - 2, r.h - 2]].forEach(([dx, dy]) => pillar(r.x + dx, r.y + dy));
+        else if (pat === 'rows') { const along = r.w >= r.h, n = along ? r.w : r.h, step = R.pick([2, 3]); for (let t = 1; t < n - 1; t += step) [1, (along ? r.h : r.w) - 2].forEach((s) => pillar(along ? r.x + t : r.x + s, along ? r.y + s : r.y + t)); }
+        else if (pat === 'center') { if (r.w >= r.h) { pillar(mx - 1, my); pillar(mx + 1, my); } else { pillar(mx, my - 1); pillar(mx, my + 1); } }
+        else if (pat === 'ring' && r.w >= 7 && r.h >= 6) [[-2, -2], [2, -2], [-2, 2], [2, 2], [0, -2], [0, 2]].forEach(([dx, dy]) => pillar(mx + dx, my + dy));
+      }
+      if (kind === 'hall' && R.ch(0.35)) { const ox = R.i(r.x + 1, r.x + r.w - 2), oy = R.i(r.y + 1, r.y + r.h - 2); [[0, 0], [1, 0], [0, 1], [-1, 0], [0, -1]].forEach(([dx, dy], i) => { const x = ox + dx, y = oy + dy; if ((!i || R.ch(0.5)) && x >= r.x && y >= r.y && x < r.x + r.w && y < r.y + r.h && G.get(x, y) === 'floor') G.set(x, y, 'rubble'); }); } // обвал
+      if (kind === 'shrine') { if (R.ch(0.6)) G.set(mx, my, 'water'); const wy = r.y; put(mx, wy, 'altar'); if (R.ch(0.6)) { put(mx - 1, wy, 'candelabra'); put(mx + 1, wy, 'candelabra'); } }
+      if (kind === 'storage') {
+        // Бочки и ящики грудами у стен — в двух-трёх местах
+        const want = R.i(3, 5); let got = 0;
+        for (let k = 0; k < 14 && got < want; k++) {
+          const side = R.i(0, 3), t = R.i(0, (side % 2 ? r.h : r.w) - 1), x0 = side === 1 ? r.x + r.w - 1 : side === 3 ? r.x : r.x + t, y0 = side === 0 ? r.y : side === 2 ? r.y + r.h - 1 : r.y + t;
+          for (let n = 0; n < R.i(1, 3) && got < want; n++) { const x = x0 + (side % 2 ? 0 : n), y = y0 + (side % 2 ? n : 0); if (R.ch(0.55) ? put(x, y, 'barrel') : put(x, y, null, 'crate')) got++; }
+        }
+      }
+      if (kind === 'crypt') { if (r.w >= r.h) { put(mx - 1, my, null, 'grave'); if (R.ch(0.5)) put(mx + 1, my, null, 'grave'); } else { put(mx, my - 1, null, 'grave'); if (R.ch(0.5)) put(mx, my + 1, null, 'grave'); } }
+      if (kind === 'boss' && R.ch(0.6)) put(mx, r.y, 'throne');
       if (i > 0 && (kind === 'storage' || kind === 'boss' || R.ch(o.chests ? 0.35 : 0))) out.chests.push({ x: r.x + r.w - 1, y: r.y + r.h - 1, room: i, boss: kind === 'boss' });
     });
     out.ground = 'stone'; out.amb = 'dark'; out.fog = 'vision';
