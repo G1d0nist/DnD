@@ -854,12 +854,15 @@ function dayPart() {
   return h >= 7 && h < 19 ? { ic: '☀', n: 'день', amb: 'bright' } : h >= 5 && h < 7 ? { ic: '🌅', n: 'рассвет', amb: 'dim' }
     : h >= 19 && h < 21 ? { ic: '🌇', n: 'сумерки', amb: 'dim' } : { ic: '🌙', n: 'ночь', amb: 'dark' };
 }
+// Погода — только картинка объёмного вида (правила не меняет)
+const WEATHER = [['', '☀ Ясно'], ['rain', '🌧 Дождь'], ['storm', '⛈ Гроза'], ['snow', '❄ Снег'], ['fog', '🌫 Туман']];
 // Окно времени (мастер): сдвинуть часы, освещение по времени суток
 function timeDialog() {
   const T = game.travel || {}, dp = dayPart(), on = !!(game.meta || {}).timeLight;
   app.openModal(`<h2>🕰 Время кампании</h2><p><b>${esc(travelClock(T))}</b> · ${dp.ic} ${dp.n}</p>
     <div class="row gap wrap">${[['10м', 1 / 6], ['+1 ч', 1], ['+4 ч', 4], ['+8 ч', 8]].map(([n, h]) => `<button data-tm="${h}">${n.replace(/^(\d)/, '+$1')}</button>`).join('')}<button data-tm="morning">🌅 До утра</button></div>
-    <label class="check mt"><input type="checkbox" id="tmLight" ${on ? 'checked' : ''}> Освещение по времени суток (день — светло, сумерки — тускло, ночь — темно)</label>
+    <label class="check mt"><input type="checkbox" id="tmLight" ${on ? 'checked' : ''}> Освещение по времени суток (день — светло, сумерки — тускло, ночь — темно; в объёмном виде солнце идёт по небу)</label>
+    <label class="mt">Погода (в объёмном виде, под открытым небом)<select id="tmWeather">${WEATHER.map(([k, n]) => `<option value="${k}" ${((game.meta || {}).weather || '') === k ? 'selected' : ''}>${n}</option>`).join('')}</select></label>
     <p class="muted small">Короткий отдых сдвигает часы на час, долгий — на 8 часов. Путешествие по карте мира тоже идёт по этим часам.</p>
     <div class="modal-actions"><button class="primary" data-act="closeModal">Готово</button></div>`);
   $$('[data-tm]').forEach((b) => b.addEventListener('click', async () => {
@@ -870,6 +873,11 @@ function timeDialog() {
     timeDialog(); drawFog(); drawTerrain();
   }));
   $('#tmLight').addEventListener('change', () => { R.update(ref(gpath('meta')), { timeLight: $('#tmLight').checked || null }).catch(() => {}); });
+  $('#tmWeather').addEventListener('change', () => {
+    const w = $('#tmWeather').value;
+    R.update(ref(gpath('meta')), { weather: w || null }).catch(() => {});
+    addLog({ kind: 'sys', txt: `🌦 Погода: ${(WEATHER.find(([k]) => k === w) || WEATHER[0])[1].split(' ').slice(1).join(' ').toLowerCase()}` });
+  });
 }
 const fogOn = () => fogSet().mode !== 'off';
 // Видимость клетки из точки: луч не должен проходить через стену (сама стена видна)
@@ -7745,7 +7753,7 @@ function renderTools() {
     + b('keys', '⌨', 'Клавиши: шаг WASD, атака Q, заклинание E, спасбросок Alt… — посмотреть и переназначить (K)')
     + b('sound', sndOn ? '🔊' : '🔇', sndOn ? 'Звуки стола включены — выключить' : 'Звуки стола выключены — включить')
     + b('journal', '📓', 'Журнал кампании: квесты, персонажи (NPC), заметки — общий для всех') + b('tour', '❓', 'Подсказки: как пользоваться столом')
-    + (!(game.meta || {}).world ? b('clock', `🕰 ${travelClock(game.travel || {})} ${dayPart().ic}`, isDM() ? 'Время кампании: сдвинуть часы, освещение по времени суток' : 'Время кампании') : '');
+    + (!(game.meta || {}).world ? b('clock', `🕰 ${travelClock(game.travel || {})} ${dayPart().ic}${(game.meta || {}).weather ? ' ' + (WEATHER.find(([k]) => k === game.meta.weather) || ['', ''])[1].split(' ')[0] : ''}`, isDM() ? 'Время кампании: сдвинуть часы, освещение по времени суток' : 'Время кампании') : '');
   if (!isDM()) {
     $('#tblTools').innerHTML = `<div class="seg">${base}${!(hasMine && inFight()) ? t('place', hasMine ? '📍 Переставить меня' : '📍 Поставить персонажа', hasMine ? 'Нажмите на клетку' : 'Персонаж встанет у входа на карту') : ''}
       ${me() && me().charId && app.companions(me().charId).length ? b('compPick', '🐾 Спутник', 'Поставить спутника из листа на поле', tool === 'placeComp') : ''}
@@ -8703,7 +8711,12 @@ function g3State() {
     ...Object.values(game.tokens || {}).filter((t) => t.lt && !(t.hidden && !isDM()) && !fogHides(t)).map((t) => ({ x: t.x + (t.size || 1) / 2, y: t.y + (t.size || 1) / 2, r: ((+t.lt.b || 0) + (+t.lt.d || 0)) / FT() }))];
   // rocky — каменная земля под открытым небом (горы, перевал), а не плиты подземелья; rooms — что за комнаты (кровати, стойки)
   const gen = (game.meta || {}).gen || {}, rocky = (game.meta || {}).ground === 'stone' && (gen.tpl ? ['mountains', 'pass', 'volcano'].includes(gen.tpl) : (f.amb || 'bright') !== 'dark');
-  return { rocky, rooms: gen.rooms || [], tpl: gen.tpl || '', flights: gen.flights || [], props: gen.props || {}, decor: gen.decor || {}, w: W(), h: H(), bg: !!bgImg, ground: (game.meta || {}).ground || '', map: bgImg ? {} : game.map || {}, doors: game.doors || {}, chests: Object.values(game.chests || {}).map((C) => ({ x: C.x, y: C.y, o: !!C.o, l: +C.lock && !C.lk ? 1 : 0 })), drops: Object.values(game.drops || {}).map((D) => ({ x: D.x, y: D.y })), lights: lights.filter((L) => cellShade(`${Math.floor(L.x)}_${Math.floor(L.y)}`) >= 0), amb, shade: cellShade };
+  // Под открытым небом: местность и открытые локации (не подземелья и не интерьеры); без шаблона — по виду земли
+  const IN = ['dungeon', 'cave', 'crypt', 'mine', 'sewer', 'house', 'tower'], T_ = (MAPGEN.TEMPLATES || {})[gen.tpl];
+  const sky = gen.tpl ? !IN.includes(gen.tpl) && !(gen.floor > 1) && (T_ ? T_.kind === 'terrain' || !!T_.connect || ['village', 'fair', 'arena', 'castle', 'city'].includes(gen.tpl) : true)
+    : ['grass', 'sand', 'snow', 'dirt'].includes((game.meta || {}).ground || '');
+  const hour = (game.meta || {}).timeLight ? gameHour() % 24 : null, weather = sky ? (game.meta || {}).weather || '' : '';
+  return { sky, hour, weather, rocky, rooms: gen.rooms || [], tpl: gen.tpl || '', flights: gen.flights || [], props: gen.props || {}, decor: gen.decor || {}, w: W(), h: H(), bg: !!bgImg, ground: (game.meta || {}).ground || '', map: bgImg ? {} : game.map || {}, doors: game.doors || {}, chests: Object.values(game.chests || {}).map((C) => ({ x: C.x, y: C.y, o: !!C.o, l: +C.lock && !C.lk ? 1 : 0 })), drops: Object.values(game.drops || {}).map((D) => ({ x: D.x, y: D.y })), lights: lights.filter((L) => cellShade(`${Math.floor(L.x)}_${Math.floor(L.y)}`) >= 0), amb, shade: cellShade };
 }
 // Области, которые держатся на поле, и стены заклинаний — для частиц и объёмных стен; только видимые клетки
 function g3Zones() {

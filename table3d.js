@@ -1451,10 +1451,75 @@ export function create(wrap, api) {
     buildWalls();
     slab.scale.set(S.w + 0.7, 1, S.h + 0.7); slab.position.x = S.w / 2; slab.position.z = S.h / 2;
     const a = AMB[S.amb] || AMB.bright;
-    hemi.intensity = a.hemi; sun.intensity = a.sun; sun.color.set(a.col);
+    hemi.intensity = a.hemi; sun.intensity = a.sun; sun.color.set(a.col); hemi.color.set(0xaab6d0);
+    sky(S.sky ? S.hour : null, a); setWeather(S.weather || '');
     SMOKE.dim = S.amb === 'bright' ? 1 : S.amb === 'dim' ? 0.75 : 0.5; // дым не светится в темноте
     if (planRev !== mapRev) { planRev = mapRev; classify(); }
     buildRocks(); buildFurn(); buildProps(); buildDoors(); buildLoot(); buildLamps();
+  }
+
+  // ---------- Время суток и погода ----------
+  // Солнце идёт с востока (утро, справа) на запад (вечер): низкое — длинные тёплые тени, в полдень — белый свет сверху;
+  // ночью вместо солнца холодная луна. Без часов кампании — прежний свет сверху-слева.
+  const sunDir = new THREE.Vector3(-0.5, 1.1, 0.45), warm = new THREE.Color(0xffa860), noon = new THREE.Color(0xfff1dc), moon = new THREE.Color(0x8fa8ff);
+  let flash = 0;
+  function sky(hour, a) {
+    if (hour == null) { sunDir.set(-0.5, 1.1, 0.45); return; }
+    const day = hour >= 6 && hour <= 18.5;
+    if (day) {
+      const f = Math.min(1, Math.max(0, (hour - 6) / 12)), el = Math.max(0.12, Math.sin(Math.PI * f));
+      sunDir.set(Math.cos(Math.PI * f) * 1.2, 0.25 + el * 1.1, 0.35);
+      sun.color.copy(warm).lerp(noon, Math.min(1, el * 1.6)); sun.intensity = a.sun * (0.55 + 0.45 * el);
+      hemi.color.set(0xaab6d0).lerp(new THREE.Color(0xd99a70), 1 - Math.min(1, el * 1.8));
+    } else {
+      sunDir.set(0.35, 1.25, -0.4); sun.color.copy(moon); hemi.color.set(0x34446e);
+    }
+  }
+  // Погода: частицы в коробке вокруг точки взгляда камеры (идут вместе с ней)
+  const WX = { kind: '', mesh: null, n: 0, pos: null, vel: null, box: 26 };
+  function setWeather(kind) {
+    if (kind === WX.kind) return;
+    WX.kind = kind;
+    if (WX.mesh) { scene.remove(WX.mesh); WX.mesh.geometry.dispose(); WX.mesh.material.dispose(); WX.mesh = null; }
+    scene.fog.color.set(0x0a0806); scene.background.set(0x0a0806); WX.fog = 1;
+    if (!kind) return;
+    const rain = kind === 'rain' || kind === 'storm', snow = kind === 'snow';
+    if (kind === 'fog' || kind === 'storm') { WX.fog = kind === 'fog' ? 0.62 : 0.8; scene.fog.color.set(kind === 'fog' ? 0x4a4c50 : 0x14161c); scene.background.copy(scene.fog.color); }
+    if (!rain && !snow) return;
+    const n = (fine ? 1 : 0.4) * (kind === 'storm' ? 2600 : rain ? 1700 : 1400) | 0, B = WX.box, p = new Float32Array(n * (rain ? 6 : 3)), v = new Float32Array(n * 3);
+    for (let i = 0; i < n; i++) {
+      const x = (Math.random() - 0.5) * B, y = Math.random() * 14, z = (Math.random() - 0.5) * B;
+      v[i * 3] = rain ? 0.6 : (Math.random() - 0.5) * 0.4; v[i * 3 + 1] = rain ? -(16 + Math.random() * 6) : -(0.7 + Math.random() * 0.6); v[i * 3 + 2] = rain ? 0.2 : (Math.random() - 0.5) * 0.4;
+      if (rain) p.set([x, y, z, x, y + 0.45, z], i * 6); else p.set([x, y, z], i * 3);
+    }
+    const g = new THREE.BufferGeometry(); g.setAttribute('position', new THREE.BufferAttribute(p, 3));
+    WX.mesh = rain ? new THREE.LineSegments(g, new THREE.LineBasicMaterial({ color: 0xaab8cc, transparent: true, opacity: kind === 'storm' ? 0.42 : 0.32, depthWrite: false, fog: false }))
+      : new THREE.Points(g, new THREE.PointsMaterial({ color: 0xffffff, size: 0.12, transparent: true, opacity: 0.85, depthWrite: false, fog: false }));
+    WX.mesh.frustumCulled = false; WX.mesh.renderOrder = 5; WX.n = n; WX.pos = p; WX.vel = v; WX.rain = rain;
+    scene.add(WX.mesh);
+  }
+  function wxStep(dt) {
+    // Туман: даль тонет ближе
+    if (WX.fog !== 1) { scene.fog.near *= WX.fog; scene.fog.far *= WX.fog; }
+    // Гроза: изредка вспышка молнии — небо и земля на миг светлеют
+    if (WX.kind === 'storm') {
+      if (flash <= 0 && Math.random() < dt * 0.12) flash = 0.35;
+      if (flash > 0) { flash -= dt; hemi.intensity += Math.max(0, Math.sin(flash * 40)) * 2.2 * dt * 30; if (flash <= 0) stale = true; }
+    }
+    if (!WX.mesh) return WX.kind === 'storm' && flash > 0;
+    const p = WX.pos, v = WX.vel, B = WX.box / 2, k = WX.rain ? 6 : 3;
+    for (let i = 0; i < WX.n; i++) {
+      const o = i * k;
+      let x = p[o] + v[i * 3] * dt, y = p[o + 1] + v[i * 3 + 1] * dt, z = p[o + 2] + v[i * 3 + 2] * dt;
+      if (!WX.rain) { x += Math.sin(time * 1.3 + i) * dt * 0.25; }
+      if (y < 0) { y += 14; x = (Math.random() - 0.5) * 2 * B; z = (Math.random() - 0.5) * 2 * B; }
+      if (x > B) x -= 2 * B; else if (x < -B) x += 2 * B;
+      if (z > B) z -= 2 * B; else if (z < -B) z += 2 * B;
+      p[o] = x; p[o + 1] = y; p[o + 2] = z;
+      if (WX.rain) { p[o + 3] = x - v[i * 3] * 0.03; p[o + 4] = y + 0.45; p[o + 5] = z - v[i * 3 + 2] * 0.03; }
+    }
+    WX.mesh.geometry.attributes.position.needsUpdate = true;
+    return true;
   }
 
   // ---------- Существа ----------
@@ -1630,7 +1695,8 @@ export function create(wrap, api) {
     camera.far = cur.d * 4 + 100; camera.updateProjectionMatrix(); camera.updateMatrixWorld();
     scene.fog.near = cur.d * 1.15; scene.fog.far = cur.d * 3.4; // даль тонет в дымке
     const R = Math.max(10, Math.min(60, cur.d * 0.75)), sc = sun.shadow.camera;
-    sun.target.position.set(cur.x, 0, cur.z); sun.position.set(cur.x - R * 0.5, R * 1.1, cur.z + R * 0.45);
+    sun.target.position.set(cur.x, 0, cur.z); sun.position.set(cur.x + sunDir.x * R, sunDir.y * R, cur.z + sunDir.z * R);
+    if (WX.mesh) WX.mesh.position.set(cur.x, 0, cur.z);
     if (sc.right !== R) { sc.left = -R; sc.right = R; sc.top = R; sc.bottom = -R; sc.near = 1; sc.far = R * 4; sc.updateProjectionMatrix(); }
     return moved;
   }
@@ -1897,6 +1963,7 @@ export function create(wrap, api) {
     time += dt;
     if (stale) pull();
     let busy = camStep(dt);
+    if (wxStep(dt)) busy = true;
     toks.forEach((T) => {
       const t = T.t;
       if (T.mt < 1) { T.mt = Math.min(1, T.mt + dt / T.dur); const f = T.mt * T.mt * (3 - 2 * T.mt); T.pos.lerpVectors(T.from, T.to, f); busy = true; }
