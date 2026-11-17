@@ -33,7 +33,8 @@ function pcParts(L) {
   const parts = [[`pc_head_${(L.sex === 'f' && PC_HEAD_F[L.sp]) || PC_HEAD[L.sp] || 'human'}`, 'head']];
   if (k) parts.push([`wpn_${k}`, PC_LEFT.has(k) ? 'hand.L' : 'hand.R']);
   if (L.sh && !PC_BOTH.has(k)) parts.push([PC_HEAVY.has(L.arm) ? 'shield_heater' : 'shield_round', 'forearm.L']);
-  return { body: 'pc_plate', parts, ranged: /bow$/.test(k), h: 1.02 * h, w };
+  // Движение для выстрела: лук — натянуть тетиву, арбалет — вскинуть к плечу
+  return { body: 'pc_plate', parts, shot: /^(short|long)bow$/.test(k) ? 'shoot' : /xbow$|crossbow$/.test(k) ? 'shootx' : '', h: 1.02 * h, w };
 }
 const MODELS = [[/гоблин/i, 'goblin', 0.9], [/^\s*(волк|лютоволк|ворг)/i, 'wolf', 0.62], [/бандит/i, 'bandit', 1.05]];
 const PITCH = (55 * Math.PI) / 180, FOV = 35, WALL_H = 0.9, BASE_H = 0.07;
@@ -1460,7 +1461,7 @@ export function create(wrap, api) {
   const toks = new Map(), loader = new GLTFLoader(), modelCache = {};
   const model = (file) => (modelCache[file] = modelCache[file] || new Promise((ok) => loader.load(`${MODEL_DIR}${file}.glb`, (g) => ok(g), undefined, () => ok(null))));
   // Анимации модели (клипы в .glb): idle и walk по кругу, attack и hit один раз, death — до конца и лежит
-  const ONCE = { attack: 1, hit: 1, death: 1 };
+  const ONCE = { attack: 1, hit: 1, death: 1, shoot: 1, shootx: 1, cast: 1 };
   function play(T, name, fade = 0.2, at = 0) {
     const A = T.anim; if (!A || !A.acts[name] || A.cur === name && !ONCE[name]) return;
     const a = A.acts[name], prev = A.cur && A.acts[A.cur];
@@ -1539,7 +1540,8 @@ export function create(wrap, api) {
   // поэтому голову и оружие достаточно «прицепить» к костям, сохранив их положение
   function buildPC(T, t, g) {
     const P = pcParts(t.look), s = t.size;
-    Promise.all([model(P.body), ...P.parts.map(([n]) => model(n))]).then(([body, ...gls]) => {
+    // pc_anims — общие для всех фигурок движения (выстрел, заклинание), скелет тот же
+    Promise.all([model(P.body), model('pc_anims'), ...P.parts.map(([n]) => model(n))]).then(([body, extra, ...gls]) => {
       if (!body || T.body !== g || !toks.has(T.id)) return;
       const m = skinClone(body.scene);
       const bone = (n) => { const k = THREE.PropertyBinding.sanitizeNodeName(n); let b = null; m.traverse((o) => { if (!b && o.isBone && o.name === k) b = o; }); return b; };
@@ -1553,7 +1555,8 @@ export function create(wrap, api) {
       const h = new THREE.Group(); h.add(m);
       T.fig.remove(g); T.body = h; T.fig.add(h); T.faceMat = null; T.mats = []; T.spin = true; T.top = k; T.pick.scale.y = T.top + 0.1; T.pick.position.y = (T.top + 0.1) / 2 + BASE_H;
       const mixer = new THREE.AnimationMixer(m), acts = {};
-      body.animations.forEach((clip) => { acts[clip.name] = mixer.clipAction(clip); });
+      [...body.animations, ...((extra && extra.animations) || [])].forEach((clip) => { if (!acts[clip.name]) acts[clip.name] = mixer.clipAction(clip); });
+      T.shot = P.shot;
       T.anim = { mixer, acts, cur: null };
       const base = baseAnim(T);
       play(T, base, 0, base === 'death' ? acts.death.getClip().duration : Math.random() * 2);
@@ -1826,6 +1829,12 @@ export function create(wrap, api) {
     if (o.kind === 'bolt' && E.n === 'lightning') { bolt(a, b, E.c[0], 0.4, 2); if (o.hit) impact(b, E, o.crit); return 120; }
     // Стрелок и заклинатель поворачиваются к цели
     if (TA) TA.yaw = Math.atan2(b.x - a.x, b.z - a.z);
+    // Своё движение: лучник отпускает тетиву, арбалетчик стреляет с плеча, заклинатель выбрасывает руки вперёд
+    // (клип начинается почти у момента выстрела, чтобы снаряд вылетал вместе с ним)
+    if (TA && TA.anim) {
+      if (o.kind === 'bolt' && TA.anim.acts.cast) play(TA, 'cast', 0.06, 0.3);
+      else if (o.kind !== 'bolt' && o.kind !== 'throw' && TA.shot && TA.anim.acts[TA.shot]) play(TA, TA.shot, 0.06, TA.shot === 'shoot' ? 0.6 : 0.45);
+    }
     if (o.kind === 'throw' && TA && TA.anim && TA.anim.acts.attack) { TA.yaw = Math.atan2(b.x - a.x, b.z - a.z); play(TA, 'attack', 0.06, 0.18); }
     const magic = o.kind === 'bolt', dur = clamp(dist / (magic ? 14 : o.kind === 'throw' ? 12 : 26), 0.18, 0.75), arc = magic ? dist * 0.04 : o.kind === 'throw' ? dist * 0.16 : dist * 0.06;
     const mesh = new THREE.Mesh(magic ? orbG : o.kind === 'throw' ? knifeG : arrowG, new THREE.MeshBasicMaterial({ color: magic ? hot(E.c[0], 3.5) : o.kind === 'throw' ? 0xd8dde4 : 0xd8c8a0, toneMapped: !magic }));
@@ -1894,7 +1903,7 @@ export function create(wrap, api) {
       if (T.anim) {
         // Удар и вздрагивание доигрываются до конца, потом — обратно к своему: стоять, идти или лежать
         const A = T.anim, base = baseAnim(T), a = A.acts[A.cur];
-        if (A.cur === 'attack' || A.cur === 'hit') { if (!a || a.time >= a.getClip().duration - 0.02) play(T, base, 0.25); }
+        if (ONCE[A.cur] && A.cur !== 'death') { if (!a || a.time >= a.getClip().duration - 0.02) play(T, base, 0.25); }
         else if (A.cur !== base) play(T, base, base === 'death' ? 0.12 : A.cur === 'death' ? 0.6 : 0.2);
         A.mixer.update(dt);
         if (A.cur !== 'idle' && !(A.cur === 'death' && A.acts.death.time >= A.acts.death.getClip().duration)) busy = true;
