@@ -10,12 +10,28 @@ const MODEL_DIR = 'lab/models/';
 // (волк — по началу имени: «Гигантский паук-волк» и «Оборотень-волк» — другие существа)
 // Персонажи игроков собираются из частей на общем скелете: тело по доспеху, голова по виду, оружие в правой руке.
 // Пока есть только латы и головы человека и дварфа; остальные виды берут голову человека, но свой рост и ширину.
+// Оружие, щиты и луки сделаны в Blender из примитивов (lab/models/in/scripts/weapons.py).
 const PC_HEAD = { 'Человек': 'human', 'Дварф': 'dwarf' };
 const PC_FORM = { 'Дварф': [0.84, 1.14], 'Гном': [0.66, 1], 'Полурослик': [0.68, 1], 'Голиаф': [1.2, 1.08], 'Орк': [1.1, 1.08], 'Драконорождённый': [1.1, 1.05] };
-const PC_SWORD = /меч|сабл|ятаган|скимитар|рапир|шпаг|палаш|клинок/i;
+// Оружие по названию первой атаки (порядок важен: частные названия раньше общих). Лук — в левой руке, щит — на левом предплечье
+const PC_WPN = [[/двуручн\S* меч|большой меч|фальшион|эспадон/i, 'greatsword'], [/рапир|шпаг/i, 'rapier'], [/скимитар|ятаган|сабл|шамшир/i, 'scimitar'],
+  [/короткий меч|гладиус/i, 'shortsword'], [/кинжал|нож|серп|стилет|дротик/i, 'dagger'], [/меч|палаш|клинок/i, 'longsword'],
+  [/секир|большой топор/i, 'greataxe'], [/ручной топор|метательн\S* топор|томагавк/i, 'handaxe'], [/топор/i, 'battleaxe'],
+  [/моргенштерн|цеп/i, 'morningstar'], [/булав|шестопёр|пернач/i, 'mace'], [/палиц|дубин/i, 'club'], [/кирк|клевец/i, 'pick'],
+  [/лёгкий молот|боевой молот/i, 'warhammer'], [/молот|кувалд/i, 'maul'], [/алебард|бердыш/i, 'halberd'], [/глеф|нагинат/i, 'glaive'],
+  [/трезуб/i, 'trident'], [/длинное копьё|пика/i, 'pike'], [/копь|пилум|джавелин/i, 'spear'], [/посох/i, 'staff'],
+  [/длинный лук/i, 'longbow'], [/лук/i, 'shortbow'], [/ручной арбалет/i, 'handxbow'], [/арбалет/i, 'crossbow']];
+const PC_LEFT = new Set(['shortbow', 'longbow']);
+// Двуручное оружие и лук не дают держать щит
+const PC_BOTH = new Set(['greatsword', 'greataxe', 'maul', 'halberd', 'glaive', 'pike', 'staff', 'shortbow', 'longbow', 'crossbow']);
+const PC_HEAVY = new Set(['ring', 'chain', 'splint', 'plate', 'halfplate', 'breastplate']);
 function pcParts(L) {
   const [h, w] = PC_FORM[L.sp] || [1, 1];
-  return { body: 'pc_plate', head: `pc_head_${PC_HEAD[L.sp] || 'human'}`, wpn: PC_SWORD.test(L.w || '') ? 'wpn_longsword' : '', h: 1.02 * h, w };
+  const k = (PC_WPN.find(([re]) => re.test(L.w || '')) || [])[1] || '';
+  const parts = [[`pc_head_${PC_HEAD[L.sp] || 'human'}`, 'head']];
+  if (k) parts.push([`wpn_${k}`, PC_LEFT.has(k) ? 'hand.L' : 'hand.R']);
+  if (L.sh && !PC_BOTH.has(k)) parts.push([PC_HEAVY.has(L.arm) ? 'shield_heater' : 'shield_round', 'forearm.L']);
+  return { body: 'pc_plate', parts, ranged: /bow$/.test(k), h: 1.02 * h, w };
 }
 const MODELS = [[/гоблин/i, 'goblin', 0.9], [/^\s*(волк|лютоволк|ворг)/i, 'wolf', 0.62], [/бандит/i, 'bandit', 1.05]];
 const PITCH = (55 * Math.PI) / 180, FOV = 35, WALL_H = 0.9, BASE_H = 0.07;
@@ -1519,12 +1535,12 @@ export function create(wrap, api) {
   // поэтому голову и оружие достаточно «прицепить» к костям, сохранив их положение
   function buildPC(T, t, g) {
     const P = pcParts(t.look), s = t.size;
-    Promise.all([model(P.body), model(P.head), P.wpn ? model(P.wpn) : null]).then(([body, head, wpn]) => {
+    Promise.all([model(P.body), ...P.parts.map(([n]) => model(n))]).then(([body, ...gls]) => {
       if (!body || T.body !== g || !toks.has(T.id)) return;
       const m = skinClone(body.scene);
       const bone = (n) => { const k = THREE.PropertyBinding.sanitizeNodeName(n); let b = null; m.traverse((o) => { if (!b && o.isBone && o.name === k) b = o; }); return b; };
       m.updateMatrixWorld(true);
-      [[head, 'head'], [wpn, 'hand.R']].forEach(([gl, bn]) => {
+      gls.forEach((gl, i) => { const bn = P.parts[i][1];
         const b = gl && bone(bn); if (!b) return;
         const part = gl.scene.clone(true); m.add(part); part.updateMatrixWorld(true); b.attach(part);
       });
@@ -1804,6 +1820,8 @@ export function create(wrap, api) {
       return 200;
     }
     if (o.kind === 'bolt' && E.n === 'lightning') { bolt(a, b, E.c[0], 0.4, 2); if (o.hit) impact(b, E, o.crit); return 120; }
+    // Стрелок и заклинатель поворачиваются к цели
+    if (TA) TA.yaw = Math.atan2(b.x - a.x, b.z - a.z);
     if (o.kind === 'throw' && TA && TA.anim && TA.anim.acts.attack) { TA.yaw = Math.atan2(b.x - a.x, b.z - a.z); play(TA, 'attack', 0.06, 0.18); }
     const magic = o.kind === 'bolt', dur = clamp(dist / (magic ? 14 : o.kind === 'throw' ? 12 : 26), 0.18, 0.75), arc = magic ? dist * 0.04 : o.kind === 'throw' ? dist * 0.16 : dist * 0.06;
     const mesh = new THREE.Mesh(magic ? orbG : o.kind === 'throw' ? knifeG : arrowG, new THREE.MeshBasicMaterial({ color: magic ? hot(E.c[0], 3.5) : o.kind === 'throw' ? 0xd8dde4 : 0xd8c8a0, toneMapped: !magic }));
@@ -1943,5 +1961,5 @@ export function create(wrap, api) {
   }
   // Для проверок: прогнать кадры без requestAnimationFrame (в скрытой вкладке он стоит)
   function step(k = 1, dt = 1 / 30) { resize(); for (let i = 0; i < k; i++) update(dt); draw(); }
-  return { setOn, tokens, tex, ground, pick, project, tokTop, dragTo, hit, kick, step, attack, burst, fx: fxBox, refresh() { stale = true; kick(); }, info: () => ({ toks: toks.size, props: propBox.children.reduce((a, m) => a + m.count, 0), walls: wallMesh ? wallMesh.geometry.index.count / 3 : 0, ground: [groundCv.width, groundCv.height], liquids: Object.keys(liquids).filter((k) => liquids[k].mesh && liquids[k].mesh.visible), doors: doorBox.children.length, lamps: LAMPS.filter((L) => L.intensity > 0).length, sparks: SPARK.ps.length, smoke: SMOKE.ps.length, fx: FX.length, zones: zones.map((z) => z.kind), zoneMeshes: zoneBox.children.length, anims: [...toks.values()].filter((T) => T.anim).map((T) => `${T.id}:${T.anim.cur}`), sizes: [...toks.values()].map((T) => { const v = new THREE.Box3().setFromObject(T.body, true).getSize(new THREE.Vector3()); return `${T.id}:${v.x.toFixed(2)}x${v.y.toFixed(2)}x${v.z.toFixed(2)}`; }), calls: renderer.info.render.calls, tris: renderer.info.render.triangles, cam: { ...cur } }) };
+  return { _toks: toks, setOn, tokens, tex, ground, pick, project, tokTop, dragTo, hit, kick, step, attack, burst, fx: fxBox, refresh() { stale = true; kick(); }, info: () => ({ toks: toks.size, props: propBox.children.reduce((a, m) => a + m.count, 0), walls: wallMesh ? wallMesh.geometry.index.count / 3 : 0, ground: [groundCv.width, groundCv.height], liquids: Object.keys(liquids).filter((k) => liquids[k].mesh && liquids[k].mesh.visible), doors: doorBox.children.length, lamps: LAMPS.filter((L) => L.intensity > 0).length, sparks: SPARK.ps.length, smoke: SMOKE.ps.length, fx: FX.length, zones: zones.map((z) => z.kind), zoneMeshes: zoneBox.children.length, anims: [...toks.values()].filter((T) => T.anim).map((T) => `${T.id}:${T.anim.cur}`), sizes: [...toks.values()].map((T) => { const v = new THREE.Box3().setFromObject(T.body, true).getSize(new THREE.Vector3()); return `${T.id}:${v.x.toFixed(2)}x${v.y.toFixed(2)}x${v.z.toFixed(2)}`; }), calls: renderer.info.render.calls, tris: renderer.info.render.triangles, cam: { ...cur } }) };
 }
