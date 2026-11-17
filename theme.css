@@ -287,3 +287,11 @@ button.stat:hover { background: linear-gradient(180deg, rgba(60,48,34,.6), rgba(
   .cpk-grid { grid-template-columns: 1fr; }
   .cpk-face { width: 52px; height: 52px; font-size: 24px; }
 }
+
+/* Всплывающие цифры урона и лечения — крупные, с обводкой, в шрифте темы */
+.fx-float { font-family: 'Cormorant SC', Georgia, serif; font-size: 26px; font-weight: 700; letter-spacing: .02em; -webkit-text-stroke: 1px rgba(0,0,0,.75);
+  text-shadow: 0 2px 4px #000, 0 0 12px rgba(0,0,0,.7); }
+.fx-dmg { color: #ff7a5e; }
+.fx-dmg.half { color: #f2a65e; }
+.fx-crit { color: #ffd76a; font-size: 34px; text-shadow: 0 2px 4px #000, 0 0 14px rgba(255,190,60,.75); }
+.fx-heal { color: #93f08a; text-shadow: 0 2px 4px #000, 0 0 12px rgba(120,230,110,.6); }

@@ -3917,6 +3917,11 @@ function drawAreas() {
       });
     } else {
       const G = geo(A), Z = A.z || (cast && A.preview && cast.info.zone) || {};
+      if (g3on && !A.preview && (A.keep || A.z || A.glyph)) {
+        const cells3 = A.shape === 'multi' ? multiCells(A, true) : areaCells(A);
+        glowCells(g, cells3.map(([x, y]) => `${x}_${y}`), Z.dark ? '#7a5cff' : Z.obscure ? '#c8ccd4' : col, null);
+        g.restore(); return;
+      }
       // Облака и тьма — плотной заливкой: тьма чёрная, туман серый, тишина — с 🔇
       g.fillStyle = Z.dark ? 'rgba(4,4,8,.82)' : Z.obscure === 'heavy' ? 'rgba(190,195,205,.55)' : Z.obscure === 'light' ? 'rgba(190,195,205,.28)' : rgba(col, A.preview ? 0.32 : 0.22);
       const cells = A.shape === 'multi' ? multiCells(A, true) : areaCells(A);
@@ -7456,7 +7461,7 @@ const calm = () => !!(window.matchMedia && matchMedia('(prefers-reduced-motion: 
 function fxShape(A) {
   const g = geo(A);
   return { shape: g.shape, size: g.size || 0, width: g.width || 5, ox: g.ox != null ? g.ox : 0, oy: g.oy != null ? g.oy : 0, ang: g.ang || 0,
-    r: g.r || null, tgt: g.tgt || null, color: A.color || colorFor(A.dtype) };
+    r: g.r || null, tgt: g.tgt || null, tgts: A.tgts || null, n: A.n || '', color: A.color || colorFor(A.dtype) };
 }
 function tokCenter(id) {
   const t = game.tokens[id];
@@ -7514,9 +7519,14 @@ function fxLog() {
       if (e.by !== user.uid && (e.kind === 'roll' || e.kind === 'atk' || (e.kind === 'save' && e.detail)) && (isDM() || !e.dmOnly)) dice3dOf(e);
       if (e.kind === 'atk' && e.graze) fxHit(e.tgt, e.dmg, {});
       else if (e.kind === 'atk') fxAttack(e);
-      else if (e.kind === 'heal') { floatText(e.tgt, `+${e.heal}`, 'fx-heal'); const c = g3on && !calm() && tokCenter(e.tgt); if (c) g3.burst({ shape: 'target', x: c.x / CELL, y: c.y / CELL, r: c.s / CELL / 2, color: '#5a9e5a' }); }
+      else if (e.kind === 'heal') { floatText(e.tgt, `+${e.heal}`, 'fx-heal'); if (g3on && !calm()) g3.heal(e.tgt); }
       else if (e.kind === 'dmg') fxHit(e.tgt, e.dmg, {});
-      else if (e.kind === 'area' && e.fx) { fxArea(e.fx); if (g3on && !calm()) { const cid = Object.keys(game.tokens || {}).find((id) => game.tokens[id].name === e.who); if (cid) g3.rune(cid, e.fx.color); } }
+      else if (e.kind === 'area' && e.fx) {
+        const cid = g3on && !calm() ? Object.keys(game.tokens || {}).find((id) => game.tokens[id].name === e.who) : null;
+        if (cid && /волшебная стрела|magic missile/i.test(`${e.fx.n} ${e.txt}`)) g3.missiles(cid, (e.fx.tgts && e.fx.tgts.length ? e.fx.tgts : [e.fx.tgt]).filter(Boolean), e.fx.color);
+        else fxArea(e.fx);
+        if (cid) g3.rune(cid, e.fx.color);
+      }
       else if (e.kind === 'save' && e.res) e.res.forEach((r, i) => setTimeout(() => fxHit(r.id, r.dmg, { saved: r.ok, down: r.down }), 200 + i * 140));
       // Звук к событию журнала; кто-то упал — низкий гул следом
       if (e.kind === 'atk') snd(e.crit ? 'crit' : e.hit ? 'hit' : 'miss');
@@ -7605,7 +7615,7 @@ function fxArea(f) {
   if (calm()) return;
   if (g3on) { // объёмный вид: взрыв, конус, луч — в сцене, а не рисунком на полу
     const c = f.shape === 'target' ? tokCenter(f.tgt) : null;
-    if (f.shape !== 'target' || c) g3.burst({ shape: f.shape, x: c ? c.x / CELL : f.ox, y: c ? c.y / CELL : f.oy, r: c ? c.s / CELL / 2 : f.r || aLen(f), len: aLen(f), hw: aHalfW(f), ang: f.ang || 0, color: f.color });
+    if (f.shape !== 'target' || c) g3.burst({ name: f.n || '', shape: f.shape, x: c ? c.x / CELL : f.ox, y: c ? c.y / CELL : f.oy, r: c ? c.s / CELL / 2 : f.r || aLen(f), len: aLen(f), hw: aHalfW(f), ang: f.ang || 0, color: f.color });
     return;
   }
   fxAreas.push({ f, t0: performance.now() });
@@ -8748,12 +8758,24 @@ function g3State() {
   return { sky, hour, weather, rocky, rooms: gen.rooms || [], tpl: gen.tpl || '', flights: gen.flights || [], props: gen.props || {}, decor: gen.decor || {}, w: W(), h: H(), bg: !!bgImg, ground: (game.meta || {}).ground || '', map: bgImg ? {} : game.map || {}, doors: game.doors || {}, chests: Object.values(game.chests || {}).map((C) => ({ x: C.x, y: C.y, o: !!C.o, l: +C.lock && !C.lk ? 1 : 0 })), drops: Object.values(game.drops || {}).map((D) => ({ x: D.x, y: D.y })), lights: lights.filter((L) => cellShade(`${Math.floor(L.x)}_${Math.floor(L.y)}`) >= 0), amb, shade: cellShade };
 }
 // Области, которые держатся на поле, и стены заклинаний — для частиц и объёмных стен; только видимые клетки
+// Нити концентрации: от заклинателя к его зоне (центр клеток) или к цели эффекта
+function g3Links() {
+  const out = [], vis = (id) => game.tokens[id] && !(game.tokens[id].hidden && !isDM());
+  Object.values(game.areas || {}).forEach((A) => {
+    if (!A || !A.conc || !vis(A.conc) || A.glyph) return;
+    const cells = A.shape === 'wall' ? (A.cells || []).map((k) => k.split('_').map(Number)) : A.shape === 'multi' ? multiCells(A) : areaCells(A);
+    if (!cells.length) return;
+    out.push({ from: A.conc, x: cells.reduce((s, c) => s + c[0], 0) / cells.length + 0.5, y: cells.reduce((s, c) => s + c[1], 0) / cells.length + 0.5, color: A.color || '#b48ae6' });
+  });
+  Object.values(game.effects || {}).forEach((e) => { if (e && e.conc && e.tgt && e.tgt !== e.conc && vis(e.conc) && vis(e.tgt)) out.push({ from: e.conc, to: e.tgt, color: '#b48ae6' }); });
+  return out;
+}
 function g3Zones() {
   return Object.values(game.areas || {}).filter((A) => A && (!A.glyph || A.by === user.uid || isDM()) && !['target', 'tp', 'summon'].includes(A.shape)).map((A) => {
     const Z = A.z || {}, wall = A.shape === 'wall';
     const kind = wall ? `wall-${(A.wall || {}).style || 'x'}` : Z.dark ? 'dark' : Z.obscure ? 'cloud' : A.glyph ? 'glyph' : A.keep ? 'zone' : '';
     const cells = !kind ? [] : wall ? (A.cells || []).map((k) => k.split('_').map(Number)) : A.shape === 'multi' ? multiCells(A) : areaCells(A);
-    return { kind, color: A.color || '#d4a64a', cells: cells.filter(([x, y]) => cellShade(`${x}_${y}`) >= 0) };
+    return { kind, n: A.n || '', color: A.color || '#d4a64a', cells: cells.filter(([x, y]) => cellShade(`${x}_${y}`) >= 0) };
   }).filter((z) => z.cells.length);
 }
 async function g3Toggle(want) {
@@ -8763,7 +8785,7 @@ async function g3Toggle(want) {
     g3busy = true;
     try {
       const m = await import('./table3d.js');
-      g3 = m.create($('#tblWrap'), { CELL, canvases: { terrain: $('#tblTerrain'), areas: $('#tblAreas'), range: $('#tblRange'), fog: $('#tblFog'), fx: $('#tblFxCv') }, state: g3State, zones: g3Zones,
+      g3 = m.create($('#tblWrap'), { CELL, canvases: { terrain: $('#tblTerrain'), areas: $('#tblAreas'), range: $('#tblRange'), fog: $('#tblFog'), fx: $('#tblFxCv') }, state: g3State, zones: g3Zones, links: g3Links,
         view: () => { const w = $('#tblWrap'); return { cx: (cam.x + w.clientWidth / 2) / zoom / CELL, cy: (cam.y + w.clientHeight / 2) / zoom / CELL, zoom, vh: w.clientHeight, yaw: camYaw, pitch: camPitch }; } });
       window.__g3 = g3;
     } catch (err) { g3busy = false; ls.set('dnd55-3d', '0'); app.toast('Не удалось включить объёмный вид: нужен интернет при первом включении и видеокарта с WebGL'); console.error(err); return; }
