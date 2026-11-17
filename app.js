@@ -320,7 +320,10 @@ window.dndApp = {
       // Охотник 7+: Оборонительная тактика (Уход от орды / Многослойная защита) — учитывают атакующие
       hdef: classList(c).some((e) => e.cls === 'Следопыт' && e.sub === 'Охотник' && e.lvl >= 7) ? ((c.cpicks || {}).hdef || [])[0] || '' : '',
       // Базовые характеристики — мастер видит и меняет их со стола
-      abil: Object.fromEntries(ABILITIES.map((a) => [a.k, +c.abil[a.k] || 10])) };
+      abil: Object.fromEntries(ABILITIES.map((a) => [a.k, +c.abil[a.k] || 10])),
+      // Облик фигурки в 3D: вид, надетый доспех, щит и первое оружие из атак
+      look: c.shape ? null : { sp: (speciesOf(c) || {}).n || '', arm: wearingArmor(c) ? c.armor.id : '', sh: !!c.armor.shield,
+        w: ((c.attacks || []).find((a) => WEAPONS.some((w) => String(a.n || '').toLowerCase().includes(w.n.toLowerCase()))) || {}).n || '' } };
   },
   // Добыча со стола: золото — в кошелёк, магический предмет — как из каталога, прочее — в инвентарь; возвращает название
   addLoot(id, L) {

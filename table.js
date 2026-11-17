@@ -363,7 +363,7 @@ function pushMyChar() {
         [`tokens/pc_${user.uid}/temp`]: s.temp, [`tokens/pc_${user.uid}/ac`]: s.ac, [`tokens/pc_${user.uid}/cond`]: s.cond, [`tokens/pc_${user.uid}/speed`]: s.speed,
         [`tokens/pc_${user.uid}/size`]: SIZE_N[s.size] || 1, [`tokens/pc_${user.uid}/init`]: s.init,
         [`tokens/pc_${user.uid}/dsS`]: s.dsS || 0, [`tokens/pc_${user.uid}/dsF`]: s.dsF || 0, [`tokens/pc_${user.uid}/dv`]: s.dv || 0, [`tokens/pc_${user.uid}/img`]: img || null,
-        [`tokens/pc_${user.uid}/sense`]: s.sense || null });
+        [`tokens/pc_${user.uid}/sense`]: s.sense || null, [`tokens/pc_${user.uid}/look`]: s.look || null });
       // Ярость включили или сняли в листе — эффект на поле следом (сопротивление, свечение)
       const myId = `pc_${user.uid}`, rg = fxOf(myId).filter(([, f]) => f.rage);
       if (!s.rage) rg.forEach(([k]) => { upd[`effects/${k}`] = null; });
@@ -410,7 +410,7 @@ function placeMyToken(x, y) {
   if (!s) { app.toast('Персонаж не найден на этом устройстве'); return; }
   if (!standable(x, y, SIZE_N[s.size] || 1)) { app.toast('Сюда не встать — там стена или препятствие'); return; }
   R.set(ref(gpath(`tokens/pc_${user.uid}`)), { kind: 'pc', owner: user.uid, name: s.name, x, y, size: SIZE_N[s.size] || 1, color: colorOf(user.uid),
-    hp: s.hp, hpMax: s.hpMax, temp: s.temp, ac: s.ac, cond: s.cond, speed: s.speed, init: s.init, dv: s.dv || 0, ...(s.img ? { img: s.img } : {}), ...(s.sense ? { sense: s.sense } : {}) });
+    hp: s.hp, hpMax: s.hpMax, temp: s.temp, ac: s.ac, cond: s.cond, speed: s.speed, init: s.init, dv: s.dv || 0, ...(s.img ? { img: s.img } : {}), ...(s.sense ? { sense: s.sense } : {}), ...(s.look ? { look: s.look } : {}) });
   lastSent = '';
 }
 // «Поставить персонажа» без выбора клетки: на тёмной карте игрок не видит, куда нажимать, — персонаж сам встаёт у входа
@@ -1035,6 +1035,7 @@ function renderTokens() {
     if (el._html !== html) { el.innerHTML = html; el._html = html; }
     if (g3on) list3.push({ id, x: t.x, y: t.y, size: s, color: t.kind === 'npc' ? SIDE_COLOR[t.side || 'enemy'] : t.color || '#d4a64a', img: t.img || '', ic: t.ic || '', name: t.name || '',
       label: `${esc(label || '')}${fxOf(id).filter(([, f]) => f.ic).slice(0, 4).map(([, f]) => f.ic).join('')}${(t.cond || []).length ? ` <span class="tok-cond">●${t.cond.length}</span>` : ''}`,
+      look: t.kind === 'pc' && !t.comp && !t.wild ? t.look || null : null,
       pct: t.hpMax ? pct : null, down, dead, sel: selId === id, turn: !!(cur && cur.tokenId === id), ghost: !!(t.hidden || invis || banned), alt: +t.alt || 0, cls: `side-${team(t)} ${t.kind}` });
   });
   if (g3on) g3.tokens(list3, drag && drag.kind === 'token' ? drag.id : null);

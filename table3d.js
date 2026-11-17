@@ -8,6 +8,15 @@ import { clone as skinClone } from 'three/addons/utils/SkeletonUtils.js';
 const MODEL_DIR = 'lab/models/';
 // Имя существа → файл модели и рост в клетках (для размера «Средний»)
 // (волк — по началу имени: «Гигантский паук-волк» и «Оборотень-волк» — другие существа)
+// Персонажи игроков собираются из частей на общем скелете: тело по доспеху, голова по виду, оружие в правой руке.
+// Пока есть только латы и головы человека и дварфа; остальные виды берут голову человека, но свой рост и ширину.
+const PC_HEAD = { 'Человек': 'human', 'Дварф': 'dwarf' };
+const PC_FORM = { 'Дварф': [0.84, 1.14], 'Гном': [0.66, 1], 'Полурослик': [0.68, 1], 'Голиаф': [1.2, 1.08], 'Орк': [1.1, 1.08], 'Драконорождённый': [1.1, 1.05] };
+const PC_SWORD = /меч|сабл|ятаган|скимитар|рапир|шпаг|палаш|клинок/i;
+function pcParts(L) {
+  const [h, w] = PC_FORM[L.sp] || [1, 1];
+  return { body: 'pc_plate', head: `pc_head_${PC_HEAD[L.sp] || 'human'}`, wpn: PC_SWORD.test(L.w || '') ? 'wpn_longsword' : '', h: 1.02 * h, w };
+}
 const MODELS = [[/гоблин/i, 'goblin', 0.9], [/^\s*(волк|лютоволк|ворг)/i, 'wolf', 0.62], [/бандит/i, 'bandit', 1.05]];
 const PITCH = (55 * Math.PI) / 180, FOV = 35, WALL_H = 0.9, BASE_H = 0.07;
 const BLOOM = [0.7, 0.5, 0.95]; // свечение: сила, радиус, порог яркости
@@ -1479,13 +1488,17 @@ export function create(wrap, api) {
     T.faceMat = fm; T.top = 0.3 * s + 2 * r;
     g.rotation.order = 'YXZ'; g.rotation.x = -0.2;
     T.body = g; T.fig.add(g);
+    if (t.look) { buildPC(T, t, g); return; }
     const hit = MODELS.find(([re]) => re.test(t.name || ''));
     const animated = (gl) => gl && gl.animations && gl.animations.length;
     if (hit) model(hit[1]).then((gl) => {
       if (!gl || T.body !== g || !toks.has(T.id)) return;
       if (t.dead && !animated(gl)) return; // мёртвым без анимации смерти — медальон с черепом
-      const m = animated(gl) ? skinClone(gl.scene) : gl.scene.clone(true), b = new THREE.Box3().setFromObject(m), k = (hit[2] * s) / (b.max.y - b.min.y);
-      m.scale.setScalar(k); b.setFromObject(m); const c = b.getCenter(new THREE.Vector3());
+      // Рамку скинованной модели считаем по вершинам: грубая рамка геометрии у них бывает в разы меньше настоящей
+      const an = animated(gl), m = an ? skinClone(gl.scene) : gl.scene.clone(true);
+      m.updateMatrixWorld(true);
+      const b = new THREE.Box3().setFromObject(m, an), k = (hit[2] * s) / (b.max.y - b.min.y);
+      m.scale.setScalar(k); m.updateMatrixWorld(true); b.setFromObject(m, an); const c = b.getCenter(new THREE.Vector3());
       // Анимированные модели собраны с телом в начале координат (оружие в вытянутой руке не сдвигает их с подставки)
       if (animated(gl)) m.position.set(0, -b.min.y, 0); else m.position.set(-c.x, -b.min.y, -c.z);
       m.traverse((o) => { if (o.isMesh) { o.castShadow = o.receiveShadow = true; if (o.isSkinnedMesh) o.frustumCulled = false; } });
@@ -1499,6 +1512,31 @@ export function create(wrap, api) {
         // Уже мёртвый (или без сознания) при появлении — сразу лежит, без падения
         play(T, base, 0, base === 'death' ? acts.death.getClip().duration : Math.random() * 2);
       }
+      kick();
+    });
+  }
+  // Фигурка персонажа игрока: части сделаны в одной системе координат с телом в позе покоя,
+  // поэтому голову и оружие достаточно «прицепить» к костям, сохранив их положение
+  function buildPC(T, t, g) {
+    const P = pcParts(t.look), s = t.size;
+    Promise.all([model(P.body), model(P.head), P.wpn ? model(P.wpn) : null]).then(([body, head, wpn]) => {
+      if (!body || T.body !== g || !toks.has(T.id)) return;
+      const m = skinClone(body.scene);
+      const bone = (n) => { const k = THREE.PropertyBinding.sanitizeNodeName(n); let b = null; m.traverse((o) => { if (!b && o.isBone && o.name === k) b = o; }); return b; };
+      m.updateMatrixWorld(true);
+      [[head, 'head'], [wpn, 'hand.R']].forEach(([gl, bn]) => {
+        const b = gl && bone(bn); if (!b) return;
+        const part = gl.scene.clone(true); m.add(part); part.updateMatrixWorld(true); b.attach(part);
+      });
+      const k = P.h * s; m.scale.set(k * P.w, k, k * P.w);
+      m.traverse((o) => { if (o.isMesh) { o.castShadow = o.receiveShadow = true; o.frustumCulled = false; } });
+      const h = new THREE.Group(); h.add(m);
+      T.fig.remove(g); T.body = h; T.fig.add(h); T.faceMat = null; T.mats = []; T.spin = true; T.top = k; T.pick.scale.y = T.top + 0.1; T.pick.position.y = (T.top + 0.1) / 2 + BASE_H;
+      const mixer = new THREE.AnimationMixer(m), acts = {};
+      body.animations.forEach((clip) => { acts[clip.name] = mixer.clipAction(clip); });
+      T.anim = { mixer, acts, cur: null };
+      const base = baseAnim(T);
+      play(T, base, 0, base === 'death' ? acts.death.getClip().duration : Math.random() * 2);
       kick();
     });
   }
@@ -1526,7 +1564,7 @@ export function create(wrap, api) {
       seen.add(t.id);
       const fresh = !toks.has(t.id), T = fresh ? makeTok(t.id) : toks.get(t.id), s = t.size;
       // У анимированной модели смерть не пересобирает фигурку — она проигрывает падение
-      const sig = `${s}|${t.color}|${t.img || ''}|${t.ic || ''}|${t.name}|${T.anim ? '' : t.dead}`;
+      const sig = `${s}|${t.color}|${t.img || ''}|${t.ic || ''}|${t.name}|${T.anim ? '' : t.dead}|${t.look ? JSON.stringify(t.look) : ''}`;
       if (sig !== T.sig) {
         T.sig = sig; T.base.scale.set(s, 1, s); T.base.material.color.set(t.color); T.sel.scale.set(s, 1, s); T.turn.scale.set(s, 1, s);
         buildBody(T, t); T.pick.scale.set(s, T.top + 0.1, s); T.pick.position.y = (T.top + 0.1) / 2 + BASE_H;
@@ -1905,5 +1943,5 @@ export function create(wrap, api) {
   }
   // Для проверок: прогнать кадры без requestAnimationFrame (в скрытой вкладке он стоит)
   function step(k = 1, dt = 1 / 30) { resize(); for (let i = 0; i < k; i++) update(dt); draw(); }
-  return { setOn, tokens, tex, ground, pick, project, tokTop, dragTo, hit, kick, step, attack, burst, fx: fxBox, refresh() { stale = true; kick(); }, info: () => ({ toks: toks.size, props: propBox.children.reduce((a, m) => a + m.count, 0), walls: wallMesh ? wallMesh.geometry.index.count / 3 : 0, ground: [groundCv.width, groundCv.height], liquids: Object.keys(liquids).filter((k) => liquids[k].mesh && liquids[k].mesh.visible), doors: doorBox.children.length, lamps: LAMPS.filter((L) => L.intensity > 0).length, sparks: SPARK.ps.length, smoke: SMOKE.ps.length, fx: FX.length, zones: zones.map((z) => z.kind), zoneMeshes: zoneBox.children.length, anims: [...toks.values()].filter((T) => T.anim).map((T) => `${T.id}:${T.anim.cur}`), calls: renderer.info.render.calls, tris: renderer.info.render.triangles, cam: { ...cur } }) };
+  return { setOn, tokens, tex, ground, pick, project, tokTop, dragTo, hit, kick, step, attack, burst, fx: fxBox, refresh() { stale = true; kick(); }, info: () => ({ toks: toks.size, props: propBox.children.reduce((a, m) => a + m.count, 0), walls: wallMesh ? wallMesh.geometry.index.count / 3 : 0, ground: [groundCv.width, groundCv.height], liquids: Object.keys(liquids).filter((k) => liquids[k].mesh && liquids[k].mesh.visible), doors: doorBox.children.length, lamps: LAMPS.filter((L) => L.intensity > 0).length, sparks: SPARK.ps.length, smoke: SMOKE.ps.length, fx: FX.length, zones: zones.map((z) => z.kind), zoneMeshes: zoneBox.children.length, anims: [...toks.values()].filter((T) => T.anim).map((T) => `${T.id}:${T.anim.cur}`), sizes: [...toks.values()].map((T) => { const v = new THREE.Box3().setFromObject(T.body, true).getSize(new THREE.Vector3()); return `${T.id}:${v.x.toFixed(2)}x${v.y.toFixed(2)}x${v.z.toFixed(2)}`; }), calls: renderer.info.render.calls, tris: renderer.info.render.triangles, cam: { ...cur } }) };
 }
