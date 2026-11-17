@@ -8821,7 +8821,15 @@ function renderWx2d() {
 function g3State() {
   const f = fogSet(), amb = fogOn() ? f.amb || 'bright' : (game.meta || {}).timeLight ? dayPart().amb : 'bright';
   const lights = [...Object.values(game.lights || {}).map((L) => ({ x: L.x + 0.5, y: L.y + 0.5, r: ((+L.b || 20) + (+L.d || 20)) / FT(), fix: 1 })),
-    ...Object.values(game.tokens || {}).filter((t) => t.lt && !(t.hidden && !isDM()) && !fogHides(t)).map((t) => ({ x: t.x + (t.size || 1) / 2, y: t.y + (t.size || 1) / 2, r: ((+t.lt.b || 0) + (+t.lt.d || 0)) / FT() }))];
+    // Свет в руках — идёт вместе с существом: факел и свеча — тёплые и мерцают, фонарь ровнее, заговор «Свет» — холодный белый
+    ...Object.entries(game.tokens || {}).filter(([, t]) => t.lt && (+t.lt.b || +t.lt.d) && !(t.hidden && !isDM()) && !fogHides(t)).map(([id, t]) => {
+      const i = +t.lt.i || 0; return { x: t.x + (t.size || 1) / 2, y: t.y + (t.size || 1) / 2, r: ((+t.lt.b || 0) + (+t.lt.d || 0)) / FT(), id, c: i === 3 ? '#dfe9ff' : i === 2 || i === 5 ? '#ffc070' : '#ff9a4a', fl: i === 3 ? 0 : i === 2 || i === 5 ? 0.35 : 1, hand: 1 }; }),
+    // Заклинания: «Дневной свет» и другие области света; светящиеся существа («Свет» на предмете, Огонь фей, Сияющая кара…)
+    ...Object.values(game.areas || {}).filter((A) => A.light && A.keep).map((A) => ({ x: +A.ox || 0, y: +A.oy || 0, r: ((+A.light.b || 0) + (+A.light.d || 0)) / FT(), c: '#fff4dc', fl: 0, big: 1 })),
+    ...Object.values(game.effects || {}).filter((e) => e.glow && game.tokens[e.tgt] && !fogHides(game.tokens[e.tgt]) && !(game.tokens[e.tgt].hidden && !isDM())).map((e) => {
+      const t = game.tokens[e.tgt], n = e.n || '';
+      return { x: t.x + (t.size || 1) / 2, y: t.y + (t.size || 1) / 2, r: Math.max(1, ((+e.glow.b || 0) + (+e.glow.d || 0)) / FT()), id: e.tgt, fl: /пламя/i.test(n) ? 0.8 : 0, hand: /^(Свет|Вечное пламя)$/.test(n) ? 1 : 0,
+        c: /фей/i.test(n) ? '#b98cff' : /пламя/i.test(n) ? '#ff9a4a' : /Свет/.test(n) ? '#dfe9ff' : '#ffe39a' }; })];
   // rocky — каменная земля под открытым небом (горы, перевал), а не плиты подземелья; rooms — что за комнаты (кровати, стойки)
   const gen = (game.meta || {}).gen || {}, rocky = (game.meta || {}).ground === 'stone' && (gen.tpl ? ['mountains', 'pass', 'volcano'].includes(gen.tpl) : (f.amb || 'bright') !== 'dark');
   const sky = skyOpen();

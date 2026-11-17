@@ -61,9 +61,9 @@ export function create(wrap, api) {
   scene.add(sun); scene.add(sun.target);
   // Источников света — до шести; два ближайших к центру экрана отбрасывают тени (на телефонах — без теней)
   const fine = !(window.matchMedia && matchMedia('(pointer: coarse)').matches);
-  const LAMPS = Array.from({ length: 6 }, (_, i) => {
+  const LAMPS = Array.from({ length: 8 }, (_, i) => {
     const L = new THREE.PointLight(0xff9a4a, 0, 8, 1.6);
-    if (i < 2 && fine) { L.castShadow = true; L.shadow.mapSize.set(512, 512); L.shadow.camera.near = 0.05; L.shadow.camera.far = 14; L.shadow.bias = -0.004; L.shadow.normalBias = 0.03; }
+    if (i < 3 && fine) { L.castShadow = true; L.shadow.mapSize.set(512, 512); L.shadow.camera.near = 0.05; L.shadow.camera.far = 14; L.shadow.bias = -0.004; L.shadow.normalBias = 0.03; }
     scene.add(L); return L;
   });
 
@@ -72,8 +72,15 @@ export function create(wrap, api) {
   const mulberry = (a) => () => { a |= 0; a = (a + 0x6D2B79F5) | 0; let t = Math.imul(a ^ (a >>> 15), 1 | a); t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t; return ((t ^ (t >>> 14)) >>> 0) / 4294967296; };
   const under = new THREE.Mesh(unit, new THREE.MeshBasicMaterial({ color: 0x0a0806, toneMapped: false, fog: false })); under.position.y = -0.52; under.scale.set(4000, 1, 4000); scene.add(under);
   const layers = {};
+  // Туман войны в объёмном виде — уменьшенная и размытая копия слоя: край тьмы мягкий, без ступенек клеток
+  const fogSoft = document.createElement('canvas'), FOG_K = 4;
+  function softFog() {
+    const src = api.canvases.fog, w = Math.max(1, Math.round(src.width / FOG_K)), h = Math.max(1, Math.round(src.height / FOG_K));
+    if (fogSoft.width !== w || fogSoft.height !== h) { fogSoft.width = w; fogSoft.height = h; }
+    const g = fogSoft.getContext('2d'); g.clearRect(0, 0, w, h); g.filter = `blur(${(CELL / FOG_K) * 0.42}px)`; g.drawImage(src, 0, 0, w, h); g.filter = 'none';
+  }
   ['terrain', 'areas', 'range', 'fog', 'fx'].forEach((name, i) => {
-    const cv = api.canvases[name], tex = new THREE.CanvasTexture(cv);
+    const cv = name === 'fog' ? fogSoft : api.canvases[name], tex = new THREE.CanvasTexture(cv);
     tex.colorSpace = THREE.SRGBColorSpace; tex.anisotropy = renderer.capabilities.getMaxAnisotropy();
     const mat = i ? new THREE.MeshBasicMaterial({ map: tex, transparent: true, depthWrite: false, toneMapped: false })
       : new THREE.MeshStandardMaterial({ map: tex, roughness: 1, metalness: 0, emissive: 0xffffff, emissiveMap: tex, emissiveIntensity: 0.55 }); // краски поля рассчитаны на показ без света — пол немного светится сам
@@ -90,6 +97,7 @@ export function create(wrap, api) {
   groundMesh.receiveShadow = true; groundMesh.renderOrder = -1; scene.add(groundMesh);
   function tex(name) {
     const L = layers[name]; if (!L) return;
+    if (name === 'fog') softFog();
     // Холст поменял размер — текстуру создаём заново (память под неё выделяется один раз)
     if (L.w !== L.cv.width || L.h !== L.cv.height) { L.tex.dispose(); L.w = L.cv.width; L.h = L.cv.height; }
     L.tex.needsUpdate = true;
@@ -1398,6 +1406,20 @@ export function create(wrap, api) {
   })();
   const flameMat = new THREE.SpriteMaterial({ map: tongueTex, blending: THREE.AdditiveBlending, depthWrite: false, toneMapped: false });
   const coreMat = new THREE.SpriteMaterial({ map: glowTex, color: 0xff8a3a, opacity: 0.28, blending: THREE.AdditiveBlending, depthWrite: false, toneMapped: false });
+  // Огонёк того, что существо несёт: язычок пламени у факела и свечи, светящийся шарик у магического света
+  function handGlow(L, T, fl) {
+    if (!L.userData.spr) {
+      const f = new THREE.Sprite(flameMat); f.center.set(0.5, 0.08);
+      const o = new THREE.Sprite(new THREE.SpriteMaterial({ map: glowTex, blending: THREE.AdditiveBlending, depthWrite: false, toneMapped: false, transparent: true }));
+      L.userData.spr = [f, o]; scene.add(f, o);
+    }
+    const [f, o] = L.userData.spr;
+    f.visible = !!T && fl > 0.5; o.visible = !!T;
+    if (!T) return;
+    const k = Math.sin(time * 11 + L.userData.seed) * Math.sin(time * 7.3 + L.userData.seed);
+    f.position.copy(L.position).y -= 0.06; f.scale.set(0.12 * (1 - 0.1 * k), 0.2 * (1 + 0.16 * k), 1);
+    o.position.copy(L.position); o.material.color.copy(L.color); o.material.opacity = fl > 0.5 ? 0.35 : 0.85; const r = fl > 0.5 ? 0.42 : 0.3 + 0.03 * Math.sin(time * 3); o.scale.set(r, r, 1);
+  }
   function buildLamps() {
     const wall = (x, y) => S.map[`${x}_${y}`] === 'wall', inb = (x, y) => x >= 0 && y >= 0 && x < S.w && y < S.h;
     // Где висит каждый источник: у стены — на держателе (сначала дальняя от камеры стена), иначе — на стойке посреди клетки
@@ -1434,13 +1456,17 @@ export function create(wrap, api) {
         }
       });
     }
-    // Настоящих источников — не больше шести, ближайшие к центру экрана
-    const near = S.lights.concat(S.bg ? [] : lavaGlow.filter((g) => S.shade(`${Math.floor(g.x)}_${Math.floor(g.y)}`) >= 0)).sort((a, b) => Math.hypot(a.x - cur.x, a.y - cur.z) - Math.hypot(b.x - cur.x, b.y - cur.z));
+    // Настоящих источников — не больше восьми, ближайшие к центру экрана; свет в руках существ — первым:
+    // он берёт место с тенями, и стены отбрасывают тень от факела идущего героя
+    const dist = (a) => Math.hypot(a.x - cur.x, a.y - cur.z);
+    const near = S.lights.concat(S.bg ? [] : lavaGlow.filter((g) => S.shade(`${Math.floor(g.x)}_${Math.floor(g.y)}`) >= 0)).sort((a, b) => (b.id ? 1 : 0) - (a.id ? 1 : 0) || dist(a) - dist(b));
     const power = S.amb === 'bright' ? 0.35 : 1;
     LAMPS.forEach((L, i) => {
       const s = near[i];
-      if (!s) { L.intensity = 0; L.userData.base = 0; return; }
-      L.position.set(s.px, s.py, s.pz); L.distance = Math.max(3, s.r * 1.25); L.userData.base = s.lava ? 5 * Math.max(power, 0.6) : (s.fire ? 4.2 : 6.5) * power; L.color.set(s.lava ? 0xff4a14 : 0xff9a4a); L.userData.seed = s.x * 7 + s.y * 13; L.intensity = L.userData.base;
+      if (!s) { L.intensity = 0; L.userData.base = 0; L.userData.tok = null; return; }
+      L.position.set(s.px, s.py, s.pz); L.distance = Math.max(3, s.r * (s.big ? 1.1 : 1.25)); L.decay = s.big ? 1.1 : 1.6;
+      L.userData.base = s.lava ? 5 * Math.max(power, 0.6) : s.big ? 9 * power : s.id ? (s.fl ? 5.5 : 4.5) * power : (s.fire ? 4.2 : 6.5) * power;
+      L.color.set(s.lava ? 0xff4a14 : s.c || 0xff9a4a); L.userData.seed = s.x * 7 + s.y * 13; L.userData.fl = s.fl ?? 1; L.userData.tok = s.id || null; L.userData.hand = !!s.hand; L.intensity = L.userData.base;
     });
   }
   function pull() {
@@ -2390,7 +2416,16 @@ export function create(wrap, api) {
       if (lx !== T.lx || ly !== T.ly) { T.lx = lx; T.ly = ly; T.lab.style.transform = `translate(${lx}px, ${ly}px) translate(-50%, -100%)`; }
     });
     waterTime.value = time;
-    LAMPS.forEach((L) => { if (L.userData.base) L.intensity = L.userData.base * (0.88 + 0.12 * Math.sin(time * 9 + L.userData.seed) * Math.sin(time * 5.3 + L.userData.seed * 2)); });
+    LAMPS.forEach((L) => {
+      if (!L.userData.base) return;
+      const fl = L.userData.fl ?? 1;
+      L.intensity = L.userData.base * (1 - 0.12 * fl + 0.12 * fl * Math.sin(time * 9 + L.userData.seed) * Math.sin(time * 5.3 + L.userData.seed * 2));
+      // Свет в руке идёт вместе с фигуркой (чуть сбоку, на высоте плеча)
+      const T = L.userData.tok && toks.get(L.userData.tok);
+      if (T) { const s = T.t.size || 1, h = (T.top || 1) * 0.8 * (1 - Math.max(T.lie || 0, T.pr || 0) * 0.6); L.position.set(T.root.position.x + 0.18 * s, T.root.position.y + T.fig.position.y + Math.max(0.5, h), T.root.position.z + 0.12 * s); }
+      handGlow(L, L.userData.hand ? T : null, fl);
+    });
+    LAMPS.forEach((L) => { if (!L.userData.base && L.userData.spr) L.userData.spr.forEach((o) => { o.visible = false; }); });
     lampBox.children.forEach((o) => { const f = o.userData.flame; if (!f) return; const ph = o.position.x * 5 + o.position.z * 3, k = Math.sin(time * 11 + ph) * Math.sin(time * 7.3 + ph); o.scale.set(f[0] * (1 - 0.1 * k), f[1] * (1 + 0.16 * k + 0.06 * Math.sin(time * 23 + ph)), 1); });
     if (zoneStale) pullZones();
     emitZones(dt); runFx(dt); SPARK.update(dt); SMOKE.update(dt); fireTime.value = time; runRunes(dt); zoneTime.value = time;
