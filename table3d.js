@@ -491,7 +491,33 @@ export function create(wrap, api) {
     ice: { color: 0xe2f4ff, opacity: 0.3, rough: 0.05 }, lava: { lava: 1 } };
   const liquids = {}, tmpCv = document.createElement('canvas');
   let groundSig = '', mapRev = 0, glowK = 0, lavaGlow = []; // glowK — включено ли свечение; lavaGlow — откуда лава светит на берега
-  const DUNG = ['dungeon', 'crypt'];
+  const DUNG = ['dungeon', 'crypt'], TRACE_P = ['weapon', 'ash', 'bedroll', 'hole', 'shovel', 'tracks_e', 'tracks_s'];
+  function paintTrace(g, p, X, Y, s, R) {
+    const cx = X + s / 2, cy = Y + s / 2;
+    g.save();
+    if (p === 'weapon') { // обломки оружия: сломанный клинок и древко
+      g.translate(cx, cy); g.rotate(R() * 6.28); g.fillStyle = 'rgba(170,175,185,.9)'; g.fillRect(-s * 0.3, -s * 0.03, s * 0.36, s * 0.06); g.fillStyle = 'rgba(90,60,30,.9)'; g.fillRect(s * 0.06, -s * 0.035, s * 0.12, s * 0.07);
+      g.rotate(1.2 + R()); g.fillStyle = 'rgba(110,80,45,.9)'; g.fillRect(-s * 0.05, s * 0.1, s * 0.36, s * 0.045);
+    } else if (p === 'ash') { // остывшее кострище: пепел, угли, камни кругом
+      const gr = g.createRadialGradient(cx, cy, 0, cx, cy, s * 0.38); gr.addColorStop(0, 'rgba(30,26,22,.95)'); gr.addColorStop(0.7, 'rgba(70,66,60,.75)'); gr.addColorStop(1, 'rgba(70,66,60,0)'); g.fillStyle = gr; g.beginPath(); g.arc(cx, cy, s * 0.38, 0, 6.29); g.fill();
+      for (let i = 0; i < 8; i++) { const a = (i / 8) * 6.28; g.fillStyle = 'rgba(120,114,104,.95)'; g.beginPath(); g.arc(cx + Math.cos(a) * s * 0.36, cy + Math.sin(a) * s * 0.36, s * 0.055, 0, 6.29); g.fill(); }
+      for (let i = 0; i < 4; i++) { g.fillStyle = 'rgba(60,40,25,.95)'; g.fillRect(cx + (R() - 0.5) * s * 0.3, cy + (R() - 0.5) * s * 0.3, s * 0.16, s * 0.04); }
+    } else if (p === 'bedroll') { // скатка и мешок
+      g.fillStyle = 'rgba(110,70,40,.9)'; g.fillRect(X + s * 0.15, Y + s * 0.2, s * 0.7, s * 0.3); g.fillStyle = 'rgba(80,90,60,.9)'; g.fillRect(X + s * 0.15, Y + s * 0.2, s * 0.2, s * 0.3);
+      g.fillStyle = 'rgba(140,115,80,.9)'; g.beginPath(); g.ellipse(X + s * 0.6, Y + s * 0.72, s * 0.14, s * 0.12, 0, 0, 6.29); g.fill();
+    } else if (p === 'hole') { // яма в полу: снятые плиты, тёмная земля
+      g.fillStyle = 'rgba(70,52,34,.9)'; g.beginPath(); g.ellipse(cx, cy, s * 0.42, s * 0.36, 0.3, 0, 6.29); g.fill();
+      const gr = g.createRadialGradient(cx, cy, 0, cx, cy, s * 0.3); gr.addColorStop(0, 'rgba(8,6,4,.95)'); gr.addColorStop(1, 'rgba(30,22,14,.6)'); g.fillStyle = gr; g.beginPath(); g.ellipse(cx, cy, s * 0.3, s * 0.24, 0.3, 0, 6.29); g.fill();
+    } else if (p === 'shovel') { // брошенная лопата
+      g.translate(cx, cy); g.rotate(R() * 6.28); g.fillStyle = 'rgba(110,80,45,.95)'; g.fillRect(-s * 0.36, -s * 0.025, s * 0.5, s * 0.05); g.fillStyle = 'rgba(140,145,150,.95)'; g.beginPath(); g.moveTo(s * 0.14, -s * 0.1); g.lineTo(s * 0.36, -s * 0.08); g.lineTo(s * 0.4, 0); g.lineTo(s * 0.36, s * 0.08); g.lineTo(s * 0.14, s * 0.1); g.closePath(); g.fill();
+    } else if (p.startsWith('tracks')) { // следы в пыли: пары отпечатков вдоль направления
+      const d = p.split('_')[1] || 'e', [dx, dy] = { n: [0, -1], s: [0, 1], w: [-1, 0], e: [1, 0] }[d];
+      g.fillStyle = 'rgba(20,16,12,.38)';
+      for (let i = 0; i < 3; i++) { const t = -0.33 + i * 0.33, side = i % 2 ? 1 : -1; g.beginPath(); g.ellipse(cx + dx * t * s - dy * side * s * 0.09, cy + dy * t * s + dx * side * s * 0.09, s * (dx ? 0.08 : 0.05), s * (dx ? 0.05 : 0.08), 0, 0, 6.29); g.fill(); }
+    }
+    g.restore();
+  }
+
   function paintGround() {
     TH = (S.tpl === 'dungeon' && STONE_TH[S.v]) || {};
     wallMats[0].color.set(TH.wall || 0xffffff); wallMats[1].color.set(TH.wall ? new THREE.Color(0xd0c8c0).multiply(new THREE.Color(TH.wall)) : 0xd0c8c0);
@@ -615,6 +641,8 @@ export function create(wrap, api) {
       for (let i = 0; i < 6; i++) { g.beginPath(); g.ellipse(X + (i - 2.5) * s * 0.07, Y + Math.sin(i) * s * 0.02, s * 0.035, s * 0.022, 0, 0, 6.29); g.stroke(); }
       [-1, 1].forEach((q) => { g.beginPath(); g.arc(X + q * s * 0.24, Y + s * 0.05, s * 0.06, 0, 6.29); g.stroke(); });
     });
+    // Следы событий (бой, лагерь, раскопки, следы в пыли) — общий рисовальщик paintTrace
+    Object.entries(S.props).forEach(([k, p]) => { if (!TRACE_P.includes(p) || (map[k] && map[k] !== 'floor')) return; const [x, y] = k.split('_').map(Number); paintTrace(g, p, x * s, y * s, s, mulberry(x * 7 + y * 131)); });
     decals('blood').forEach(([x, y]) => {
       const Rb = mulberry(x * 131 + y * 71), X = (x + 0.5) * s, Y = (y + 0.5) * s;
       for (let i = 0; i < 7; i++) { const r = s * (i ? 0.04 + Rb() * 0.08 : 0.2 + Rb() * 0.1), ox = i ? (Rb() - 0.5) * s * 0.8 : 0, oy = i ? (Rb() - 0.5) * s * 0.8 : 0; g.fillStyle = `rgba(${70 + Rb() * 30},6,6,${0.6 + Rb() * 0.25})`; g.beginPath(); g.ellipse(X + ox, Y + oy, r, r * (0.6 + Rb() * 0.4), Rb() * 3, 0, 6.29); g.fill(); }

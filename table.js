@@ -200,6 +200,24 @@ function tryRejoin() {
 }
 // Заметки мастера на поле: { x, y, ic, txt } — ловушка, тайник, секрет; игрокам не показываются
 const NOTE_IC = [['📝', 'заметка'], ['⚠', 'ловушка'], ['💰', 'тайник'], ['👁', 'секрет'], ['🚪', 'проход'], ['💀', 'засада'], ['📜', 'сюжет']];
+// Комнаты локации (мастер): номер, название, история, что лежит (сундуки), кто сидит (существа), заметки
+function roomsDialog() {
+  const rooms = ((game.meta || {}).gen || {}).rooms || [], inR = (r, x, y) => x >= r.x && x < r.x + r.w && y >= r.y && y < r.y + r.h;
+  const rows = rooms.map((r, i) => {
+    if (!r.story) return '';
+    const ch = Object.values(game.chests || {}).filter((c) => inR(r, c.x, c.y)), mon = {};
+    Object.values(game.tokens || {}).filter((t) => t.kind === 'npc' && !isDead(t) && inR(r, t.x, t.y)).forEach((t) => { const n = (t.name || '').replace(/\s+\d+$/, ''); mon[n] = (mon[n] || 0) + 1; });
+    const nt = Object.values(game.notes || {}).filter((N) => inR(r, N.x, N.y));
+    return `<div class="card mt" style="padding:10px 12px"><div class="row between"><b>${r.n}. ${esc(r.title || '')}</b><button class="ghost" data-room="${i}" title="Показать на поле">◎ показать</button></div>
+      <div class="small mt">${esc(r.story)}</div>
+      ${Object.keys(mon).length ? `<div class="small mt">⚔ ${Object.entries(mon).map(([n, k]) => `${esc(n)}${k > 1 ? ` ×${k}` : ''}`).join(', ')}</div>` : ''}
+      ${ch.length ? `<div class="small">💰 сундуков: ${ch.length}${ch.some((c) => c.lock) ? ' (есть запертые)' : ''}${ch.some((c) => c.trap) ? ', есть ловушка' : ''}</div>` : ''}
+      ${nt.map((N) => `<div class="small muted">${N.ic} ${esc(N.txt)}</div>`).join('')}</div>`;
+  }).join('');
+  app.openModal(`<h2>📖 Комнаты</h2><p class="muted small">Видите только вы. Номера стоят в углу каждой комнаты на поле.</p>${rows || '<p class="muted">У этой карты нет описаний комнат.</p>'}
+    <div class="modal-actions"><button class="primary" data-act="closeModal">Готово</button></div>`);
+  $$('[data-room]').forEach((btn) => btn.addEventListener('click', () => { const r = rooms[+btn.dataset.room]; app.closeModal(); camCenter(r.x + r.w / 2, r.y + r.h / 2, true); }));
+}
 function noteDialog(k, x, y) {
   const N = k ? (game.notes || {})[k] : { x, y, ic: '📝', txt: '' };
   if (!N) return;
@@ -622,10 +640,37 @@ function drawProp(g, p, px, py, v) {
   else if (p === 'table') { g.fillStyle = '#7a5230'; g.fillRect(px + 3, py + 7, CELL - 6, CELL - 14); g.strokeStyle = 'rgba(0,0,0,.4)'; g.strokeRect(px + 3, py + 7, CELL - 6, CELL - 14); circ(X - 6, Y, 3, '#b9a07a'); circ(X + 7, Y - 2, 2.5, '#d8cdb4'); }
   g.restore();
 }
+const TRACE_P = ['weapon', 'ash', 'bedroll', 'hole', 'shovel', 'tracks_e', 'tracks_s'];
+function paintTrace(g, p, X, Y, s, R) {
+  const cx = X + s / 2, cy = Y + s / 2;
+  g.save();
+  if (p === 'weapon') { // обломки оружия: сломанный клинок и древко
+    g.translate(cx, cy); g.rotate(R() * 6.28); g.fillStyle = 'rgba(170,175,185,.9)'; g.fillRect(-s * 0.3, -s * 0.03, s * 0.36, s * 0.06); g.fillStyle = 'rgba(90,60,30,.9)'; g.fillRect(s * 0.06, -s * 0.035, s * 0.12, s * 0.07);
+    g.rotate(1.2 + R()); g.fillStyle = 'rgba(110,80,45,.9)'; g.fillRect(-s * 0.05, s * 0.1, s * 0.36, s * 0.045);
+  } else if (p === 'ash') { // остывшее кострище: пепел, угли, камни кругом
+    const gr = g.createRadialGradient(cx, cy, 0, cx, cy, s * 0.38); gr.addColorStop(0, 'rgba(30,26,22,.95)'); gr.addColorStop(0.7, 'rgba(70,66,60,.75)'); gr.addColorStop(1, 'rgba(70,66,60,0)'); g.fillStyle = gr; g.beginPath(); g.arc(cx, cy, s * 0.38, 0, 6.29); g.fill();
+    for (let i = 0; i < 8; i++) { const a = (i / 8) * 6.28; g.fillStyle = 'rgba(120,114,104,.95)'; g.beginPath(); g.arc(cx + Math.cos(a) * s * 0.36, cy + Math.sin(a) * s * 0.36, s * 0.055, 0, 6.29); g.fill(); }
+    for (let i = 0; i < 4; i++) { g.fillStyle = 'rgba(60,40,25,.95)'; g.fillRect(cx + (R() - 0.5) * s * 0.3, cy + (R() - 0.5) * s * 0.3, s * 0.16, s * 0.04); }
+  } else if (p === 'bedroll') { // скатка и мешок
+    g.fillStyle = 'rgba(110,70,40,.9)'; g.fillRect(X + s * 0.15, Y + s * 0.2, s * 0.7, s * 0.3); g.fillStyle = 'rgba(80,90,60,.9)'; g.fillRect(X + s * 0.15, Y + s * 0.2, s * 0.2, s * 0.3);
+    g.fillStyle = 'rgba(140,115,80,.9)'; g.beginPath(); g.ellipse(X + s * 0.6, Y + s * 0.72, s * 0.14, s * 0.12, 0, 0, 6.29); g.fill();
+  } else if (p === 'hole') { // яма в полу: снятые плиты, тёмная земля
+    g.fillStyle = 'rgba(70,52,34,.9)'; g.beginPath(); g.ellipse(cx, cy, s * 0.42, s * 0.36, 0.3, 0, 6.29); g.fill();
+    const gr = g.createRadialGradient(cx, cy, 0, cx, cy, s * 0.3); gr.addColorStop(0, 'rgba(8,6,4,.95)'); gr.addColorStop(1, 'rgba(30,22,14,.6)'); g.fillStyle = gr; g.beginPath(); g.ellipse(cx, cy, s * 0.3, s * 0.24, 0.3, 0, 6.29); g.fill();
+  } else if (p === 'shovel') { // брошенная лопата
+    g.translate(cx, cy); g.rotate(R() * 6.28); g.fillStyle = 'rgba(110,80,45,.95)'; g.fillRect(-s * 0.36, -s * 0.025, s * 0.5, s * 0.05); g.fillStyle = 'rgba(140,145,150,.95)'; g.beginPath(); g.moveTo(s * 0.14, -s * 0.1); g.lineTo(s * 0.36, -s * 0.08); g.lineTo(s * 0.4, 0); g.lineTo(s * 0.36, s * 0.08); g.lineTo(s * 0.14, s * 0.1); g.closePath(); g.fill();
+  } else if (p.startsWith('tracks')) { // следы в пыли: пары отпечатков вдоль направления
+    const d = p.split('_')[1] || 'e', [dx, dy] = { n: [0, -1], s: [0, 1], w: [-1, 0], e: [1, 0] }[d];
+    g.fillStyle = 'rgba(20,16,12,.38)';
+    for (let i = 0; i < 3; i++) { const t = -0.33 + i * 0.33, side = i % 2 ? 1 : -1; g.beginPath(); g.ellipse(cx + dx * t * s - dy * side * s * 0.09, cy + dy * t * s + dx * side * s * 0.09, s * (dx ? 0.08 : 0.05), s * (dx ? 0.05 : 0.08), 0, 0, 6.29); g.fill(); }
+  }
+  g.restore();
+}
 // Узоры на полу (плоский вид): мозаика, ритуальный круг, кровь — по клеткам из meta.gen.props
 function drawDecals(g) {
   const P = ((game.meta || {}).gen || {}).props || {};
   Object.entries(P).forEach(([k, p]) => {
+    if (TRACE_P.includes(p) && (!(game.map || {})[k] || game.map[k] === 'floor')) { const [tx, ty] = k.split('_').map(Number); let a = tx * 7 + ty * 131; paintTrace(g, p, tx * CELL, ty * CELL, CELL, () => { a = (a * 9301 + 49297) % 233280; return a / 233280; }); return; }
     if (!['mosaic', 'circle', 'blood', 'plate', 'gold', 'shackle', 'rug'].includes(p) || ((game.map || {})[k] && game.map[k] !== 'floor')) return;
     const [x, y] = k.split('_').map(Number), px = x * CELL, py = y * CELL, has = (a, b) => P[`${a}_${b}`] === p;
     g.save();
@@ -823,6 +868,12 @@ function drawTerrain() {
   });
   // Источники света видит только мастер
   if (isDM() && !g3on) Object.values(game.lights || {}).forEach((L) => { g.font = '18px system-ui'; g.fillText('💡', L.x * CELL + 10, L.y * CELL + 27); });
+  // Номера комнат (мастер): кружок в углу комнаты — по ним окно «📖 Комнаты»
+  if (isDM() && !fogPreview) (((game.meta || {}).gen || {}).rooms || []).forEach((r) => {
+    if (!r.n) return; const x = r.x * CELL + 4, y = r.y * CELL + 4;
+    g.save(); g.fillStyle = 'rgba(20,16,12,.8)'; g.strokeStyle = '#d4a64a'; g.lineWidth = 1.5; g.beginPath(); g.arc(x + 10, y + 10, 10, 0, Math.PI * 2); g.fill(); g.stroke();
+    g.fillStyle = '#f0c76a'; g.font = 'bold 12px Georgia, serif'; g.textAlign = 'center'; g.textBaseline = 'middle'; g.fillText(String(r.n), x + 10, y + 11); g.restore();
+  });
   // Заметки мастера: значок и начало текста — только у мастера (в «Виде игроков» скрыты)
   if (isDM() && !fogPreview) Object.values(game.notes || {}).forEach((N) => {
     g.fillStyle = 'rgba(30, 24, 12, .55)'; g.fillRect(N.x * CELL + 1, N.y * CELL + 1, CELL - 2, CELL - 2);
@@ -7916,6 +7967,7 @@ function renderTools() {
       + t('light', TL.light, 'Поставить или убрать источник света (20 фт яркого + 20 тусклого)') + t('chest', TL.chest, 'Поставить сундук с добычей по уровню, замком и ловушкой; нажатие на сундук — изменить') + t('note', TL.note, 'Заметка мастера в клетке: ловушка, тайник, секрет — игроки её не видят')
       + (fogOn() ? sep + t('reveal', TL.reveal, 'Кисть: открыть клетки для игроков') + t('conceal', TL.conceal, 'Кисть: закрыть клетки туманом') : ''))
     + menu('map', '🗺 Карта', [], b('gen', '🎲 Генератор', 'Создать местность или локацию по шаблону: лес, река, горы, подземелье, замок, город…')
+      + ((((game.meta || {}).gen || {}).rooms || []).some((r) => r.story) ? b('rooms', '📖 Комнаты', 'Что за комнаты на карте, что в них случилось, что лежит и кто сидит — только для мастера') : '')
       + b('mapCfg', '🗺 Карта и туман', 'Карта-подложка, размер поля, туман войны')
       + b('scale', `📐 Масштаб и размер · ${fmtFt(FT())}`, 'Сколько футов в клетке; добавить или убрать ряды с любой стороны; обрезать по нарисованному')
       + ((game.meta || {}).world ? b('travel', '🧭 Путешествие', 'Темп, время в пути, случайные встречи, список мест') : '')
@@ -8675,6 +8727,7 @@ async function onClick(e) {
     else if (a === 'xpGive') xpDialog(false);
     else if (a === 'enc') encDialog();
     else if (a === 'gen') genDialog();
+    else if (a === 'rooms') roomsDialog();
     else if (a === 'pop') popDialog();
     else if (a === 'shop') shopDialog(selId);
     else if (a === 'bestiary') bestiaryDialog();
