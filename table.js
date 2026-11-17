@@ -8834,7 +8834,7 @@ function g3State() {
   const gen = (game.meta || {}).gen || {}, rocky = (game.meta || {}).ground === 'stone' && (gen.tpl ? ['mountains', 'pass', 'volcano'].includes(gen.tpl) : (f.amb || 'bright') !== 'dark');
   const sky = skyOpen();
   const hour = (game.meta || {}).timeLight ? gameHour() % 24 : null, weather = sky ? (game.meta || {}).weather || '' : '';
-  return { sky, hour, weather, rocky, rooms: gen.rooms || [], tpl: gen.tpl || '', flights: gen.flights || [], props: gen.props || {}, decor: gen.decor || {}, w: W(), h: H(), bg: !!bgImg, ground: (game.meta || {}).ground || '', map: bgImg ? {} : game.map || {}, doors: game.doors || {}, chests: Object.values(game.chests || {}).map((C) => ({ x: C.x, y: C.y, o: !!C.o, l: +C.lock && !C.lk ? 1 : 0 })), drops: Object.values(game.drops || {}).map((D) => ({ x: D.x, y: D.y })), lights: lights.filter((L) => cellShade(`${Math.floor(L.x)}_${Math.floor(L.y)}`) >= 0), amb, shade: cellShade };
+  return { sky, hour, weather, rocky, rooms: gen.rooms || [], tpl: gen.tpl || '', v: gen.v || '', flights: gen.flights || [], props: gen.props || {}, decor: gen.decor || {}, w: W(), h: H(), bg: !!bgImg, ground: (game.meta || {}).ground || '', map: bgImg ? {} : game.map || {}, doors: game.doors || {}, chests: Object.values(game.chests || {}).map((C) => ({ x: C.x, y: C.y, o: !!C.o, l: +C.lock && !C.lk ? 1 : 0 })), drops: Object.values(game.drops || {}).map((D) => ({ x: D.x, y: D.y })), lights: lights.filter((L) => cellShade(`${Math.floor(L.x)}_${Math.floor(L.y)}`) >= 0), amb, shade: cellShade };
 }
 // Области, которые держатся на поле, и стены заклинаний — для частиц и объёмных стен; только видимые клетки
 // Нити концентрации: от заклинателя к его зоне (центр клеток) или к цели эффекта

@@ -219,10 +219,11 @@ export function create(wrap, api) {
     float swellH(vec2 p, float t){ return vnoise(p * 1.6 + t * vec2(0.12, 0.07)) + 0.5 * vnoise(p * 3.4 - t * vec2(0.09, -0.13)); }`;
   // Вода: обычный материал сцены (свет факелов, тени, дымка работают), в который вписаны цвет по глубине, блики, рябь и пена
   function waterMat(P, L) {
+    // Цвета воды — в общих uniform'ах: тема подземелья (затопленные руины) меняет их без пересборки
+    L.U = { uShallow: { value: new THREE.Color(P.shallow) }, uDeep: { value: new THREE.Color(P.deep) }, uGlint: { value: P.glint }, uFoam: { value: P.foam } };
     const mat = new THREE.MeshStandardMaterial({ color: 0xffffff, roughness: P.rough, metalness: 0.05, transparent: true, depthWrite: false });
     mat.onBeforeCompile = (sh) => {
-      Object.assign(sh.uniforms, { uTime: waterTime, uSize: fieldSize, tMask: { value: L.tex }, tDepth: L.depthU, uShallow: { value: new THREE.Color(P.shallow) }, uDeep: { value: new THREE.Color(P.deep) },
-        uGlint: { value: P.glint }, uFoam: { value: P.foam }, uAlpha: { value: new THREE.Vector2(P.alpha[0], P.alpha[1]) } });
+      Object.assign(sh.uniforms, { uTime: waterTime, uSize: fieldSize, tMask: { value: L.tex }, tDepth: L.depthU, ...L.U, uAlpha: { value: new THREE.Vector2(P.alpha[0], P.alpha[1]) } });
       sh.vertexShader = 'varying vec3 vWp;\n' + sh.vertexShader.replace('#include <begin_vertex>', '#include <begin_vertex>\n vWp = (modelMatrix * vec4(transformed, 1.0)).xyz;');
       sh.fragmentShader = `#define OCT 4\n${fine ? '' : '#define LITE\n'}uniform float uTime, uGlint, uFoam; uniform vec2 uSize, uAlpha; uniform vec3 uShallow, uDeep; uniform sampler2D tMask, tDepth; varying vec3 vWp;\n${GLSL_NOISE}\n` + sh.fragmentShader
         .replace('#include <color_fragment>', `#include <color_fragment>
@@ -420,6 +421,12 @@ export function create(wrap, api) {
     }
   }
   // Каменные плиты клетки: одна, две или четыре, с фаской, крапом и трещинами; warm — светлее (пол в доме)
+  // Камень по теме подземелья: оттенок, насыщенность и светлота плит пола; цвет кладки стен
+  const STONE_TH = {
+    fort: { h: 205, s: -4, l: -1, wall: 0xb8c2cc }, temple: { h: 36, s: 6, l: 4, wall: 0xf0d8b0 }, cult: { h: 355, s: 4, l: -7, wall: 0x8a6a66 },
+    tomb: { h: 42, s: -3, l: 9, wall: 0xe6dfd2 }, flooded: { h: 88, s: -1, l: -5, wall: 0x9aa894, water: { shallow: 0x3e6258, deep: 0x0b1d1f, glint: 0.12, foam: 0.1 } },
+  };
+  let TH = {};
   function flag(g, x, y, s, warm) {
     const R = mulberry(x * 7919 + y * 104729 + 13), X = x * s, Y = y * s, lay = R(), k = s / 64;
     const rects = lay < 0.3 ? [[0, 0, 1, 1]] : lay < 0.55 ? [[0, 0, 1, 0.5], [0, 0.5, 1, 0.5]] : lay < 0.8 ? [[0, 0, 0.5, 1], [0.5, 0, 0.5, 1]] : [[0, 0, 0.5, 0.5], [0.5, 0, 0.5, 0.5], [0, 0.5, 0.5, 0.5], [0.5, 0.5, 0.5, 0.5]];
@@ -427,7 +434,7 @@ export function create(wrap, api) {
     for (const [a, b, c, d] of rects) {
       const x0 = X + a * s + 1.5 * k, y0 = Y + b * s + 1.5 * k, w = c * s - 3 * k, h = d * s - 3 * k, j = () => (R() - 0.5) * 2.4 * k;
       const p = [[x0 + j(), y0 + j()], [x0 + w + j(), y0 + j()], [x0 + w + j(), y0 + h + j()], [x0 + j(), y0 + h + j()]];
-      const L = (warm ? 33 : 25) + R() * 11, hue = 24 + R() * 16, sat = (warm ? 12 : 6) + R() * 9;
+      const L = (warm ? 33 : 25) + (TH.l || 0) + R() * 11, hue = (TH.h ?? 24) + R() * 16, sat = Math.max(0, (warm ? 12 : 6) + (TH.s || 0) + R() * 9);
       g.beginPath(); p.forEach(([px, py], i) => (i ? g.lineTo(px, py) : g.moveTo(px, py))); g.closePath();
       const gr = g.createLinearGradient(x0, y0, x0 + w, y0 + h); gr.addColorStop(0, `hsl(${hue},${sat}%,${L + 5}%)`); gr.addColorStop(1, `hsl(${hue},${sat}%,${L - 7}%)`);
       g.fillStyle = gr; g.fill();
@@ -481,7 +488,9 @@ export function create(wrap, api) {
   const liquids = {}, tmpCv = document.createElement('canvas');
   let groundSig = '', mapRev = 0, glowK = 0, lavaGlow = []; // glowK — включено ли свечение; lavaGlow — откуда лава светит на берега
   function paintGround() {
-    const map = S.map, sig = `${S.w}x${S.h}|${S.ground}${S.rocky ? 'r' : ''}|${S.tpl}|${JSON.stringify(S.flights)}|${Object.keys(S.props).length}|` + Object.entries(map).map(([k, t]) => k + t).join(',');
+    TH = (S.tpl === 'dungeon' && STONE_TH[S.v]) || {};
+    wallMats[0].color.set(TH.wall || 0xffffff); wallMats[1].color.set(TH.wall ? new THREE.Color(0xd0c8c0).multiply(new THREE.Color(TH.wall)) : 0xd0c8c0);
+    const map = S.map, sig = `${S.w}x${S.h}|${S.ground}${S.rocky ? 'r' : ''}|${S.tpl}|${S.v || ''}|${JSON.stringify(S.flights)}|${Object.keys(S.props).length}|` + Object.entries(map).map(([k, t]) => k + t).join(',');
     if (sig === groundSig) return; groundSig = sig; mapRev++; planRev = mapRev; classify();
     // Текстура пола: на телефонах не больше 2560 точек по длинной стороне (видеопамять)
     const s = Math.max(20, Math.min(64, Math.floor((fine ? 4096 : 2560) / Math.max(S.w, S.h)))), W = S.w * s, H = S.h * s;
@@ -519,6 +528,7 @@ export function create(wrap, api) {
         else { mat = new THREE.MeshStandardMaterial({ color: P.color, roughness: P.rough, metalness: 0.3 }); mat.alphaMap = L.tex; mat.transparent = true; mat.opacity = P.opacity; mat.depthWrite = false; }
         L.mesh = new THREE.Mesh(unit, mat); L.mesh.position.y = 0.002; L.mesh.renderOrder = -0.5; L.mesh.receiveShadow = !P.lava; scene.add(L.mesh);
       }
+      if (L.U) { const Q = (kind === 'water' && TH.water) || P; L.U.uShallow.value.set(Q.shallow); L.U.uDeep.value.set(Q.deep); L.U.uGlint.value = Q.glint; L.U.uFoam.value = Q.foam; }
       // Глубина: расстояние клетки до берега (за краем поля вода продолжается) — по нему вода темнеет, а лава раскаляется
       {
         const dw = S.w, dh = S.h, d = new Float32Array(dw * dh), da = (x, y) => (x < 0 || y < 0 || x >= dw || y >= dh ? 1e3 : d[y * dw + x]);
@@ -559,6 +569,35 @@ export function create(wrap, api) {
       g.fillStyle = '#7a2a26'; g.fillRect(X, Y, s, s);
       g.fillStyle = '#c8a04a'; if (!rug(x, y - 1)) g.fillRect(X, Y, s, b); if (!rug(x, y + 1)) g.fillRect(X, Y + s - b, s, b); if (!rug(x - 1, y)) g.fillRect(X, Y, b, s); if (!rug(x + 1, y)) g.fillRect(X + s - b, Y, b, s);
       g.fillStyle = 'rgba(255,220,150,.35)'; g.beginPath(); g.moveTo(X + s / 2, Y + s * 0.25); g.lineTo(X + s * 0.75, Y + s / 2); g.lineTo(X + s / 2, Y + s * 0.75); g.lineTo(X + s * 0.25, Y + s / 2); g.closePath(); g.fill();
+    });
+    // Узоры на полу: мозаика храма (кольца и лучи из смальты), ритуальный круг культа (линии и знаки), пятна крови
+    const decals = (name) => Object.entries(S.props).filter(([k, p]) => p === name && (!map[k] || map[k] === 'floor')).map(([k]) => k.split('_').map(Number));
+    const disc = (cells, paint) => {
+      if (!cells.length) return;
+      const xs = cells.map((c) => c[0]), ys = cells.map((c) => c[1]), cx = ((Math.min(...xs) + Math.max(...xs) + 1) / 2) * s, cy = ((Math.min(...ys) + Math.max(...ys) + 1) / 2) * s, rad = ((Math.max(...xs) - Math.min(...xs) + 1) / 2) * s;
+      g.save(); g.beginPath(); cells.forEach(([x, y]) => g.rect(x * s, y * s, s, s)); g.clip(); paint(cx, cy, rad); g.restore();
+    };
+    // Соседние клетки узора — одна фигура
+    const groups = (cells) => { const left = new Set(cells.map(([x, y]) => `${x}_${y}`)), out = []; while (left.size) { const st = [left.values().next().value], comp = []; left.delete(st[0]); while (st.length) { const k = st.pop(), [x, y] = k.split('_').map(Number); comp.push([x, y]); D4.forEach(([dx, dy]) => { const n = `${x + dx}_${y + dy}`; if (left.has(n)) { left.delete(n); st.push(n); } }); } out.push(comp); } return out; };
+    groups(decals('mosaic')).forEach((c) => disc(c, (cx, cy, rad) => {
+      const Rm = mulberry(cx * 3 + cy), tile = s * 0.1, cols = ['#3e5a70', '#a8874a', '#6e3a30', '#cfc3a6', '#46604c'];
+      for (let y = cy - rad; y < cy + rad; y += tile) for (let x = cx - rad; x < cx + rad; x += tile) {
+        const d = Math.hypot(x - cx, y - cy) / rad; if (d > 0.98) continue;
+        const ring = Math.floor(d * 6), ang = Math.atan2(y - cy, x - cx), ray = Math.floor(((ang + Math.PI) / (Math.PI * 2)) * 12) % 2;
+        g.fillStyle = cols[(ring + (ring % 2 ? ray : 0)) % cols.length]; g.globalAlpha = (0.48 + Rm() * 0.2) * (1 - d * 0.3); g.fillRect(x + 0.5, y + 0.5, tile - 1, tile - 1);
+      }
+      g.globalAlpha = 0.55; g.strokeStyle = '#a8874a'; g.lineWidth = s * 0.04; g.beginPath(); g.arc(cx, cy, rad * 0.97, 0, 6.29); g.stroke(); g.globalAlpha = 1;
+    }));
+    groups(decals('circle')).forEach((c) => disc(c, (cx, cy, rad) => {
+      g.strokeStyle = 'rgba(150,20,20,.85)'; g.lineWidth = s * 0.06;
+      [0.92, 0.72].forEach((k) => { g.beginPath(); g.arc(cx, cy, rad * k, 0, 6.29); g.stroke(); });
+      g.beginPath(); for (let i = 0; i <= 5; i++) { const a = -Math.PI / 2 + (i * 4 * Math.PI) / 5, px = cx + Math.cos(a) * rad * 0.72, py = cy + Math.sin(a) * rad * 0.72; if (i) g.lineTo(px, py); else g.moveTo(px, py); } g.stroke();
+      g.fillStyle = 'rgba(150,20,20,.85)'; g.font = `${Math.round(s * 0.28)}px serif`; g.textAlign = 'center'; g.textBaseline = 'middle';
+      for (let i = 0; i < 10; i++) { const a = (i / 10) * Math.PI * 2; g.save(); g.translate(cx + Math.cos(a) * rad * 0.82, cy + Math.sin(a) * rad * 0.82); g.rotate(a + Math.PI / 2); g.fillText('ᚱᚦᛟᛉᚹᛞᛗᛚᛜᛝ'[i], 0, 0); g.restore(); }
+    }));
+    decals('blood').forEach(([x, y]) => {
+      const Rb = mulberry(x * 131 + y * 71), X = (x + 0.5) * s, Y = (y + 0.5) * s;
+      for (let i = 0; i < 7; i++) { const r = s * (i ? 0.04 + Rb() * 0.08 : 0.2 + Rb() * 0.1), ox = i ? (Rb() - 0.5) * s * 0.8 : 0, oy = i ? (Rb() - 0.5) * s * 0.8 : 0; g.fillStyle = `rgba(${70 + Rb() * 30},6,6,${0.6 + Rb() * 0.25})`; g.beginPath(); g.ellipse(X + ox, Y + oy, r, r * (0.6 + Rb() * 0.4), Rb() * 3, 0, 6.29); g.fill(); }
     });
     // Проём лестницы вниз — темнота
     flightAt.forEach(({ f }, k) => { if (!f.down) return; const [x, y] = k.split('_').map(Number); g.fillStyle = '#060504'; g.fillRect(x * s, y * s, s, s); });
@@ -856,7 +895,8 @@ export function create(wrap, api) {
   const POTIONS = [0xc0392b, 0x2e9a4a, 0x2f6fc0, 0x8a4ac0, 0xd4a020, 0x2ab0a8], GOODS = [0xb8a070, 0x8a5a2b, 0x9a3a2a, 0x6e7a8a, 0xc8b48a, 0x4a6a3a], CURIO = [0xd4a64a, 0x9a6cf0, 0xe8e4d8, 0x5ac8f0, 0x7a2a26, 0x2e9a4a];
   const ROOFS = { village: [0xc2a25a, 0xb08a48, 0x8a6238, 0xa07a40], city: [0xa8502e, 0x8a4630, 0x5a6470, 0x7a4a32, 0x9a5a34] };
   const SIGNS = { tavern: 0x9a3a2a, temple: 0xe8e4d8, guild: 0xc8a04a, manor: 0x5a3a6a, warehouse: 0x6e5a3c, smithy: 0x3c3c46, alchemy: 0x3f8a4a, shop: 0x2f5f9a, books: 0x8a6238, magic: 0x7a4ac0 };
-  const SIDE = { n: 0, e: 1, s: 2, w: 3 }, AUTO_DECOR = { castle: ['tapestry', 'shield', 'tapestry', 'painting'], manor: ['painting', 'painting', 'mirror', 'tapestry'], temple: ['tapestry'], guild: ['map', 'shield', 'painting'], tavern: ['antlers', 'painting', 'shield'] };
+  const SIDE = { n: 0, e: 1, s: 2, w: 3 }, AUTO_DECOR = { castle: ['tapestry', 'shield', 'tapestry', 'painting'], manor: ['painting', 'painting', 'mirror', 'tapestry'], temple: ['tapestry'], guild: ['map', 'shield', 'painting'], tavern: ['antlers', 'painting', 'shield'],
+    'dungeon:fort': ['shield', 'tapestry', 'shield', 'chains'], 'dungeon:cult': ['chains', 'tapestry', 'chains'], 'dungeon:temple': ['tapestry'], 'dungeon:tomb': ['chains'] };
   let roofMesh = null;
   const WOODS = [0x8a5a2e, 0x7a4c26, 0x94683a, 0x6e4623], BLANKETS = [0x8a2f2a, 0x2f4f7a, 0x3d6b3a, 0x6a3f7a, 0x8a6a2a], BOOKS = [0x7a2a24, 0x2a4a6a, 0x34582e, 0x6a5a2a, 0x4a2e5a, 0x8a7a5a], PAPERS = [0xefe4c4, 0xe2d3a8, 0xf4ecd6, 0xd9c797];
   const CANOPY = [0xa8322a, 0x2f5f9a, 0x3f7a3a, 0x7a3f8a, 0xc8922a, 0x2a8a8a, 0xb0502a], FRUIT = [0xb8322a, 0x6a9a2a, 0xd88a2a, 0xd8c040], POTS = [0xb5653a, 0x9a5230, 0xc8825a, 0x5a7a9a, 0xd8cdb4], CLOTHS = [0xa8322a, 0x2f5f9a, 0x3f7a3a, 0x7a3f8a, 0xc8922a, 0xe6dcc2, 0x2a8a8a];
@@ -867,7 +907,7 @@ export function create(wrap, api) {
     const cells = Object.entries(S.map).filter(([k, t]) => (t === 'furn' || t === 'board' || t === 'bridge' || flightAt.has(k) || wells.has(k) || pales.has(k)) && S.shade(k) >= 0);
     // Закрытые дома (под крышей) и то, что висит на стенах: по карте генератора, а в замке, особняке, храме — само, понемногу
     const roofs = S.rooms.filter((r) => r.closed).map((r) => { let sh = -1; for (let y = r.y - 1; y <= r.y + r.h; y++) for (let x = r.x - 1; x <= r.x + r.w; x++) sh = Math.max(sh, S.shade(`${x}_${y}`)); return { r, sh }; }).filter((q) => q.sh >= 0);
-    const decor = { ...S.decor }, auto = AUTO_DECOR[S.tpl];
+    const decor = { ...S.decor }, auto = AUTO_DECOR[`${S.tpl}:${S.v}`] || AUTO_DECOR[S.tpl];
     if (auto && !Object.keys(decor).length) Object.keys(S.map).forEach((k) => {
       if (S.map[k] !== 'wall' || S.doors[k]) return;
       const [x, y] = k.split('_').map(Number); if (rnd(x, y, 76) > 0.14) return;
@@ -959,7 +999,24 @@ export function create(wrap, api) {
         pbox(B, X, 0.03, Z, 0.28, 0.06, 0.28, gold); pbox(B, X, 0.1, Z, 0.14, 0.08, 0.14, gold); pbox(B, X, 0.44, Z, 0.045, 0.7, 0.045, gold); pbox(B, X, 0.8, Z, r & 1 ? 0.05 : 0.42, 0.035, r & 1 ? 0.42 : 0.05, gold);
         [-0.19, 0, 0.19].forEach((a) => { const px = X + (r & 1 ? 0 : a), pz = Z + (r & 1 ? a : 0), up = a ? 0 : 0.05; pbox(B, px, 0.835 + up, pz, 0.07, 0.03, 0.07, gold); pbox(B, px, 0.9 + up, pz, 0.035, 0.1, 0.035, wax); });
       } else if (p === 'lectern') { P(0, 0.04, 0, 0.4, 0.08, 0.4, 0x4a3018); P(0, 0.34, 0, 0.12, 0.56, 0.12, 0x5e3d1f); P(0, 0.65, 0, 0.5, 0.05, 0.38, 0x5e3d1f); P(0, 0.69, 0, 0.34, 0.03, 0.26, 0xefe4c4, 1.2); P(0, 0.692, 0, 0.012, 0.032, 0.26, 0x7a2a24); }
-      else if (p === 'pillar' || p === 'pillar_b') { // каменная колонна: база, ствол, капитель; разбитая — обломок с косым сколом
+      else if (p === 'statue') { // статуя на постаменте: воин с мечом у груди
+        const st = (c) => C3(c, sh), k = 0.9 + hs(5) * 0.15, P2 = part(cx, cy, r0 < 0 ? 2 : (r0 + 2) % 4, sh);
+        pbox(B, X, 0.11, Z, 0.66, 0.22, 0.66, st(0x6e6860)); pbox(B, X, 0.25, Z, 0.56, 0.06, 0.56, st(0x7c766c));
+        P2(0, 0.28 + 0.26 * k, 0, 0.34, 0.52 * k, 0.24, 0x9a948a); P2(0, 0.28 + 0.62 * k, 0, 0.4, 0.22 * k, 0.26, 0x9a948a);
+        P2(0, 0.28 + 0.82 * k, 0, 0.17, 0.2 * k, 0.17, 0xa29c92); P2(0, 0.28 + 0.94 * k, 0.01, 0.2, 0.05, 0.2, 0x8a847a);
+        [-1, 1].forEach((q) => P2(q * 0.25, 0.28 + 0.6 * k, 0.02, 0.09, 0.3 * k, 0.1, 0x9a948a));
+        P2(0, 0.28 + 0.52 * k, 0.15, 0.05, 0.62 * k, 0.03, 0xb0aaa0); P2(0, 0.28 + 0.66 * k, 0.15, 0.2, 0.04, 0.05, 0x8a847a);
+      } else if (p === 'urn') { // погребальные урны на каменной полке
+        pbox(B, X, 0.2, Z, 0.8, 0.4, 0.5, C3(0x6e6860, sh));
+        for (let i = 0; i < 2 + Math.floor(hs(1) * 2); i++) { const ox = -0.25 + i * 0.25, c = [0x8a5a3a, 0xa8784a, 0x6a7a6a, 0xb8a888][Math.floor(hs(i + 4) * 4)]; plog(B, X + ox, 0.55, Z, 0.26, 0.09, 2, C3(c, sh), C3(c, sh * 0.8), 10); pbox(B, X + ox, 0.7, Z, 0.08, 0.04, 0.08, C3(0x4a3a2a, sh)); }
+      } else if (p === 'cage') { // железная клетка: прутья, обручи, внутри кости
+        const iron = C3(0x3a3a42, sh);
+        for (let i = 0; i < 10; i++) { const a = (i / 10) * Math.PI * 2; pbox(B, X + Math.cos(a) * 0.36, 0.55, Z + Math.sin(a) * 0.36, 0.035, 1.1, 0.035, iron); }
+        // Обручи — из коротких звеньев (сверху клетка остаётся сквозной), наверху — перекрестье и кольцо для цепи
+        [0.04, 0.55, 1.08].forEach((y) => { for (let i = 0; i < 16; i++) { const a = ((i + 0.5) / 16) * Math.PI * 2, w = 0.15; const o = new THREE.Vector3(Math.cos(a) * 0.36, 0, Math.sin(a) * 0.36); pbox(B, X + o.x, y, Z + o.z, Math.abs(Math.sin(a)) * w + 0.03, 0.035, Math.abs(Math.cos(a)) * w + 0.03, iron); } });
+        pbox(B, X, 1.1, Z, 0.74, 0.03, 0.035, iron); pbox(B, X, 1.1, Z, 0.035, 0.03, 0.74, iron); pbox(B, X, 1.17, Z, 0.05, 0.12, 0.05, iron);
+        pbox(B, X - 0.08, 0.06, Z + 0.05, 0.22, 0.05, 0.05, C3(0xd8cfb8, sh)); pbox(B, X + 0.1, 0.08, Z - 0.06, 0.1, 0.09, 0.1, C3(0xd8cfb8, sh));
+      } else if (p === 'pillar' || p === 'pillar_b') { // каменная колонна: база, ствол, капитель; разбитая — обломок с косым сколом
         const st = (c) => C3(c, sh), H = p === 'pillar' ? 1.12 : 0.42 + hs(1) * 0.25;
         pbox(B, X, 0.06, Z, 0.62, 0.12, 0.62, st(0x6e6860)); pbox(B, X, 0.15, Z, 0.52, 0.07, 0.52, st(0x7c766c));
         plog(B, X, 0.18 + (H - 0.18) / 2, Z, H - 0.18, 0.2, 2, st(0x8a847a), st(0x9a948a), 12);
@@ -1107,6 +1164,7 @@ export function create(wrap, api) {
       else if (kind === 'shield') { P(0, 0.6, z, 0.3, 0.36, 0.03, q < 0.5 ? 0x8a2f2a : 0x2f4f7a, 1.2); P(0, 0.6, f, 0.06, 0.36, 0.02, gold); P(0, 0.62, f, 0.3, 0.06, 0.02, gold); }
       else if (kind === 'herbs') { P(0, 0.82, z, 0.7, 0.025, 0.03, 0x4a3018); for (let i = 0; i < 5; i++) P(-0.28 + i * 0.14, 0.7, z, 0.07, 0.2, 0.05, [0x5a8a3a, 0x8a9a3a, 0x6a7a2a, 0xa08a3a, 0x7a5a8a][i]); }
       else if (kind === 'map') { P(0, 0.58, z, 0.54, 0.38, 0.015, 0xe2d3a8, 1.2); P(-0.1, 0.64, f, 0.2, 0.012, 0.01, 0x6a4a2a); P(0.08, 0.56, f, 0.012, 0.14, 0.01, 0x6a4a2a); P(0.05, 0.5, f, 0.22, 0.012, 0.01, 0x3a5a8a); P(0.15, 0.66, f, 0.035, 0.035, 0.01, 0xa03020); }
+      else if (kind === 'chains') { [-0.16, 0.16].forEach((a) => { P(a, 0.86, z, 0.06, 0.06, 0.04, 0x2a2a30); for (let i = 0; i < 5; i++) P(a, 0.8 - i * 0.07, f, 0.035, 0.06, 0.035, 0x5a5a62, 1.1); P(a, 0.42, f, 0.11, 0.05, 0.05, 0x4a4a52, 1.1); }); }
       else if (kind === 'mirror') { P(0, 0.6, z, 0.36, 0.5, 0.03, gold); P(0, 0.6, f, 0.28, 0.42, 0.02, 0xbfd4dc, 1.5); }
       else if (kind === 'antlers') { P(0, 0.6, z, 0.2, 0.22, 0.03, 0x5e3d1f); [-1, 1].forEach((s) => { P(s * 0.13, 0.74, f, 0.03, 0.2, 0.03, 0xd8cfb8); P(s * 0.2, 0.82, f, 0.12, 0.03, 0.03, 0xd8cfb8); P(s * 0.25, 0.9, f, 0.03, 0.14, 0.03, 0xd8cfb8); }); }
     });
