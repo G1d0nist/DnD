@@ -1712,7 +1712,7 @@ function renderAbil() {
   const c = ch(), lock = abilLock.get(state.current);
   if (lock) abilEdit = false;
   $('#abilGrid').classList.toggle('editing', abilEdit);
-  $('#abilEditBtn').textContent = abilEdit ? '✓ Готово' : '✎ Изменить';
+  $('#abilEditBtn').innerHTML = abilEdit ? ic('check') + '<span>Готово</span>' : ic('quill') + '<span>Изменить</span>';
   $('#abilEditBtn').classList.toggle('primary', abilEdit);
   $('#abilEditBtn').hidden = !!lock;
   $('#abilGenBtn').hidden = !!lock || (!!c.abilSet && !abilEdit);

@@ -13,18 +13,20 @@
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link href="https://fonts.googleapis.com/css2?family=Cormorant+SC:wght@600;700&family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
   <link rel="stylesheet" href="style.css">
+  <link rel="stylesheet" href="theme.css">
 </head>
 <body>
+<script src="icons.js"></script>
 <header class="topbar">
-  <div class="brand">⚔ <span>Лист персонажа</span> <small>D&amp;D 5.5 · 2024</small></div>
+  <div class="brand"><svg class="ic"><use href="#i-sword"/></svg><span>Лист персонажа</span> <small>D&amp;D 5.5 · 2024</small></div>
   <div class="charpick">
     <select id="charSelect" title="Выбрать персонажа"></select>
-    <button data-act="newChar" title="Новый персонаж (мастер создания)">＋ Новый</button>
-    <button data-act="dupChar" title="Копия персонажа">⧉</button>
-    <button data-act="exportChar" title="Экспорт в файл JSON">⭳ Экспорт</button>
-    <button data-act="importChar" title="Импорт из файла JSON">⭱ Импорт</button>
-    <button data-act="printChar" title="Печать листа или сохранение в PDF">🖨</button>
-    <button data-act="deleteChar" class="danger" title="Удалить персонажа">🗑</button>
+    <button data-act="newChar" title="Новый персонаж (мастер создания)"><svg class="ic"><use href="#i-plus"/></svg><span>Новый</span></button>
+    <button data-act="dupChar" title="Копия персонажа"><svg class="ic"><use href="#i-copy"/></svg></button>
+    <button data-act="exportChar" title="Экспорт в файл JSON"><svg class="ic"><use href="#i-download"/></svg><span>Экспорт</span></button>
+    <button data-act="importChar" title="Импорт из файла JSON"><svg class="ic"><use href="#i-upload"/></svg><span>Импорт</span></button>
+    <button data-act="printChar" title="Печать листа или сохранение в PDF"><svg class="ic"><use href="#i-print"/></svg></button>
+    <button data-act="deleteChar" class="danger" title="Удалить персонажа"><svg class="ic"><use href="#i-trash"/></svg></button>
     <button id="syncBtn" hidden>☁</button>
   </div>
 </header>
@@ -41,34 +43,34 @@
     </div>
   </div>
   <div class="qb-stats">
-    <div class="pill" title="Класс доспеха"><b id="qbAc"></b><span>КД</span></div>
+    <div class="pill ac" title="Класс доспеха"><b id="qbAc"></b><span>КД</span></div>
     <button class="pill" data-act="rollInit" title="Бросить инициативу"><b id="qbInit"></b><span>Иниц.</span></button>
     <div class="pill"><b id="qbSpeed"></b><span>Скор.</span></div>
     <div class="pill"><b id="qbPb"></b><span>БМ</span></div>
-    <button class="pill insp" id="qbInsp" data-act="toggleInsp" title="Героическое вдохновение">★<span>Вдохн.</span></button>
+    <button class="pill insp" id="qbInsp" data-act="toggleInsp" title="Героическое вдохновение"><svg class="ic"><use href="#i-star"/></svg><span>Вдохн.</span></button>
   </div>
   <div class="qb-right">
     <div class="advmode" role="radiogroup" aria-label="Режим броска">
       <button data-adv="-1">Помеха</button><button data-adv="0" class="on">Обычно</button><button data-adv="1">Преим.</button>
     </div>
     <div class="rests">
-      <button id="undoBtn" data-act="undo" disabled title="Нечего отменять">↶ Отменить</button>
-      <button data-act="shortRest">☕ Короткий отдых</button>
-      <button data-act="longRest">🌙 Долгий отдых</button>
+      <button id="undoBtn" data-act="undo" disabled title="Нечего отменять"><svg class="ic"><use href="#i-undo"/></svg><span>Отменить</span></button>
+      <button data-act="shortRest"><svg class="ic"><use href="#i-campfire"/></svg><span>Короткий отдых</span></button>
+      <button data-act="longRest"><svg class="ic"><use href="#i-moon"/></svg><span>Долгий отдых</span></button>
     </div>
   </div>
   <div id="qbAlerts" class="qb-alerts"></div>
 </div>
 
 <nav class="tabs" id="tabs">
-  <button data-tab="main" class="on">Персонаж</button>
-  <button data-tab="combat">Бой</button>
-  <button data-tab="spells">Заклинания</button>
-  <button data-tab="inventory">Инвентарь</button>
-  <button data-tab="features">Способности</button>
-  <button data-tab="notes">Заметки</button>
-  <button data-tab="ref">Справочник</button>
-  <button data-tab="table">🗺 Стол</button>
+  <button data-tab="main" class="on"><svg class="ic"><use href="#i-person"/></svg>Персонаж</button>
+  <button data-tab="combat"><svg class="ic"><use href="#i-crossed"/></svg>Бой</button>
+  <button data-tab="spells"><svg class="ic"><use href="#i-sparkle"/></svg>Заклинания</button>
+  <button data-tab="inventory"><svg class="ic"><use href="#i-bag"/></svg>Инвентарь</button>
+  <button data-tab="features"><svg class="ic"><use href="#i-star"/></svg>Способности</button>
+  <button data-tab="notes"><svg class="ic"><use href="#i-quill"/></svg>Заметки</button>
+  <button data-tab="ref"><svg class="ic"><use href="#i-book"/></svg>Справочник</button>
+  <button data-tab="table"><svg class="ic"><use href="#i-map"/></svg>Стол</button>
 </nav>
 
 <main>
@@ -93,10 +95,10 @@
         </div>
         <div id="multiBox" class="multi"></div>
         <div class="row gap mt wrap">
-          <button class="primary" data-act="levelUp">⬆ Новый уровень</button>
-          <button data-act="originWizard" title="Применить расу и предысторию 2024: скорость, размер, черты, навыки, бонусы характеристик, черта происхождения">🧬 Раса и предыстория</button>
-          <button data-act="applyClass" title="Шаблон применяется сам при выборе класса; кнопка — применить заново">⚙ Шаблон класса заново</button>
-          <button data-act="calcHp">❤ Рассчитать макс. хиты (среднее)</button>
+          <button class="primary" data-act="levelUp"><svg class="ic"><use href="#i-levelup"/></svg><span>Новый уровень</span></button>
+          <button data-act="originWizard" title="Применить расу и предысторию 2024: скорость, размер, черты, навыки, бонусы характеристик, черта происхождения"><svg class="ic"><use href="#i-person"/></svg><span>Раса и предыстория</span></button>
+          <button data-act="applyClass" title="Шаблон применяется сам при выборе класса; кнопка — применить заново"><svg class="ic"><use href="#i-refresh"/></svg><span>Шаблон класса заново</span></button>
+          <button data-act="calcHp"><svg class="ic"><use href="#i-heart"/></svg><span>Рассчитать макс. хиты (среднее)</span></button>
           <span class="muted small" id="xpHint"></span>
         </div>
         </div></div>
@@ -104,7 +106,7 @@
 
       <div class="card">
         <div class="row between wrap gap"><h2>Характеристики</h2>
-          <div class="row gap"><button id="abilGenBtn" data-act="abilGen" title="Стандартный набор, покупка очков или бросок 4d6">🎲 Генерация</button><button id="abilEditBtn" data-act="abilEdit" title="Изменить базовые значения характеристик">✎ Изменить</button></div></div>
+          <div class="row gap"><button id="abilGenBtn" data-act="abilGen" title="Стандартный набор, покупка очков или бросок 4d6"><svg class="ic"><use href="#i-d20"/></svg><span>Генерация</span></button><button id="abilEditBtn" data-act="abilEdit" title="Изменить базовые значения характеристик"><svg class="ic"><use href="#i-quill"/></svg><span>Изменить</span></button></div></div>
         <div class="abil-grid" id="abilGrid"></div>
         <p class="muted small" id="abilHint"></p>
       </div>
@@ -388,7 +390,7 @@
   </section>
 </main>
 
-<button id="diceFab" class="dice-fab" data-act="toggleDice" title="Кости и журнал бросков">🎲</button>
+<button id="diceFab" class="dice-fab" data-act="toggleDice" title="Кости и журнал бросков"><svg class="ic"><use href="#i-d20"/></svg></button>
 <aside id="dicePanel" class="dice-panel">
   <div class="row between"><b>Кости</b><button class="ghost" data-act="clearLog">очистить</button></div>
   <div class="dice-btns">
