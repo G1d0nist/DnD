@@ -1097,7 +1097,7 @@ function renderTokens() {
     if (g3on) list3.push({ id, x: t.x, y: t.y, size: s, color: t.kind === 'npc' ? SIDE_COLOR[t.side || 'enemy'] : t.color || '#d4a64a', img: t.img || '', ic: t.ic || '', name: t.name || '',
       label: `${esc(label || '')}${fxOf(id).filter(([, f]) => f.ic).slice(0, 4).map(([, f]) => f.ic).join('')}${(t.cond || []).length ? ` <span class="tok-cond">●${t.cond.length}</span>` : ''}`,
       look: t.kind === 'pc' && !t.comp && !t.wild ? t.look || null : null,
-      aura: dead ? null : aura3(id), pct: t.hpMax ? pct : null, down, dead, sel: selId === id, turn: !!(cur && cur.tokenId === id), ghost: !!(t.hidden || invis || banned), alt: +t.alt || 0, cls: `side-${team(t)} ${t.kind}` });
+      aura: dead ? null : aura3(id), cond: down ? [] : t.cond || [], pct: t.hpMax ? pct : null, down, dead, sel: selId === id, turn: !!(cur && cur.tokenId === id), ghost: !!(t.hidden || invis || banned), alt: +t.alt || 0, cls: `side-${team(t)} ${t.kind}` });
   });
   if (g3on) g3.tokens(list3, drag && drag.kind === 'token' ? drag.id : null);
   $$('[data-tok]', box).forEach((el) => { if (!seen.has(el.dataset.tok)) el.remove(); });
@@ -3328,7 +3328,7 @@ function attackTarget(tid) {
   if (used.length) R.update(ref(gpath('effects')), Object.fromEntries(used.map((k) => [k, null]))).catch(() => {});
   addLog({ kind: 'atk', who: me_.name, txt: A.n, tgt: tid, tgtName: T.name, total: res.total, nat: res.nat, ac, hit: res.hit, crit: res.crit,
     dmg: res.dmg, dtype: res.type, detail: res.detail, dmgDetail: res.dmgDetail, way: WAYS[a.way] + ((res.extra || []).length ? ` · ${res.extra.join(', ')}` : '') + (cov.bonus ? ` · укрытие +${cov.bonus} КД` : ''),
-    from: a.from, anim: A.spell ? 'bolt' : ranged ? (r.thrown ? 'throw' : 'arrow') : 'melee' });
+    from: a.from, anim: A.spell ? 'bolt' : ranged ? (r.thrown ? 'throw' : 'arrow') : 'melee', npc: a.npc ? 1 : undefined });
   // Приёмы превосходства: эффект при попадании (СЛ 8 + БМ + мод. Сил/Лов)
   const R1 = inFight() ? (game.init.round || 1) + 1 : null, small = (T.size || 1) <= 2;
   if (res.man === 'Подсечка' && small) saveRequest(tid, { n: 'Подсечка', who: me_.name, abil: 'str', dc: res.manDC, fail: { n: 'Подсечка', cond: 'prone', once: true } });
@@ -7469,40 +7469,42 @@ function tokCenter(id) {
   const s = (t.size || 1) * CELL;
   return { x: t.x * CELL + s / 2, y: t.y * CELL + s / 2, s };
 }
-// Звуки стола — синтез в браузере, без файлов: удар, крит, промах, заклинание, лечение, падение, «ваш ход».
-// Выключаются кнопкой 🔊 на панели (запоминается на устройстве)
-let sndOn = (() => { try { return localStorage.getItem('dnd55-snd') !== '0'; } catch (e) { return true; } })(), actx = null, sndLast = 0;
-function snd(kind) {
-  if (!sndOn) return;
-  const now = Date.now();
-  if (now - sndLast < 60) return; // пачка записей журнала — не какофония
-  sndLast = now;
-  try {
-    actx = actx || new (window.AudioContext || window.webkitAudioContext)();
-    if (actx.state === 'suspended') actx.resume();
-    const t0 = actx.currentTime + 0.01, out = actx.createGain();
-    out.gain.value = 0.16; out.connect(actx.destination);
-    const env = (g, at, d, peak = 1) => { g.gain.setValueAtTime(0.0001, t0 + at); g.gain.exponentialRampToValueAtTime(peak, t0 + at + 0.012); g.gain.exponentialRampToValueAtTime(0.0001, t0 + at + d); };
-    const tone = (f, d, type = 'sine', at = 0, f2 = 0, peak = 1) => {
-      const o = actx.createOscillator(), g = actx.createGain();
-      o.type = type; o.frequency.setValueAtTime(f, t0 + at); if (f2) o.frequency.exponentialRampToValueAtTime(f2, t0 + at + d);
-      env(g, at, d, peak); o.connect(g); g.connect(out); o.start(t0 + at); o.stop(t0 + at + d + 0.03);
-    };
-    const noise = (d, at = 0, freq = 800, q = 1, peak = 1) => {
-      const len = Math.ceil(actx.sampleRate * d), buf = actx.createBuffer(1, len, actx.sampleRate), ch = buf.getChannelData(0);
-      for (let i = 0; i < len; i++) ch[i] = Math.random() * 2 - 1;
-      const s = actx.createBufferSource(), f = actx.createBiquadFilter(), g = actx.createGain();
-      s.buffer = buf; f.type = 'bandpass'; f.frequency.value = freq; f.Q.value = q;
-      env(g, at, d, peak); s.connect(f); f.connect(g); g.connect(out); s.start(t0 + at); s.stop(t0 + at + d + 0.03);
-    };
-    if (kind === 'hit') { noise(0.12, 0, 500, 0.8); tone(140, 0.16, 'triangle', 0, 55, 0.8); }
-    else if (kind === 'crit') { noise(0.14, 0, 450, 0.8); tone(130, 0.2, 'triangle', 0, 50); tone(880, 0.22, 'sine', 0.06, 0, 0.5); tone(1320, 0.32, 'sine', 0.13, 0, 0.45); }
-    else if (kind === 'miss') noise(0.22, 0, 2600, 0.6, 0.6);
-    else if (kind === 'spell') { tone(520, 0.4, 'sine', 0, 1100, 0.5); tone(780, 0.45, 'triangle', 0.07, 1600, 0.35); noise(0.3, 0.05, 5000, 2, 0.25); }
-    else if (kind === 'heal') { tone(523, 0.22, 'sine', 0, 0, 0.5); tone(659, 0.22, 'sine', 0.09, 0, 0.5); tone(784, 0.35, 'sine', 0.18, 0, 0.5); }
-    else if (kind === 'down') tone(240, 0.6, 'sawtooth', 0, 70, 0.35);
-    else if (kind === 'turn') { tone(660, 0.12, 'sine', 0, 0, 0.5); tone(990, 0.18, 'sine', 0.11, 0, 0.5); }
-  } catch (e) { /* звук недоступен — молча */ }
+// Звуки стола — sound.js (синтез в браузере, без файлов). Настройки — кнопка 🔊 на панели
+const snd = (kind, o) => { if (window.SFX) SFX.play(kind, o); };
+const sndOn_ = () => !window.SFX || SFX.get().fx || SFX.get().amb;
+// Звук атаки: стрела свистит и втыкается, заклинание срывается с рук и бьёт стихией, оружие — свист и удар по типу урона
+function atkSound(e) {
+  const ranged = e.anim === 'arrow' || e.anim === 'throw', bolt = e.anim === 'bolt';
+  if (ranged || bolt) {
+    snd(bolt ? 'cast' : 'arrow');
+    setTimeout(() => (e.hit ? snd(bolt ? 'spell' : 'thunk', { dtype: e.dtype }) : snd('miss')), 330);
+  } else snd(e.hit ? 'hit' : 'miss', { dtype: e.dtype });
+  if (e.crit) setTimeout(() => snd('crit'), ranged || bolt ? 480 : 170);
+}
+// Фон по месту: под открытым небом — день или ночь (и погода), подземелье, помещение
+function ambKey() {
+  if (!game || !game.meta) return '';
+  const gen = game.meta.gen || {}, f = fogSet();
+  if (skyOpen()) { const h = game.meta.timeLight ? gameHour() % 24 : 12; return `${h >= 6 && h < 20 ? 'day' : 'night'}|${game.meta.weather || ''}`; }
+  if (['house', 'tower'].includes(gen.tpl)) return 'interior';
+  if (gen.tpl || (f.amb || 'bright') === 'dark') return 'dungeon';
+  return '';
+}
+function soundDialog() {
+  const S = window.SFX ? SFX.get() : { fx: false, amb: false, fxV: 0.7, ambV: 0.5 };
+  app.openModal(`<h2>🔊 Звуки стола</h2>
+    <label class="check"><input type="checkbox" id="sdFx" ${S.fx ? 'checked' : ''}> Звуки событий — кубики, удары, стрелы, заклинания, лечение, «ваш ход»</label>
+    <label class="mt">Громкость событий <input type="range" id="sdFxV" min="0" max="1" step="0.05" value="${S.fxV}"></label>
+    <label class="check mt"><input type="checkbox" id="sdAmb" ${S.amb ? 'checked' : ''}> Фон — ветер и птицы днём, сверчки ночью, капли в подземелье, треск очага в доме, дождь и гром</label>
+    <label class="mt">Громкость фона <input type="range" id="sdAmbV" min="0" max="1" step="0.05" value="${S.ambV}"></label>
+    <p class="muted small">Настройки — только на этом устройстве. Фон зависит от карты, времени суток и погоды и стихает, когда вы уходите со стола.</p>
+    <div class="modal-actions"><button data-sd="test">🎲 Проверить</button><button class="primary" data-act="closeModal">Готово</button></div>`);
+  if (!window.SFX) return;
+  $('#sdFx').addEventListener('change', (ev) => { SFX.set('fx', ev.target.checked); renderTools(); });
+  $('#sdAmb').addEventListener('change', (ev) => { SFX.set('amb', ev.target.checked); renderTools(); });
+  $('#sdFxV').addEventListener('input', (ev) => SFX.set('fxV', +ev.target.value));
+  $('#sdAmbV').addEventListener('input', (ev) => SFX.set('ambV', +ev.target.value));
+  $('[data-sd="test"]').addEventListener('click', () => { SFX.play('dice', { n: 2 }); setTimeout(() => SFX.play('hit', { dtype: 'рубящий' }), 900); });
 }
 function dice3dOf(e) {
   let off = false; try { off = localStorage.getItem('dnd55-dice3d') === '0'; } catch (er) { /* нет хранилища */ }
@@ -7515,8 +7517,10 @@ function fxLog() {
     if (!animated.has(e.k)) {
       animated.add(e.k);
       if ((e.t || 0) < openedAt || Date.now() - (e.t || 0) > 15000) { if (e.down) skulls.add(e.k); return; }
-      // Чужой бросок — объёмные кости и у меня (свои уже показал лист)
-      if (e.by !== user.uid && (e.kind === 'roll' || e.kind === 'atk' || (e.kind === 'save' && e.detail)) && (isDM() || !e.dmOnly)) dice3dOf(e);
+      // Чужой бросок — объёмные кости и у меня (свои уже показал лист); атаки и спасброски существ мастера бросает стол, а не лист —
+      // их кости мастер видит и у себя
+      const own = e.by === user.uid && isDM() && ((e.kind === 'atk' && e.npc) || (e.kind === 'save' && e.detail));
+      if ((e.by !== user.uid || own) && (e.kind === 'roll' || e.kind === 'atk' || (e.kind === 'save' && e.detail)) && (isDM() || !e.dmOnly)) dice3dOf(e);
       if (e.kind === 'atk' && e.graze) fxHit(e.tgt, e.dmg, {});
       else if (e.kind === 'atk') fxAttack(e);
       else if (e.kind === 'heal') { floatText(e.tgt, `+${e.heal}`, 'fx-heal'); if (g3on && !calm()) g3.heal(e.tgt); }
@@ -7529,10 +7533,10 @@ function fxLog() {
       }
       else if (e.kind === 'save' && e.res) e.res.forEach((r, i) => setTimeout(() => fxHit(r.id, r.dmg, { saved: r.ok, down: r.down }), 200 + i * 140));
       // Звук к событию журнала; кто-то упал — низкий гул следом
-      if (e.kind === 'atk') snd(e.crit ? 'crit' : e.hit ? 'hit' : 'miss');
+      if (e.kind === 'atk' && !e.graze) atkSound(e);
       else if (e.kind === 'heal') snd('heal');
-      else if (e.kind === 'dmg' || (e.kind === 'save' && (e.res || []).some((r) => r.dmg))) snd('hit');
-      else if (e.kind === 'area') snd('spell');
+      else if (e.kind === 'area') snd('spell', { dtype: `${(e.fx || {}).n || ''} ${e.txt || ''}` });
+      else if (e.kind === 'dmg' || e.graze || (e.kind === 'save' && (e.res || []).some((r) => r.dmg))) snd('hit', { dtype: e.dtype || '' });
       if (e.down || (e.res || []).some((r) => r.down)) setTimeout(() => snd('down'), 300);
       if (e.down) skulls.add(e.k);
       return;
@@ -7654,7 +7658,7 @@ function renderAll() {
   const inGame = !!(game && game.meta && user);
   box.hidden = !inGame;
   lobby.hidden = inGame;
-  if (!inGame) { if (fullOn) { fullOn = false; document.body.classList.remove('tbl-full-on'); $('#tblGame').classList.remove('tbl-full'); } renderLobby(); return; }
+  if (!inGame) { if (window.SFX) SFX.ambient(''); if (fullOn) { fullOn = false; document.body.classList.remove('tbl-full-on'); $('#tblGame').classList.remove('tbl-full'); } renderLobby(); return; }
   $('#tblName').textContent = game.meta.name;
   $('#tblCode').textContent = `Код: ${game.code}`;
   $('#tblLeave').textContent = isDM() ? '⏏ Выйти' : 'Покинуть'; $('#tblLeave').title = isDM() ? 'Выйти из игры: сохранить и выйти или удалить' : 'Покинуть игру';
@@ -7670,6 +7674,8 @@ function renderAll() {
   drawFog();
   drawAreas();
   renderTokens();
+  renderWx2d();
+  if (window.SFX) SFX.ambient(ambKey(), () => !!(game && $('#tblWrap') && $('#tblWrap').offsetParent));
   camUpdate();
   renderTurn();
   renderInit();
@@ -7790,7 +7796,7 @@ function renderTools() {
   const handouts = isDM() || hoMine().length ? b('handouts', `📜 Материалы${!isDM() && hoMine().length ? ` (${hoMine().length})` : ''}`, isDM() ? 'Показать игрокам картинку, письмо или карту' : 'Что показывал мастер') : '';
   const base = t('move', '✋ Двигать', 'Перетаскивайте токены; шаг — WASD или стрелки') + t('ruler', '📏 Линейка', 'Протяните, чтобы измерить расстояние')
     + b('keys', '⌨', 'Клавиши: шаг WASD, атака Q, заклинание E, спасбросок Alt… — посмотреть и переназначить (K)')
-    + b('sound', sndOn ? '🔊' : '🔇', sndOn ? 'Звуки стола включены — выключить' : 'Звуки стола выключены — включить')
+    + b('sound', sndOn_() ? '🔊' : '🔇', 'Звуки стола: события и фон, громкость')
     + b('journal', '📓', 'Журнал кампании: квесты, персонажи (NPC), заметки — общий для всех') + b('tour', '❓', 'Подсказки: как пользоваться столом')
     + (!(game.meta || {}).world ? b('clock', `🕰 ${travelClock(game.travel || {})} ${dayPart().ic}${(game.meta || {}).weather ? ' ' + (WEATHER.find(([k]) => k === game.meta.weather) || ['', ''])[1].split(' ')[0] : ''}`, isDM() ? 'Время кампании: сдвинуть часы, освещение по времени суток' : 'Время кампании') : '');
   if (!isDM()) {
@@ -8121,16 +8127,24 @@ function hudTokId() {
   return selId && game.tokens[selId] ? selId : null;
 }
 const faceHtml = (t, cls = '') => `<div class="hud-face ${cls}" style="--tc:${t.kind === 'npc' ? SIDE_COLOR[t.side || 'enemy'] : t.color || '#d4a64a'}">${t.img && !isDead(t) ? `<img src="${t.img}" alt="">` : `<span>${isDead(t) ? '☠' : esc((t.name || '?').trim().slice(0, 2))}</span>`}</div>`;
+// Очередь хода над полем (в бою, в обоих режимах): портреты в золотой оправе, полоска хитов, кто ходит — крупнее и светится;
+// нажатие — камера перелетает к существу
 function renderFInit() {
   const box = $('#tblFInit');
-  box.hidden = !fullOn || !inFight();
+  box.hidden = !game || !inFight();
   if (box.hidden) return;
   const cur = currentEntry();
-  box.innerHTML = `<span class="badge">Раунд ${game.init.round || 1}</span>${initList().map((e) => {
+  const html = `<span class="fi-round"><small>Раунд</small><b>${game.init.round || 1}</b></span>${initList().map((e) => {
     const t = game.tokens[e.tokenId];
     if (t && t.hidden && !isDM()) return '';
-    return `<div class="fi ${cur && cur.id === e.id ? 'cur' : ''} ${t && isDown(t) ? 'down' : ''}" title="${esc(e.name)} · ${e.roll}">${t ? faceHtml(t) : `<div class="hud-face"><span>${e.kind === 'lair' ? '🏰' : '?'}</span></div>`}<b>${e.roll}</b></div>`;
+    const pct = t && t.hpMax ? Math.max(0, Math.min(1, (t.hp || 0) / t.hpMax)) : null, nums = t && (t.kind === 'pc' || isDM());
+    const tip = `${e.name} · инициатива ${e.roll}${t && t.hpMax ? nums ? ` · ${t.hp}/${t.hpMax} хитов` : ` · ${isDown(t) ? (isDead(t) ? 'мёртв' : 'без сознания') : pct > .5 ? 'бодр' : pct > .25 ? 'ранен' : 'тяжело ранен'}` : ''}${t && (t.cond || []).length ? ` · ${t.cond.map(condName).join(', ')}` : ''}${t ? ' — нажмите, чтобы показать на поле' : ''}`;
+    return `<div class="fi ${cur && cur.id === e.id ? 'cur' : ''} ${t && isDown(t) ? 'down' : ''} ${t ? `side-${team(t)}` : ''}" ${t ? `data-tbl="initGo" data-id="${e.tokenId}"` : ''} title="${esc(tip)}">
+      ${t ? faceHtml(t) : `<div class="hud-face"><span>${e.kind === 'lair' ? '🏰' : '?'}</span></div>`}
+      ${pct != null ? `<i class="fi-hp"><i style="width:${pct * 100}%;background:${pct > .5 ? '#5a9e5a' : pct > .25 ? '#d4a64a' : '#c94a3d'}"></i></i>` : ''}
+      <b>${e.roll}</b>${t && (t.cond || []).length ? `<em class="fi-cond">${t.cond.length}</em>` : ''}</div>`;
   }).join('')}`;
+  if (box._html !== html) { box._html = html; box.innerHTML = html; const c = box.querySelector('.fi.cur'); if (c && c.scrollIntoView) c.scrollIntoView({ block: 'nearest', inline: 'center' }); }
 }
 // Ячейки панели по вкладкам: [{ label, sub, act, data, ok }]
 function hudSlots(id) {
@@ -8538,6 +8552,7 @@ async function onClick(e) {
     else if (a === 'gameDel') { if (app.confirm('Удалить игру навсегда? Сцены, существа и всё на поле пропадут.')) { await deleteGame(b.dataset.id, b.dataset.code); renderAll(); } }
     else if (a === 'zoomIn' || a === 'zoomOut') { const w = $('#tblWrap'); zoomAt(zoom * (a === 'zoomIn' ? 1.25 : 0.8), w.clientWidth / 2, w.clientHeight / 2); }
     else if (a === 'camHome') camHome();
+    else if (a === 'initGo') { const t = game.tokens[b.dataset.id]; if (t) { if (!isDM()) camSetFree(true); camOn(t); if (isDM()) { selId = b.dataset.id; renderAll(); } } }
     else if (a === 'rotL' || a === 'rotR' || a === 'rotN') camTurn(a === 'rotN' ? null : a === 'rotL' ? Math.PI / 4 : -Math.PI / 4);
     else if (a === 'g3') g3Toggle(!g3on);
     else if (a === 'rollInit') {
@@ -8663,7 +8678,7 @@ async function onClick(e) {
     else if (a === 'journal') journalDialog();
     else if (a === 'tour') tour();
     else if (a === 'clock') { if (isDM()) timeDialog(); else app.toast(`🕰 ${esc(travelClock(game.travel || {}))} · ${dayPart().ic} ${dayPart().n}`); }
-    else if (a === 'sound') { sndOn = !sndOn; try { localStorage.setItem('dnd55-snd', sndOn ? '1' : '0'); } catch (err) { /* без хранилища */ } if (sndOn) snd('turn'); renderTools(); }
+    else if (a === 'sound') soundDialog();
     else if (a === 'areaAgain') areaAgain(b.dataset.k);
     else if (a === 'zoneMove') zoneMoveStart(b.dataset.k);
     else if (a === 'wallMode' && cast) wallSetMode(b.dataset.m);
@@ -8744,16 +8759,72 @@ function g3Dark() {
   const f = fogSet();
   return g3on && f.mode === 'vision' && (f.amb || 'bright') === 'dark' && ['', 'stone'].includes((game.meta || {}).ground || '');
 }
+// Под открытым небом: местность и открытые локации (не подземелья и не интерьеры); без шаблона — по виду земли
+function skyOpen() {
+  const gen = (game.meta || {}).gen || {}, IN = ['dungeon', 'cave', 'crypt', 'mine', 'sewer', 'house', 'tower'], T_ = (MAPGEN.TEMPLATES || {})[gen.tpl];
+  return gen.tpl ? !IN.includes(gen.tpl) && !(gen.floor > 1) && (T_ ? T_.kind === 'terrain' || !!T_.connect || ['village', 'fair', 'arena', 'castle', 'city'].includes(gen.tpl) : true)
+    : ['grass', 'sand', 'snow', 'dirt'].includes((game.meta || {}).ground || '');
+}
+// Погода в плоском виде: слой поверх поля (по экрану, мышь проходит насквозь) — косые струи дождя, гроза со вспышками,
+// хлопья снега, плывущий туман. В объёмном виде погоду рисует сцена
+const WX2 = { kind: '', cv: null, raf: 0, ps: [], flash: 0, last: 0 };
+function renderWx2d() {
+  const kind = game && !g3on && skyOpen() ? (game.meta || {}).weather || '' : '';
+  let cv = WX2.cv;
+  if (!cv) { cv = WX2.cv = document.createElement('canvas'); cv.className = 'tbl-wx'; $('#tblWrap').appendChild(cv); }
+  if (!cv.isConnected) $('#tblWrap').appendChild(cv);
+  cv.hidden = !kind;
+  if (kind === WX2.kind) return;
+  WX2.kind = kind; WX2.ps = [];
+  cancelAnimationFrame(WX2.raf); WX2.raf = 0;
+  if (!kind) return;
+  const step = (now) => {
+    WX2.raf = requestAnimationFrame(step);
+    if (!cv.offsetParent) return;
+    const dt = Math.min(0.05, (now - (WX2.last || now)) / 1000); WX2.last = now;
+    const w = cv.clientWidth, h = cv.clientHeight; if (!w || !h) return;
+    if (cv.width !== w || cv.height !== h) { cv.width = w; cv.height = h; }
+    const g = cv.getContext('2d'), k = WX2.kind, rain = k === 'rain' || k === 'storm', still = calm();
+    g.clearRect(0, 0, w, h);
+    if (k === 'storm' || k === 'fog') { g.fillStyle = k === 'fog' ? 'rgba(150,155,160,.22)' : 'rgba(10,14,24,.28)'; g.fillRect(0, 0, w, h); }
+    const want = rain ? Math.round((w * h) / (k === 'storm' ? 1300 : 2000)) : k === 'snow' ? Math.round((w * h) / 3500) : k === 'fog' ? 14 : 0;
+    while (WX2.ps.length < want) WX2.ps.push({ x: Math.random() * w, y: Math.random() * h, v: 0.6 + Math.random() * 0.6, r: Math.random() });
+    if (WX2.ps.length > want) WX2.ps.length = want;
+    if (rain) {
+      g.strokeStyle = k === 'storm' ? 'rgba(190,205,225,.42)' : 'rgba(180,195,215,.34)'; g.lineWidth = 1; g.beginPath();
+      WX2.ps.forEach((p) => {
+        if (!still) { p.y += 900 * p.v * dt; p.x += 160 * p.v * dt; if (p.y > h) { p.y -= h + 20; p.x = Math.random() * w; } if (p.x > w) p.x -= w; }
+        const L = 10 + 8 * p.v; g.moveTo(p.x, p.y); g.lineTo(p.x - L * 0.18, p.y - L);
+      });
+      g.stroke();
+    } else if (k === 'snow') {
+      g.fillStyle = 'rgba(255,255,255,.85)';
+      WX2.ps.forEach((p, i) => {
+        if (!still) { p.y += 40 * p.v * dt; p.x += Math.sin(now / 900 + i) * 18 * dt; if (p.y > h) { p.y -= h + 6; p.x = Math.random() * w; } }
+        g.beginPath(); g.arc(p.x, p.y, 1 + p.r * 1.8, 0, 6.29); g.fill();
+      });
+    } else if (k === 'fog') {
+      WX2.ps.forEach((p) => {
+        if (!still) { p.x += 14 * p.v * dt; if (p.x - 260 > w) p.x = -260; }
+        const R = 140 + p.r * 160, gr = g.createRadialGradient(p.x, p.y, 0, p.x, p.y, R);
+        gr.addColorStop(0, 'rgba(190,195,200,.28)'); gr.addColorStop(1, 'rgba(190,195,200,0)'); g.fillStyle = gr; g.fillRect(p.x - R, p.y - R, R * 2, R * 2);
+      });
+    }
+    if (k === 'storm' && !still) {
+      if (WX2.flash <= 0 && Math.random() < dt * 0.12) WX2.flash = 0.35;
+      if (WX2.flash > 0) { WX2.flash -= dt; g.fillStyle = `rgba(225,235,255,${Math.max(0, Math.sin(WX2.flash * 40)) * 0.35})`; g.fillRect(0, 0, w, h); }
+    }
+    if (still) { cancelAnimationFrame(WX2.raf); WX2.raf = 0; }
+  };
+  WX2.raf = requestAnimationFrame(step);
+}
 function g3State() {
   const f = fogSet(), amb = fogOn() ? f.amb || 'bright' : (game.meta || {}).timeLight ? dayPart().amb : 'bright';
   const lights = [...Object.values(game.lights || {}).map((L) => ({ x: L.x + 0.5, y: L.y + 0.5, r: ((+L.b || 20) + (+L.d || 20)) / FT(), fix: 1 })),
     ...Object.values(game.tokens || {}).filter((t) => t.lt && !(t.hidden && !isDM()) && !fogHides(t)).map((t) => ({ x: t.x + (t.size || 1) / 2, y: t.y + (t.size || 1) / 2, r: ((+t.lt.b || 0) + (+t.lt.d || 0)) / FT() }))];
   // rocky — каменная земля под открытым небом (горы, перевал), а не плиты подземелья; rooms — что за комнаты (кровати, стойки)
   const gen = (game.meta || {}).gen || {}, rocky = (game.meta || {}).ground === 'stone' && (gen.tpl ? ['mountains', 'pass', 'volcano'].includes(gen.tpl) : (f.amb || 'bright') !== 'dark');
-  // Под открытым небом: местность и открытые локации (не подземелья и не интерьеры); без шаблона — по виду земли
-  const IN = ['dungeon', 'cave', 'crypt', 'mine', 'sewer', 'house', 'tower'], T_ = (MAPGEN.TEMPLATES || {})[gen.tpl];
-  const sky = gen.tpl ? !IN.includes(gen.tpl) && !(gen.floor > 1) && (T_ ? T_.kind === 'terrain' || !!T_.connect || ['village', 'fair', 'arena', 'castle', 'city'].includes(gen.tpl) : true)
-    : ['grass', 'sand', 'snow', 'dirt'].includes((game.meta || {}).ground || '');
+  const sky = skyOpen();
   const hour = (game.meta || {}).timeLight ? gameHour() % 24 : null, weather = sky ? (game.meta || {}).weather || '' : '';
   return { sky, hour, weather, rocky, rooms: gen.rooms || [], tpl: gen.tpl || '', flights: gen.flights || [], props: gen.props || {}, decor: gen.decor || {}, w: W(), h: H(), bg: !!bgImg, ground: (game.meta || {}).ground || '', map: bgImg ? {} : game.map || {}, doors: game.doors || {}, chests: Object.values(game.chests || {}).map((C) => ({ x: C.x, y: C.y, o: !!C.o, l: +C.lock && !C.lk ? 1 : 0 })), drops: Object.values(game.drops || {}).map((D) => ({ x: D.x, y: D.y })), lights: lights.filter((L) => cellShade(`${Math.floor(L.x)}_${Math.floor(L.y)}`) >= 0), amb, shade: cellShade };
 }

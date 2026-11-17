@@ -295,3 +295,33 @@ button.stat:hover { background: linear-gradient(180deg, rgba(60,48,34,.6), rgba(
 .fx-dmg.half { color: #f2a65e; }
 .fx-crit { color: #ffd76a; font-size: 34px; text-shadow: 0 2px 4px #000, 0 0 14px rgba(255,190,60,.75); }
 .fx-heal { color: #93f08a; text-shadow: 0 2px 4px #000, 0 0 12px rgba(120,230,110,.6); }
+
+/* ---------- Очередь хода над полем: портреты в золотой оправе ---------- */
+.tbl-main { position: relative; }
+#tblGame:not(.tbl-full) .tbl-finit { top: 8px; left: calc((100% - 292px) / 2); max-width: calc(100% - 340px); }
+@media (max-width: 900px) { #tblGame:not(.tbl-full) .tbl-finit { left: 50%; max-width: calc(100% - 24px); } }
+.tbl-finit { gap: 6px; padding: 5px 12px 4px; border-radius: 10px; align-items: flex-end;
+  background: linear-gradient(180deg, rgba(38,32,26,.94), rgba(16,13,11,.94)); border: 1px solid #6b5022;
+  box-shadow: 0 0 0 1px #000, inset 0 1px 0 rgba(255,225,160,.12), 0 6px 18px rgba(0,0,0,.6); }
+.tbl-finit .fi-round { display: flex; flex-direction: column; align-items: center; justify-content: center; align-self: center; min-width: 38px; margin-right: 4px; padding-right: 8px; border-right: 1px solid rgba(201,151,63,.35); }
+.tbl-finit .fi-round small { font-size: 9px; letter-spacing: .08em; text-transform: uppercase; color: #9c8a6a; }
+.tbl-finit .fi-round b { font-family: 'Cormorant SC', Georgia, serif; font-size: 20px; line-height: 1; color: var(--gold2, #f0c76a); }
+.tbl-finit .fi { cursor: pointer; opacity: .78; transition: transform .2s, opacity .2s; padding-top: 6px; }
+.tbl-finit .fi:hover { opacity: 1; transform: translateY(-2px); }
+.tbl-finit .fi .hud-face { width: 38px; height: 38px; border: 2px solid #8a6a2e; box-shadow: 0 0 0 1px #000, 0 0 0 3px #2a2118, 0 0 0 4px #6b5022, 0 3px 8px rgba(0,0,0,.6); }
+.tbl-finit .fi.side-enemy .hud-face { border-color: #a5463a; }
+.tbl-finit .fi.side-neutral .hud-face { border-color: #8a8f96; }
+.tbl-finit .fi.cur { opacity: 1; transform: scale(1.16); margin: 0 6px; }
+.tbl-finit .fi.cur .hud-face { border-color: var(--gold2, #f0c76a); box-shadow: 0 0 0 1px #000, 0 0 0 3px #3a2c16, 0 0 0 4px #c9973f, 0 0 14px 3px rgba(240,199,106,.55); animation: fiGlow 1.6s ease-in-out infinite; }
+.tbl-finit .fi.cur::before { content: ''; position: absolute; top: -3px; left: 50%; transform: translateX(-50%); border: 5px solid transparent; border-top: 6px solid var(--gold2, #f0c76a); filter: drop-shadow(0 0 3px rgba(240,199,106,.8)); }
+@keyframes fiGlow { 50% { box-shadow: 0 0 0 1px #000, 0 0 0 3px #3a2c16, 0 0 0 4px #c9973f, 0 0 20px 5px rgba(240,199,106,.75); } }
+.tbl-finit .fi-hp { display: block; width: 34px; height: 4px; margin-top: 3px; border-radius: 2px; background: #1a1410; box-shadow: 0 0 0 1px #000; overflow: hidden; }
+.tbl-finit .fi-hp > i { display: block; height: 100%; }
+.tbl-finit .fi b { margin-top: 1px; }
+.tbl-finit .fi-cond { position: absolute; top: 4px; right: -3px; min-width: 14px; height: 14px; padding: 0 3px; border-radius: 7px; background: #6a3fa0; border: 1px solid #000; color: #fff; font: 700 9px/12px sans-serif; text-align: center; font-style: normal; }
+.tbl-finit .fi.down { filter: grayscale(1); opacity: .45; }
+@media (prefers-reduced-motion: reduce) { .tbl-finit .fi.cur .hud-face { animation: none; } }
+
+/* Погода в плоском виде — слой поверх поля, мышь проходит насквозь */
+.tbl-wx { position: absolute; inset: 0; width: 100%; height: 100%; pointer-events: none; z-index: 4; }
+.tbl-wx[hidden] { display: none; }

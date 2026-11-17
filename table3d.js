@@ -1644,6 +1644,7 @@ export function create(wrap, api) {
   }
   function dropTok(T) {
     if (T.aura) { T.aura.material.dispose(); T.aura = null; }
+    (T.cmats || []).forEach((m) => m.dispose()); if (T.chain) T.chain.children.forEach((o) => o.material.dispose());
     scene.remove(T.root); T.lab.remove(); toks.delete(T.id); if (T.anim) T.anim.mixer.stopAllAction();
     T.root.traverse((o) => { if (o.userData.own) { o.material.map && o.material.map.dispose(); o.material.dispose(); o.geometry.dispose(); } });
     T.base.geometry.dispose(); T.base.material.dispose(); T.sel.material.dispose(); T.turn.material.dispose(); T.pick.geometry.dispose();
@@ -1663,7 +1664,7 @@ export function create(wrap, api) {
       T.t = t; T.sel.visible = !!t.sel; T.turn.visible = !!t.turn;
       auraSet(T, t);
       const op = t.ghost ? 0.45 : 1;
-      T.mats.forEach((m) => { m.transparent = op < 1; m.opacity = op; }); T.base.material.opacity = 0.42 * op;
+      T.op = op; T.base.material.opacity = 0.42 * op; chainSet(T, t);
       const tx = t.x + s / 2, tz = t.y + s / 2;
       if (fresh) { T.pos.set(tx, 0, tz); T.to.copy(T.pos); T.from.copy(T.pos); } else if (t.id !== dragId && (T.to.x !== tx || T.to.z !== tz)) {
         const n = Math.max(Math.abs(T.to.x - tx), Math.abs(T.to.z - tz));
@@ -2192,6 +2193,70 @@ export function create(wrap, api) {
     T.auraY = Math.max(r, (T.top || 1) * 0.62) * 0.92; T.aura.position.y = T.auraY; T.root.add(T.aura);
   }
 
+  // ---------- Состояния на фигурках ----------
+  // Ошеломлён — звёзды кружат над головой; очарован — розовые искры; отравлен — зелёная дымка; испуган — дрожит, над ним тёмные клочья;
+  // парализован — замер, по телу бегут голубые разряды; окаменел — серый камень, замер; схвачен — цепь, опутан — две цепи;
+  // лежит ничком — фигурка лежит; ослеплён — тёмная пелена у глаз; невидим — почти прозрачный, мерцает; недееспособен — бледная спираль
+  const NOCS = new Set();
+  const chainGeo = new THREE.TorusGeometry(1, 0.045, 6, 28);
+  const chainMat = new THREE.MeshStandardMaterial({ color: 0x8f949c, metalness: 0.85, roughness: 0.35 });
+  function chainSet(T, t) {
+    const cs = new Set(t.cond || []); T.cs = cs;
+    const n = cs.has('restrained') ? 2 : cs.has('grappled') ? 1 : 0, key = `${n}|${t.size}|${T.top}`;
+    if (key === T.chainKey) return; T.chainKey = key;
+    if (T.chain) { T.fig.remove(T.chain); T.chain.children.forEach((o) => o.material.dispose()); T.chain = null; }
+    if (!n) return;
+    T.chain = new THREE.Group();
+    for (let i = 0; i < n; i++) {
+      const m = new THREE.Mesh(chainGeo, chainMat.clone()), r = 0.26 * t.size;
+      m.scale.set(r, r, r * 1.6); m.rotation.x = Math.PI / 2 + (i ? -0.22 : 0.18); m.rotation.y = i ? 0.3 : -0.2;
+      m.position.y = (T.top || 1) * (n === 1 ? 0.52 : i ? 0.62 : 0.34); m.castShadow = true; T.chain.add(m);
+    }
+    T.fig.add(T.chain);
+  }
+  // Свои материалы фигурки (модели делят материалы между собой) — для прозрачности и камня
+  function matFx(T) {
+    const cs = T.cs || NOCS, stone = cs.has('petrified') ? 1 : 0, inv = cs.has('invisible');
+    const op = inv ? 0.26 + 0.08 * Math.sin(time * 5) : T.op ?? 1;
+    if (T.anim) T.anim.mixer.timeScale = stone || cs.has('paralyzed') ? 0 : 1;
+    if (T.matBody !== T.body) {
+      if (op === 1 && !stone && !T.matBody) return;
+      T.matBody = T.body; T.stoneU = T.stoneU || { value: 0 }; T.cmats = T.cmats || [];
+      T.body.traverse((o) => {
+        if (!o.isMesh || !o.material || Array.isArray(o.material)) return;
+        const m = o.userData.own ? o.material : o.material.clone(); if (!o.userData.own) { o.material = m; T.cmats.push(m); }
+        const U = T.stoneU;
+        m.onBeforeCompile = (sh) => {
+          sh.uniforms.uStone = U;
+          sh.fragmentShader = 'uniform float uStone;\n' + sh.fragmentShader.replace('#include <dithering_fragment>', '#include <dithering_fragment>\n  gl_FragColor.rgb = mix(gl_FragColor.rgb, vec3(dot(gl_FragColor.rgb, vec3(.3,.59,.11))) * vec3(1.08,1.04,.96) + .03, uStone);');
+        };
+        m.customProgramCacheKey = () => 'stone3'; m.needsUpdate = true;
+      });
+      T.allMats = []; T.body.traverse((o) => { if (o.isMesh && o.material && !Array.isArray(o.material)) T.allMats.push(o.material); });
+      T.lastOp = -1;
+    }
+    T.stoneU.value += (stone - T.stoneU.value) * 0.15;
+    if (Math.abs(op - T.lastOp) > 0.005) { T.lastOp = op; T.allMats.forEach((m) => { m.transparent = op < 1; m.opacity = op; m.depthWrite = op > 0.5; }); }
+  }
+  function condStep(T, t, cs, dt) {
+    const s = t.size, x = T.root.position.x, z = T.root.position.z, L = Math.max(T.lie, T.pr || 0);
+    const head = T.root.position.y + T.fig.position.y + (T.top || 1) * (1 - L * 0.75), mid = T.root.position.y + T.fig.position.y + (T.top || 1) * 0.5 * (1 - L * 0.6);
+    const R = (k) => Math.random() < dt * k, j = (a) => rr(-a, a) * s;
+    if (cs.has('stunned')) for (let i = 0; i < 3; i++) { const a = time * 3.2 + (i * Math.PI * 2) / 3; SPARK.emit({ x: x + Math.cos(a) * 0.24 * s, y: head + 0.16 + Math.sin(time * 6 + i) * 0.03, z: z + Math.sin(a) * 0.24 * s, life: 0.2, size: 0.19, grow: -0.5, a: 1, c: [1, 0.86, 0.35] }); }
+    if (cs.has('charmed') && R(7)) SPARK.emit({ x: x + j(0.2), y: head - 0.05, z: z + j(0.2), vy: 0.45, vx: j(0.1), life: rr(0.8, 1.2), size: rr(0.1, 0.17), a: 0.85, c: [1, 0.42, 0.72] });
+    if (cs.has('poisoned') && R(5)) SMOKE.emit({ x: x + j(0.25), y: mid + rr(-0.3, 0.2), z: z + j(0.25), vy: 0.12, life: rr(1.2, 1.8), size: rr(0.35, 0.55) * s, grow: 0.25, a: 0.32, c: [0.36, 0.62, 0.16] });
+    if (cs.has('frightened')) { T.fig.position.x += Math.sin(time * 47) * 0.012 * s; if (R(3)) SMOKE.emit({ x: x + j(0.15), y: head + 0.05, z: z + j(0.15), vy: 0.3, life: rr(0.9, 1.3), size: rr(0.25, 0.4), grow: 0.2, a: 0.45, c: [0.2, 0.12, 0.3] }); }
+    if (cs.has('paralyzed') && R(14)) { const a = Math.random() * 6.28, r = 0.2 * s; SPARK.emit({ x: x + Math.cos(a) * r, y: mid + rr(-0.5, 0.5) * (T.top || 1) * 0.8, z: z + Math.sin(a) * r, vx: j(0.6), vy: rr(-0.4, 0.4), vz: j(0.6), drag: 0.85, life: rr(0.1, 0.22), size: rr(0.06, 0.12), a: 1, c: [0.6, 0.85, 1] }); }
+    if (cs.has('petrified') && R(0.8)) SMOKE.emit({ x: x + j(0.25), y: rr(0.05, 0.3), z: z + j(0.25), vy: 0.05, life: 1.6, size: 0.3, grow: 0.2, a: 0.25, c: [0.55, 0.53, 0.5] });
+    if (cs.has('blinded')) for (let i = 0; i < 2; i++) { const a = time * 2 + i * Math.PI + rr(-0.3, 0.3); if (R(16)) SMOKE.emit({ x: x + Math.cos(a) * 0.15 * s, y: head - 0.1 * s, z: z + Math.sin(a) * 0.15 * s, life: 0.5, size: 0.2 * s, a: 0.55, c: [0.03, 0.03, 0.04] }); }
+    if (cs.has('invisible') && R(4)) SPARK.emit({ x: x + j(0.22), y: mid + rr(-0.4, 0.4), z: z + j(0.22), life: rr(0.3, 0.6), size: 0.07, a: 0.6, c: [0.8, 0.9, 1] });
+    if (cs.has('unconscious') && R(1.4)) SPARK.emit({ x: x + 0.1, y: head + 0.1, z, vy: 0.3, vx: 0.12, life: 1.6, size: 0.14, grow: 0.08, a: 0.7, c: [0.85, 0.9, 1] });
+    if (cs.has('incapacitated') && !cs.has('stunned')) { const a = time * 2.4; SPARK.emit({ x: x + Math.cos(a) * 0.2 * s, y: head + 0.1 + 0.04 * Math.sin(time * 1.3), z: z + Math.sin(a) * 0.2 * s, life: 0.35, size: 0.08, a: 0.6, c: [0.75, 0.6, 1] }); }
+    if (cs.has('stunned') && T.anim) T.fig.rotation.z = Math.sin(time * 2.3) * 0.07;
+    if (T.chain) T.chain.children.forEach((m, i) => { m.rotation.z = time * (i ? -0.6 : 0.5); });
+    return true;
+  }
+
   // ---------- Стена огня: завеса пламени вдоль клеток ----------
   // Лента вертикальных полос по цепочке клеток; пламя — шум, бегущий вверх, раскалённое ядро внизу, рваные языки вверху
   const fireTime = { value: 0 };
@@ -2313,11 +2378,15 @@ export function create(wrap, api) {
       // Без сознания — фигурка лежит
       // (модель с анимацией смерти ложится сама — её не наклоняем, только опускаем подпись)
       const lie = (t.down || (T.anim && t.dead)) ? 1 : 0; T.lie = (T.lie || 0) + (lie - (T.lie || 0)) * Math.min(1, dt * 8); if (Math.abs(lie - T.lie) > 0.01) busy = true;
-      if (!T.anim) { T.fig.rotation.z = T.lie * 1.35; T.fig.position.x += T.lie * 0.2 * t.size; } else T.fig.rotation.z = 0;
+      const cs = T.cs || NOCS, pr = cs.has('prone') || cs.has('unconscious') ? 1 : 0; T.pr = (T.pr || 0) + (pr - (T.pr || 0)) * Math.min(1, dt * 7); if (Math.abs(pr - T.pr) > 0.01) busy = true;
+      if (!T.anim) { const L = Math.max(T.lie, T.pr); T.fig.rotation.z = L * 1.35; T.fig.position.x += L * 0.2 * t.size; T.fig.rotation.x = 0; }
+      else { T.fig.rotation.z = 0; T.fig.rotation.x = -T.pr * 1.45; T.fig.position.y += T.pr * 0.07 * t.size; T.fig.position.z = T.pr * T.top * 0.42; }
+      if (cs.size && condStep(T, t, cs, dt)) busy = true;
       T.body.rotation.y = T.spin ? T.yaw : cur.yaw; // модель смотрит, куда шла; медальон — всегда лицом к камере
-      if (T.aura) { const ar = 0.56 * t.size, ay = Math.max(ar, (T.top || 1) * 0.62); T.aura.scale.set(ar, ay, ar); T.aura.material.uniforms.uTime.value = time; T.aura.position.y = ay * 0.92 * (1 - T.lie * 0.6); busy = true; }
+      if (T.aura) { const ar = 0.56 * t.size, ay = Math.max(ar, (T.top || 1) * 0.62); T.aura.scale.set(ar, ay, ar); T.aura.material.uniforms.uTime.value = time; T.aura.position.y = ay * 0.92 * (1 - Math.max(T.lie, T.pr) * 0.6); busy = true; }
+      matFx(T);
       if (T.turn.visible) { T.turn.material.opacity = 0.55 + 0.4 * Math.sin(time * 4); const k = t.size * (1 + 0.04 * Math.sin(time * 4)); T.turn.scale.set(k, 1, k); }
-      const p = project(T.pos.x, T.pos.z, (T.top + BASE_H) * (1 - T.lie * 0.6) + 0.12 + hop + lift + sy), lx = Math.round(p.x), ly = Math.round(p.y);
+      const p = project(T.pos.x, T.pos.z, (T.top + BASE_H) * (1 - Math.max(T.lie, T.pr) * 0.6) + 0.12 + hop + lift + sy), lx = Math.round(p.x), ly = Math.round(p.y);
       if (lx !== T.lx || ly !== T.ly) { T.lx = lx; T.ly = ly; T.lab.style.transform = `translate(${lx}px, ${ly}px) translate(-50%, -100%)`; }
     });
     waterTime.value = time;

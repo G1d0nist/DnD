@@ -168,6 +168,7 @@ export function roll(list, opts = {}) {
   if (!list || !list.length) return;
   if (window.matchMedia && matchMedia('(prefers-reduced-motion: reduce)').matches) return;
   if (!renderer) init();
+  if (window.SFX) window.SFX.play('dice', { n: list.length });
   // Новый бросок убирает старые кубики
   live.splice(0).forEach((d) => { scene.remove(d.mesh); d.mesh.material.dispose(); });
   const dice = list.slice(0, 12), n = dice.length, gap = 1.25, row = Math.min(n, 6);
