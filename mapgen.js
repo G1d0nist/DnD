@@ -389,6 +389,19 @@ const MAPGEN = (() => {
   const fillAll = (G, v) => { for (let y = 0; y < G.h; y++) for (let x = 0; x < G.w; x++) G.g[y][x] = v; };
   // Свободно ли вокруг клетки внутри комнаты (чтобы не загородить вход)
   const freeAround = (G, r, x, y) => { for (let dy = -1; dy <= 1; dy++) for (let dx = -1; dx <= 1; dx++) { const nx = x + dx, ny = y + dy, o_ = nx < r.x || ny < r.y || nx >= r.x + r.w || ny >= r.y + r.h; if (o_ && G.get(nx, ny) !== 'wall') return false; } return true; };
+  // Связность: всё, куда можно ступить, должно быть достижимо от входа (sx, sy). Если часть карты отрезана предметами,
+  // поставленными генератором (cand — их клетки), убираем тот, что стоит на границе отрезанного, — и так, пока не откроется всё
+  function unblock(G, out, sx, sy, cand) {
+    const block = (x, y) => ['wall', 'furn', 'crate', 'grave'].includes(G.get(x, y)), D = [[1, 0], [-1, 0], [0, 1], [0, -1]];
+    for (let pass = 0; pass < 80; pass++) {
+      const seen = new Set([`${sx}_${sy}`]), q = [[sx, sy]];
+      while (q.length) { const [x, y] = q.pop(); D.forEach(([dx, dy]) => { const k = `${x + dx}_${y + dy}`; if (!seen.has(k) && G.inb(x + dx, y + dy) && !block(x + dx, y + dy)) { seen.add(k); q.push([x + dx, y + dy]); } }); }
+      let fix = null;
+      for (const k of cand) { const [x, y] = k.split('_').map(Number); if (!block(x, y)) continue; const nb = D.map(([dx, dy]) => [x + dx, y + dy]).filter(([a, b]) => G.inb(a, b) && !block(a, b)); if (nb.some(([a, b]) => seen.has(`${a}_${b}`)) && nb.some(([a, b]) => !seen.has(`${a}_${b}`))) { fix = [x, y, k]; break; } }
+      if (!fix) return;
+      G.set(fix[0], fix[1], 'floor'); if (out.props) delete out.props[fix[2]]; cand.delete(fix[2]);
+    }
+  }
   // Склеп и катакомбы: тесные залы с саркофагами вдоль стен, оссуарий, главная гробница
   function crypt(G, R, o, out) {
     fillAll(G, 'wall');
@@ -403,7 +416,12 @@ const MAPGEN = (() => {
       if (i > 0 && (kind === 'boss' || R.ch(o.chests ? 0.3 : 0))) out.chests.push({ x: r.x + r.w - 1, y: r.y + Math.floor(r.h / 2), room: i, boss: kind === 'boss' });
     });
     out.ground = 'stone'; out.amb = 'dark'; out.fog = 'vision';
-    if (rooms.length) { const [x, y] = cen(rooms[0]); out.start = { x, y }; }
+    if (rooms.length) {
+      const [x, y] = cen(rooms[0]); out.start = { x, y };
+      // Саркофаги вдоль стен могли перегородить проход коридора по краю зала — убираем лишние
+      const cand = new Set(); for (let j = 0; j < G.h; j++) for (let i = 0; i < G.w; i++) if (['grave', 'furn'].includes(G.get(i, j))) cand.add(`${i}_${j}`);
+      unblock(G, out, x, y, cand);
+    }
   }
   // Храм: неф со скамьями и алтарём, боковые часовни, двор с кладбищем
   function temple(G, R, o, out) {
@@ -1078,19 +1096,7 @@ const MAPGEN = (() => {
       for (let y = 1; y < G.h - 1; y++) for (let x = 1; x < G.w - 1; x++) if (G.g[y][x] === 'floor' && !inR(x, y) && !out.doors[`${x}_${y}`] && R.ch(0.22)) G.g[y][x] = 'water';
       for (let n = 0; n < Math.round(rooms.length / 2); n++) { const q = R.pick(rooms), x = R.i(q.x, q.x + q.w - 1), y = R.i(q.y, q.y + q.h - 1); if (G.get(x, y) === 'floor') G.set(x, y, 'rubble'); }
     }
-    // Связность: всё, куда можно ступить, должно быть достижимо от входа. Если часть карты отрезана предметами —
-    // убираем тот, что стоит на границе отрезанного (и так, пока не откроется всё)
-    if (rooms.length) {
-      const [sx, sy] = cen(rooms[0]), block = (x, y) => ['wall', 'furn', 'crate', 'grave'].includes(G.get(x, y)), D = [[1, 0], [-1, 0], [0, 1], [0, -1]];
-      for (let pass = 0; pass < 60; pass++) {
-        const seen = new Set([`${sx}_${sy}`]), q = [[sx, sy]];
-        while (q.length) { const [x, y] = q.pop(); D.forEach(([dx, dy]) => { const k = `${x + dx}_${y + dy}`; if (!seen.has(k) && G.inb(x + dx, y + dy) && !block(x + dx, y + dy)) { seen.add(k); q.push([x + dx, y + dy]); } }); }
-        let fix = null;
-        for (const k of placed) { const [x, y] = k.split('_').map(Number); if (!block(x, y)) continue; const nb = D.map(([dx, dy]) => [x + dx, y + dy]).filter(([a, b]) => G.inb(a, b) && !block(a, b)); if (nb.some(([a, b]) => seen.has(`${a}_${b}`)) && nb.some(([a, b]) => !seen.has(`${a}_${b}`))) { fix = [x, y, k]; break; } }
-        if (!fix) break;
-        G.set(fix[0], fix[1], 'floor'); if (out.props) delete out.props[fix[2]]; placed.delete(fix[2]);
-      }
-    }
+    if (rooms.length) { const [sx, sy] = cen(rooms[0]); unblock(G, out, sx, sy, placed); }
     // Обломки не ложатся на сундуки и на место входа
     out.chests.forEach((c) => { if (G.get(c.x, c.y) === 'rubble') G.set(c.x, c.y, 'floor'); });
     out.ground = 'stone'; out.amb = 'dark'; out.fog = 'vision';

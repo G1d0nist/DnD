@@ -487,6 +487,7 @@ export function create(wrap, api) {
     ice: { color: 0xe2f4ff, opacity: 0.3, rough: 0.05 }, lava: { lava: 1 } };
   const liquids = {}, tmpCv = document.createElement('canvas');
   let groundSig = '', mapRev = 0, glowK = 0, lavaGlow = []; // glowK — включено ли свечение; lavaGlow — откуда лава светит на берега
+  const DUNG = ['dungeon', 'crypt'];
   function paintGround() {
     TH = (S.tpl === 'dungeon' && STONE_TH[S.v]) || {};
     wallMats[0].color.set(TH.wall || 0xffffff); wallMats[1].color.set(TH.wall ? new THREE.Color(0xd0c8c0).multiply(new THREE.Color(TH.wall)) : 0xd0c8c0);
@@ -601,6 +602,36 @@ export function create(wrap, api) {
     });
     // Проём лестницы вниз — темнота
     flightAt.forEach(({ f }, k) => { if (!f.down) return; const [x, y] = k.split('_').map(Number); g.fillStyle = '#060504'; g.fillRect(x * s, y * s, s, s); });
+    // Подземелье и склеп: паутина в углах, мох и подтёки у стен, лужи, кости — нарисованы на полу (по ним можно ходить)
+    if (DUNG.includes(S.tpl)) {
+      const th = S.v || '', mossP = th === 'flooded' ? 0.45 : th === 'tomb' || S.tpl === 'crypt' ? 0.18 : 0.1, puddleP = th === 'flooded' ? 0.05 : 0.012;
+      const W_ = (x, y) => at(x, y) === 'wall';
+      (by.floor || []).forEach(([x, y]) => {
+        const k = `${x}_${y}`; if (S.doors[k]) return;
+        const Rr = mulberry(x * 92821 + y * 68917 + 5), X = x * s, Y = y * s;
+        // Паутина: угол, где сходятся две стены
+        [[0, 0, -1, -1], [1, 0, 1, -1], [0, 1, -1, 1], [1, 1, 1, 1]].forEach(([cx, cy, dx, dy]) => {
+          if (!(W_(x + dx, y) && W_(x, y + dy)) || Rr() > 0.4) return;
+          const ox = X + cx * s, oy = Y + cy * s, sx = -dx, sy = -dy, L = s * (0.45 + Rr() * 0.3);
+          g.save(); g.strokeStyle = 'rgba(225,225,230,.32)'; g.lineWidth = Math.max(1, s / 48);
+          for (let i = 0; i <= 4; i++) { const a = (i / 4) * (Math.PI / 2); g.beginPath(); g.moveTo(ox, oy); g.lineTo(ox + sx * Math.cos(a) * L, oy + sy * Math.sin(a) * L); g.stroke(); }
+          for (let r = 0.3; r <= 1; r += 0.23) { g.beginPath(); for (let i = 0; i <= 4; i++) { const a = (i / 4) * (Math.PI / 2), px = ox + sx * Math.cos(a) * L * r, py = oy + sy * Math.sin(a) * L * r; if (i) g.quadraticCurveTo(ox + sx * Math.cos(a - 0.2) * L * r * 0.85, oy + sy * Math.sin(a - 0.2) * L * r * 0.85, px, py); else g.moveTo(px, py); } g.stroke(); }
+          g.restore();
+        });
+        // Мох и сырые подтёки вдоль стены
+        [[0, -1], [0, 1], [-1, 0], [1, 0]].forEach(([dx, dy]) => {
+          if (!W_(x + dx, y + dy) || Rr() > mossP) return;
+          for (let i = 0; i < 6; i++) {
+            const t = Rr(), e = Rr() * 0.22, px = dx ? X + (dx > 0 ? s - e * s : e * s) : X + t * s, py = dy ? Y + (dy > 0 ? s - e * s : e * s) : Y + t * s, r = s * (0.05 + Rr() * 0.08);
+            g.fillStyle = `rgba(${50 + Rr() * 30},${80 + Rr() * 40},${30 + Rr() * 20},${0.35 + Rr() * 0.25})`; g.beginPath(); g.arc(px, py, r, 0, 6.29); g.fill();
+          }
+        });
+        // Лужа: тёмное пятно с бликом
+        if (Rr() < puddleP) { const px = X + s * (0.3 + Rr() * 0.4), py = Y + s * (0.3 + Rr() * 0.4), rx = s * (0.25 + Rr() * 0.25), ry = rx * (0.5 + Rr() * 0.3); g.fillStyle = 'rgba(8,12,14,.45)'; g.beginPath(); g.ellipse(px, py, rx, ry, Rr() * 3, 0, 6.29); g.fill(); g.fillStyle = 'rgba(170,190,200,.12)'; g.beginPath(); g.ellipse(px - rx * 0.3, py - ry * 0.3, rx * 0.35, ry * 0.2, 0.4, 0, 6.29); g.fill(); }
+        // Кости: пара косточек на полу
+        if (Rr() < 0.02) { g.save(); g.translate(X + s * (0.3 + Rr() * 0.4), Y + s * (0.3 + Rr() * 0.4)); g.fillStyle = 'rgba(220,210,185,.85)'; for (let i = 0; i < 2 + Math.floor(Rr() * 2); i++) { g.rotate(Rr() * 3); g.fillRect(-s * 0.14, -s * 0.018, s * 0.28, s * 0.036); [-1, 1].forEach((q) => { g.beginPath(); g.arc(q * s * 0.14, 0, s * 0.03, 0, 6.29); g.fill(); }); } g.restore(); }
+      });
+    }
     // Тень у основания стен и под предметами
     for (let y = 0; y < S.h; y++) for (let x = 0; x < S.w; x++) {
       const t = at(x, y); if (t === 'wall') continue;
@@ -896,7 +927,8 @@ export function create(wrap, api) {
   const ROOFS = { village: [0xc2a25a, 0xb08a48, 0x8a6238, 0xa07a40], city: [0xa8502e, 0x8a4630, 0x5a6470, 0x7a4a32, 0x9a5a34] };
   const SIGNS = { tavern: 0x9a3a2a, temple: 0xe8e4d8, guild: 0xc8a04a, manor: 0x5a3a6a, warehouse: 0x6e5a3c, smithy: 0x3c3c46, alchemy: 0x3f8a4a, shop: 0x2f5f9a, books: 0x8a6238, magic: 0x7a4ac0 };
   const SIDE = { n: 0, e: 1, s: 2, w: 3 }, AUTO_DECOR = { castle: ['tapestry', 'shield', 'tapestry', 'painting'], manor: ['painting', 'painting', 'mirror', 'tapestry'], temple: ['tapestry'], guild: ['map', 'shield', 'painting'], tavern: ['antlers', 'painting', 'shield'],
-    'dungeon:fort': ['shield', 'tapestry', 'shield', 'chains'], 'dungeon:cult': ['chains', 'tapestry', 'chains'], 'dungeon:temple': ['tapestry'], 'dungeon:tomb': ['chains'] };
+    'dungeon:fort': ['shield', 'tapestry', 'shield', 'chains'], 'dungeon:cult': ['chains', 'tapestry', 'chains'], 'dungeon:temple': ['relief', 'tapestry', 'relief'], 'dungeon:tomb': ['relief', 'chains', 'relief'],
+    'dungeon:classic': ['chains', 'relief', 'shield'], 'dungeon:flooded': ['relief', 'chains'], crypt: ['relief', 'chains', 'relief'] };
   let roofMesh = null;
   const WOODS = [0x8a5a2e, 0x7a4c26, 0x94683a, 0x6e4623], BLANKETS = [0x8a2f2a, 0x2f4f7a, 0x3d6b3a, 0x6a3f7a, 0x8a6a2a], BOOKS = [0x7a2a24, 0x2a4a6a, 0x34582e, 0x6a5a2a, 0x4a2e5a, 0x8a7a5a], PAPERS = [0xefe4c4, 0xe2d3a8, 0xf4ecd6, 0xd9c797];
   const CANOPY = [0xa8322a, 0x2f5f9a, 0x3f7a3a, 0x7a3f8a, 0xc8922a, 0x2a8a8a, 0xb0502a], FRUIT = [0xb8322a, 0x6a9a2a, 0xd88a2a, 0xd8c040], POTS = [0xb5653a, 0x9a5230, 0xc8825a, 0x5a7a9a, 0xd8cdb4], CLOTHS = [0xa8322a, 0x2f5f9a, 0x3f7a3a, 0x7a3f8a, 0xc8922a, 0xe6dcc2, 0x2a8a8a];
@@ -910,20 +942,22 @@ export function create(wrap, api) {
     const decor = { ...S.decor }, auto = AUTO_DECOR[`${S.tpl}:${S.v}`] || AUTO_DECOR[S.tpl];
     if (auto && !Object.keys(decor).length) Object.keys(S.map).forEach((k) => {
       if (S.map[k] !== 'wall' || S.doors[k]) return;
-      const [x, y] = k.split('_').map(Number); if (rnd(x, y, 76) > 0.14) return;
+      const [x, y] = k.split('_').map(Number); if (rnd(x, y, 76) > (DUNG.includes(S.tpl) ? 0.06 : 0.14)) return;
       const r = [2, 1, 3, 0].find((q) => S.map[`${x + D4[q][0]}_${y + D4[q][1]}`] === 'floor'); if (r == null) return;
       decor[k] = `${auto[Math.floor(rnd(x, y, 77) * auto.length)]}:${'nesw'[r]}`;
     });
+    // Мелочи на полу подземелья (объёмные, но не мешают ходить): череп, кости, мешок, свиток, обломки бочки, кандалы
+    const clutter = DUNG.includes(S.tpl) ? Object.keys(S.map).filter((k) => { if (S.map[k] !== 'floor' || S.props[k] || S.doors[k] || S.shade(k) < 0) return false; const [x, y] = k.split('_').map(Number); return rnd(x, y, 91) < 0.035; }) : [];
     const decSh = (k, v) => { const [x, y] = k.split('_').map(Number), [dx, dy] = D4[SIDE[v.split(':')[1]] ?? 2]; return S.shade(`${x + dx}_${y + dy}`); };
     const sig = `${mapRev}|${S.rooms.length}|${S.tpl}|` + cells.map(([k]) => k + S.shade(k)).join(',') + '|' + Object.keys(S.doors).length + '|' + roofs.map((q) => q.r.door + q.sh).join() + '|' + Object.keys(S.props).length + '|' + Object.entries(decor).map(([k, v]) => decSh(k, v)).join('') + '|' + S.lights.length;
-    if (sig === furnSig) return; furnSig = sig;
+    if (sig + clutter.join() === furnSig) return; furnSig = sig + clutter.join();
     if (roofMesh) { scene.remove(roofMesh); roofMesh.geometry.dispose(); roofMesh = null; }
     if (furnMesh) { scene.remove(furnMesh); furnMesh.geometry.dispose(); furnMesh = null; }
     if (masonMesh) { scene.remove(masonMesh); masonMesh.geometry.dispose(); masonMesh = null; }
     if (clothMesh) { scene.remove(clothMesh); clothMesh.geometry.dispose(); clothMesh = null; }
     if (barkMesh) { scene.remove(barkMesh); barkMesh.geometry.dispose(); barkMesh = null; }
     fires = [];
-    if (!cells.length && !roofs.length && !Object.keys(decor).length) return;
+    if (!cells.length && !roofs.length && !Object.keys(decor).length && !clutter.length) return;
     const B5 = { pos: [], nor: [], uv: [], col: [] };
     const B = { pos: [], nor: [], uv: [], col: [] }, B2 = { pos: [], nor: [], uv: [], col: [] }, B3 = { pos: [], nor: [], uv: [], col: [] }, B4 = { pos: [], nor: [], uv: [], col: [] }, at = (x, y) => S.map[`${x}_${y}`], isF = (x, y) => at(x, y) === 'furn';
     // На горном перевале мост бывает каменным (примерно в двух случаях из пяти — решает место моста)
@@ -1164,9 +1198,19 @@ export function create(wrap, api) {
       else if (kind === 'shield') { P(0, 0.6, z, 0.3, 0.36, 0.03, q < 0.5 ? 0x8a2f2a : 0x2f4f7a, 1.2); P(0, 0.6, f, 0.06, 0.36, 0.02, gold); P(0, 0.62, f, 0.3, 0.06, 0.02, gold); }
       else if (kind === 'herbs') { P(0, 0.82, z, 0.7, 0.025, 0.03, 0x4a3018); for (let i = 0; i < 5; i++) P(-0.28 + i * 0.14, 0.7, z, 0.07, 0.2, 0.05, [0x5a8a3a, 0x8a9a3a, 0x6a7a2a, 0xa08a3a, 0x7a5a8a][i]); }
       else if (kind === 'map') { P(0, 0.58, z, 0.54, 0.38, 0.015, 0xe2d3a8, 1.2); P(-0.1, 0.64, f, 0.2, 0.012, 0.01, 0x6a4a2a); P(0.08, 0.56, f, 0.012, 0.14, 0.01, 0x6a4a2a); P(0.05, 0.5, f, 0.22, 0.012, 0.01, 0x3a5a8a); P(0.15, 0.66, f, 0.035, 0.035, 0.01, 0xa03020); }
+      else if (kind === 'relief') { P(0, 0.55, z, 0.62, 0.66, 0.03, 0x8a847a); P(0, 0.55, f, 0.54, 0.58, 0.02, 0x7c766c); P(0, 0.72, f - 0.012, 0.1, 0.1, 0.02, 0xa29c92); P(0, 0.56, f - 0.012, 0.14, 0.22, 0.02, 0x9a948a); [-1, 1].forEach((s) => P(s * 0.12, 0.6, f - 0.012, 0.05, 0.16, 0.02, 0x9a948a)); P(0, 0.38, f - 0.012, 0.16, 0.12, 0.02, 0x8a847a); P(0, 0.86, f, 0.66, 0.04, 0.04, 0x6e6860); P(0, 0.24, f, 0.66, 0.04, 0.04, 0x6e6860); }
       else if (kind === 'chains') { [-0.16, 0.16].forEach((a) => { P(a, 0.86, z, 0.06, 0.06, 0.04, 0x2a2a30); for (let i = 0; i < 5; i++) P(a, 0.8 - i * 0.07, f, 0.035, 0.06, 0.035, 0x5a5a62, 1.1); P(a, 0.42, f, 0.11, 0.05, 0.05, 0x4a4a52, 1.1); }); }
       else if (kind === 'mirror') { P(0, 0.6, z, 0.36, 0.5, 0.03, gold); P(0, 0.6, f, 0.28, 0.42, 0.02, 0xbfd4dc, 1.5); }
       else if (kind === 'antlers') { P(0, 0.6, z, 0.2, 0.22, 0.03, 0x5e3d1f); [-1, 1].forEach((s) => { P(s * 0.13, 0.74, f, 0.03, 0.2, 0.03, 0xd8cfb8); P(s * 0.2, 0.82, f, 0.12, 0.03, 0.03, 0xd8cfb8); P(s * 0.25, 0.9, f, 0.03, 0.14, 0.03, 0xd8cfb8); }); }
+    });
+    clutter.forEach((k) => {
+      const [x, y] = k.split('_').map(Number), sh = S.shade(k), q = rnd(x, y, 92), X = x + 0.3 + rnd(x, y, 93) * 0.4, Z = y + 0.3 + rnd(x, y, 94) * 0.4, bone = C3(0xd8cfb8, sh), dk = C3(0x1a1612, sh);
+      if (q < 0.28) { pbox(B, X, 0.05, Z, 0.1, 0.09, 0.11, bone); pbox(B, X, 0.025, Z + 0.055, 0.07, 0.04, 0.03, bone); pbox(B, X - 0.022, 0.06, Z + 0.056, 0.025, 0.025, 0.01, dk); pbox(B, X + 0.022, 0.06, Z + 0.056, 0.025, 0.025, 0.01, dk); }
+      else if (q < 0.48) { for (let i = 0; i < 3; i++) { const a = rnd(x + i, y, 95) > 0.5; pbox(B, X + (rnd(x, y + i, 96) - 0.5) * 0.25, 0.015, Z + (rnd(x + i, y + i, 97) - 0.5) * 0.25, a ? 0.24 : 0.03, 0.03, a ? 0.03 : 0.24, bone); } }
+      else if (q < 0.64) { pbox(B, X, 0.1, Z, 0.26, 0.2, 0.22, C3(0x8a7350, sh)); pbox(B, X, 0.22, Z, 0.14, 0.06, 0.12, C3(0x7a6444, sh)); pbox(B, X, 0.255, Z, 0.06, 0.02, 0.06, C3(0x4a3a24, sh)); }
+      else if (q < 0.78) { const ax = rnd(x, y, 98) > 0.5 ? 0 : 1; plog(B, X, 0.03, Z, 0.22, 0.03, ax, C3(0xe8dcc0, sh), C3(0xc8b890, sh), 8); }
+      else if (q < 0.9) { for (let i = 0; i < 3; i++) pbox(B, X + (i - 1) * 0.09 + (rnd(x + i, y, 99) - 0.5) * 0.05, 0.012, Z + (rnd(x, y + i, 100) - 0.5) * 0.2, 0.05, 0.024, 0.3, C3(0x6e4a28, sh)); pbox(B, X + 0.15, 0.015, Z - 0.1, 0.18, 0.03, 0.03, C3(0x2e2a26, sh)); }
+      else { for (let i = 0; i < 5; i++) pbox(B, X - 0.16 + i * 0.07, 0.012, Z + Math.sin(i) * 0.03, 0.05, 0.022, 0.035, C3(0x4a4a52, sh)); [-0.2, 0.2].forEach((o) => pbox(B, X + o, 0.02, Z, 0.08, 0.04, 0.08, C3(0x3a3a42, sh))); }
     });
     // Крыши закрытых домов: два ската, фронтоны, труба; у лавок, таверны, храма — вывеска на столбе у двери
     roofs.forEach(({ r, sh }) => {

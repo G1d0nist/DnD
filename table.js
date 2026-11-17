@@ -590,6 +590,49 @@ function loadBg(src) {
   img.src = src;
 }
 // Рисунок клетки поверх заливки (без карты-подложки): крона дерева, валун, кустики, доски моста, стол; v — разнообразие
+// Предметы обстановки в плоском виде (вид предмета — в meta.gen.props): свой значок вместо рамки «мебели»
+const PROPS2D = Object.fromEntries(['pillar', 'pillar_b', 'barrel', 'statue', 'urn', 'cage', 'altar', 'candelabra', 'throne', 'rack', 'armor', 'bed', 'table'].map((k) => [k, 1]));
+function drawProp(g, p, px, py, v) {
+  const c = CELL / 2, X = px + c, Y = py + c, circ = (x, y, r, fill, stroke, lw = 1.5) => { g.beginPath(); g.arc(x, y, r, 0, Math.PI * 2); if (fill) { g.fillStyle = fill; g.fill(); } if (stroke) { g.strokeStyle = stroke; g.lineWidth = lw; g.stroke(); } };
+  g.save();
+  if (p === 'pillar') { circ(X, Y, 15, '#5e5850', 'rgba(0,0,0,.5)', 2); circ(X, Y, 11, '#8a847a'); circ(X - 3, Y - 3, 5, 'rgba(255,255,255,.12)'); }
+  else if (p === 'pillar_b') { circ(X - 2, Y + 1, 12, '#6e6860', 'rgba(0,0,0,.5)', 2); g.fillStyle = '#8a847a'; g.beginPath(); g.moveTo(X - 10, Y - 2); g.lineTo(X + 4, Y - 9); g.lineTo(X + 8, Y + 4); g.lineTo(X - 6, Y + 9); g.closePath(); g.fill(); [[13, -11], [14, 10], [-14, 12]].forEach(([dx, dy]) => circ(X + dx, Y + dy, 3, '#7c766c')); }
+  else if (p === 'barrel') { circ(X, Y, 13, '#7a5230', 'rgba(0,0,0,.55)', 2); circ(X, Y, 9, null, '#3a3530', 2); circ(X, Y, 4, '#8a6238'); }
+  else if (p === 'statue') { g.fillStyle = '#5e5850'; g.fillRect(px + 5, py + 5, CELL - 10, CELL - 10); g.strokeStyle = 'rgba(0,0,0,.5)'; g.strokeRect(px + 5, py + 5, CELL - 10, CELL - 10); circ(X, Y - 6, 5, '#b0aaa0'); g.fillStyle = '#9a948a'; g.fillRect(X - 7, Y - 1, 14, 10); g.fillStyle = '#c8c2b8'; g.fillRect(X - 1, Y - 8, 2, 18); }
+  else if (p === 'urn') { g.fillStyle = '#5e5850'; g.fillRect(px + 3, py + 12, CELL - 6, 16); [[-11, '#8a5a3a'], [0, '#a8784a'], [11, '#6a7a6a']].forEach(([dx, col]) => circ(X + dx, Y, 5.5, col, 'rgba(0,0,0,.45)', 1)); }
+  else if (p === 'cage') { circ(X, Y, 14, 'rgba(20,18,16,.5)', '#4a4a52', 2.5); g.strokeStyle = '#4a4a52'; g.lineWidth = 1.5; for (let i = -9; i <= 9; i += 6) { g.beginPath(); g.moveTo(X + i, Y - 12); g.lineTo(X + i, Y + 12); g.stroke(); } circ(X + 2, Y + 4, 3, '#d8cfb8'); }
+  else if (p === 'altar') { g.fillStyle = '#6e6860'; g.fillRect(px + 3, py + 9, CELL - 6, CELL - 18); g.fillStyle = '#ece6da'; g.fillRect(px + 6, py + 11, CELL - 12, CELL - 22); g.fillStyle = '#d4a64a'; g.fillRect(px + 6, py + c - 1, CELL - 12, 2); circ(X - 9, Y - 5, 2, '#ffd27a'); circ(X + 9, Y - 5, 2, '#ffd27a'); }
+  else if (p === 'candelabra') { circ(X, Y, 10, 'rgba(255,200,90,.18)'); circ(X, Y, 6, '#8a6a2a', '#d4a64a', 1.5); [[-5, -5], [5, -5], [0, 6]].forEach(([dx, dy]) => circ(X + dx, Y + dy, 2.3, '#ffe08a')); }
+  else if (p === 'throne') { g.fillStyle = '#5e5850'; g.fillRect(px + 4, py + 4, CELL - 8, CELL - 8); g.fillStyle = '#7a2a26'; g.fillRect(px + 10, py + 12, CELL - 20, CELL - 18); g.fillStyle = '#d4a64a'; g.fillRect(px + 8, py + 6, CELL - 16, 6); }
+  else if (p === 'rack') { g.fillStyle = '#5e3d1f'; g.fillRect(px + 4, py + 6, CELL - 8, 5); g.strokeStyle = '#b8bcc4'; g.lineWidth = 2; [10, 20, 30].forEach((dx) => { g.beginPath(); g.moveTo(px + dx, py + 10); g.lineTo(px + dx, py + 32); g.stroke(); }); }
+  else if (p === 'armor') { circ(X, Y - 9, 5, '#8a8e96', 'rgba(0,0,0,.4)', 1); g.fillStyle = '#9aa0a8'; g.fillRect(X - 9, Y - 4, 18, 14); g.fillStyle = '#5e3d1f'; g.fillRect(X - 2, Y + 10, 4, 6); }
+  else if (p === 'bed') { g.fillStyle = '#5e3d1f'; g.fillRect(px + 5, py + 3, CELL - 10, CELL - 6); g.fillStyle = ['#8a2f2a', '#2f4f7a', '#3d6b3a', '#6a3f7a', '#8a6a2a'][v]; g.fillRect(px + 7, py + 14, CELL - 14, CELL - 19); g.fillStyle = '#e8dcc0'; g.fillRect(px + 8, py + 6, CELL - 16, 7); }
+  else if (p === 'table') { g.fillStyle = '#7a5230'; g.fillRect(px + 3, py + 7, CELL - 6, CELL - 14); g.strokeStyle = 'rgba(0,0,0,.4)'; g.strokeRect(px + 3, py + 7, CELL - 6, CELL - 14); circ(X - 6, Y, 3, '#b9a07a'); circ(X + 7, Y - 2, 2.5, '#d8cdb4'); }
+  g.restore();
+}
+// Узоры на полу (плоский вид): мозаика, ритуальный круг, кровь — по клеткам из meta.gen.props
+function drawDecals(g) {
+  const P = ((game.meta || {}).gen || {}).props || {};
+  Object.entries(P).forEach(([k, p]) => {
+    if (!['mosaic', 'circle', 'blood'].includes(p) || ((game.map || {})[k] && game.map[k] !== 'floor')) return;
+    const [x, y] = k.split('_').map(Number), px = x * CELL, py = y * CELL, has = (a, b) => P[`${a}_${b}`] === p;
+    g.save();
+    if (p === 'mosaic') {
+      const cols = ['rgba(62,90,112,.55)', 'rgba(168,135,74,.55)', 'rgba(110,58,48,.55)', 'rgba(207,195,166,.5)'];
+      for (let j = 0; j < 4; j++) for (let i = 0; i < 4; i++) { g.fillStyle = cols[(x + y + i + j) % 4]; g.fillRect(px + 2 + i * 9, py + 2 + j * 9, 8, 8); }
+    } else if (p === 'circle') {
+      g.fillStyle = 'rgba(120,16,16,.22)'; g.fillRect(px, py, CELL, CELL);
+      g.strokeStyle = 'rgba(170,25,25,.8)'; g.lineWidth = 2;
+      if (!has(x, y - 1)) { g.beginPath(); g.moveTo(px, py + 2); g.lineTo(px + CELL, py + 2); g.stroke(); }
+      if (!has(x, y + 1)) { g.beginPath(); g.moveTo(px, py + CELL - 2); g.lineTo(px + CELL, py + CELL - 2); g.stroke(); }
+      if (!has(x - 1, y)) { g.beginPath(); g.moveTo(px + 2, py); g.lineTo(px + 2, py + CELL); g.stroke(); }
+      if (!has(x + 1, y)) { g.beginPath(); g.moveTo(px + CELL - 2, py); g.lineTo(px + CELL - 2, py + CELL); g.stroke(); }
+    } else {
+      g.fillStyle = 'rgba(110,10,10,.7)'; [[20, 20, 9], [11, 27, 4], [29, 12, 3.5], [31, 28, 2.5]].forEach(([dx, dy, r]) => { g.beginPath(); g.arc(px + dx, py + dy, r, 0, Math.PI * 2); g.fill(); });
+    }
+    g.restore();
+  });
+}
 function drawCell(g, type, px, py, v) {
   const c = CELL / 2;
   g.save();
@@ -723,6 +766,7 @@ function drawTerrain() {
     g.globalAlpha = 1;
   }
   // Поверх карты местность полупрозрачная — чтобы рисунок оставался виден
+  const props2d = ((game.meta || {}).gen || {}).props || {};
   Object.entries(game.map || {}).forEach(([k, type]) => {
     const [x, y] = k.split('_').map(Number), T = TERRAIN[type];
     if (!T || own3) return;
@@ -735,8 +779,10 @@ function drawTerrain() {
       for (let i = -CELL; i < CELL; i += 10) { g.moveTo(x * CELL + i, y * CELL + CELL); g.lineTo(x * CELL + i + CELL, y * CELL); }
       g.stroke();
     }
-    if (!bgImg && !(g3on && PROP3D.has(type))) drawCell(g, type, x * CELL, y * CELL, (x * 7 + y * 13) % 5); // в объёмном виде препятствия стоят на поле сами
+    const prop = type === 'furn' && PROPS2D[props2d[k]] ? props2d[k] : '';
+    if (!bgImg && !(g3on && PROP3D.has(type))) { if (prop) drawProp(g, prop, x * CELL, y * CELL, (x * 7 + y * 13) % 5); else drawCell(g, type, x * CELL, y * CELL, (x * 7 + y * 13) % 5); } // в объёмном виде препятствия стоят на поле сами
   });
+  if (!own3 && !bgImg) drawDecals(g);
   if (!own3 && !bgImg) roofs2d(g);
   // Двери: закрытая — створка поперёк клетки, открытая — откинута к краю; запертая — с замком
   // В объёмном виде двери, светильники, сундуки и мешки стоят на поле сами
