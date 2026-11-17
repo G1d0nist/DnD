@@ -20,7 +20,8 @@
 <header class="topbar">
   <div class="brand"><svg class="ic"><use href="#i-sword"/></svg><span>Лист персонажа</span> <small>D&amp;D 5.5 · 2024</small></div>
   <div class="charpick">
-    <select id="charSelect" title="Выбрать персонажа"></select>
+    <button id="charPickBtn" class="cpk-btn" data-act="charPick" title="Все персонажи"></button>
+    <select id="charSelect" title="Выбрать персонажа" hidden></select>
     <button data-act="newChar" title="Новый персонаж (мастер создания)"><svg class="ic"><use href="#i-plus"/></svg><span>Новый</span></button>
     <button data-act="dupChar" title="Копия персонажа"><svg class="ic"><use href="#i-copy"/></svg></button>
     <button data-act="exportChar" title="Экспорт в файл JSON"><svg class="ic"><use href="#i-download"/></svg><span>Экспорт</span></button>

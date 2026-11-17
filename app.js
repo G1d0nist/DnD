@@ -1671,6 +1671,8 @@ function fillBound() {
 function renderHeader() {
   const c = ch(), cb = c.combat;
   $('#charSelect').innerHTML = Object.values(state.chars).map((x) => `<option value="${x.id}" ${x.id === c.id ? 'selected' : ''}>${esc(x.info.name || 'Без имени')}${x.info.cls ? ` — ${esc(classList(x).filter((e) => e.cls).map((e) => `${e.cls} ${e.lvl}`).join(' / '))}` : ''}</option>`).join('');
+  const face = (x) => x.info.portrait ? `<img src="${x.info.portrait}" alt="">` : `<span>${esc((x.info.name || '?').trim().charAt(0).toUpperCase() || '?')}</span>`;
+  $('#charPickBtn').innerHTML = `<span class="cpk-mini">${face(c)}</span><span class="cpk-nm">${esc(c.info.name || 'Без имени')}</span><span class="cpk-n">${Object.keys(state.chars).length}</span>`;
   $('#qbName').textContent = c.info.name || 'Без имени';
   $('#qbSub').textContent = [c.info.species, c.info.cls && (isMulti(c) ? classLabel(c) : `${c.info.cls}${c.info.subclass ? ' (' + c.info.subclass + ')' : ''}`), `${lvl(c)} уровень`].filter(Boolean).join(' · ');
   document.title = `${c.info.name || 'Персонаж'} — Лист D&D 5.5`;
@@ -3619,6 +3621,21 @@ const ACT = {
   },
   portraitDel() { const c = ch(); if (!c.info.portrait || !confirmBox('Убрать портрет?')) return; c.info.portrait = ''; c.updatedAt = Date.now(); save(); render(); },
   newChar() { openWizard('new'); },
+  // Выбор персонажа карточками: портрет, вид и класс, уровень, хиты и КД; текущий подсвечен
+  charPick() {
+    const face = (x) => x.info.portrait ? `<img src="${x.info.portrait}" alt="">` : `<span>${esc((x.info.name || '?').trim().charAt(0).toUpperCase() || '?')}</span>`;
+    const cards = Object.values(state.chars).map((x) => {
+      const cb = x.combat || {}, hp = +cb.hp || 0, mx = Math.max(1, +cb.hpMax || 1), pct = clamp(hp / mx, 0, 1);
+      const sub = [x.info.species, classLabel(x) || x.info.cls].filter(Boolean).join(' · ');
+      return `<button class="cpk-card${x.id === state.current ? ' on' : ''}" data-act="charGo" data-id="${x.id}">
+        <span class="cpk-face">${face(x)}<b class="cpk-lv" title="Уровень">${lvl(x)}</b></span>
+        <span class="cpk-body"><b class="cpk-name">${esc(x.info.name || 'Без имени')}</b><span class="cpk-sub">${esc(sub || 'класс не выбран')}</span>
+          <span class="cpk-meta"><span class="cpk-hp" title="Хиты"><i style="width:${(pct * 100).toFixed(0)}%;background:${pct > 0.5 ? '#5a9e5a' : pct > 0.25 ? '#d4a64a' : '#c94a3d'}"></i><em>${hp} / ${mx}</em></span><span class="cpk-ac" title="Класс доспеха">${cb.ac || 10}</span></span></span>
+      </button>`;
+    }).join('');
+    openModal(`<h2>Персонажи</h2><div class="cpk-grid">${cards}<button class="cpk-card cpk-new" data-act="newChar"><span class="cpk-face"><span>＋</span></span><span class="cpk-body"><b class="cpk-name">Новый персонаж</b><span class="cpk-sub">мастер создания</span></span></button></div>`);
+  },
+  charGo(el) { if (el.dataset.id !== state.current) { state.current = el.dataset.id; openSet.clear(); pendingConc = 0; abilEdit = false; } closeModal(); },
   newBlank() { closeModal(); const c = blankChar(); state.chars[c.id] = c; state.current = c.id; openSet.clear(); switchTab('main'); toast('Создан новый персонаж'); },
   originWizard() { openWizard('origin'); },
   wizNext() { if (!wizError(W.step)) { W.step = Math.min(wizLast(), W.step + 1); renderWizard(); } },
@@ -4108,7 +4125,7 @@ const ACT = {
   goTab(el) { switchTab(el.dataset.tabGo); },
 };
 // Действия, которые не меняют персонажа (не нужно сохранять/перерисовывать)
-const NO_RENDER = new Set(['exportChar', 'importChar', 'toggleDice', 'clearLog', 'closeModal', 'skillInfo', 'condInfo', 'masteryInfo', 'addSpellDb', 'shortRest','addAttack', 'editAttack', 'addSpellCustom', 'editSpell', 'addItem', 'editItem', 'addResource', 'editRes', 'addFeature', 'editFeature', 'goTab', 'abilGen', 'genMode', 'genPb', 'genRoll', 'genReset', 'levelUp', 'lvlRoll', 'openCatalog', 'catTab', 'addEffect', 'sneak', 'bardDie', 'radiantStrike', 'addFeat', 'featSpells', 'masteryPick', 'undo', 'newChar', 'originWizard', 'wizNext', 'wizPrev', 'wizGo']);
+const NO_RENDER = new Set(['charPick', 'exportChar', 'importChar', 'toggleDice', 'clearLog', 'closeModal', 'skillInfo', 'condInfo', 'masteryInfo', 'addSpellDb', 'shortRest','addAttack', 'editAttack', 'addSpellCustom', 'editSpell', 'addItem', 'editItem', 'addResource', 'editRes', 'addFeature', 'editFeature', 'goTab', 'abilGen', 'genMode', 'genPb', 'genRoll', 'genReset', 'levelUp', 'lvlRoll', 'openCatalog', 'catTab', 'addEffect', 'sneak', 'bardDie', 'radiantStrike', 'addFeat', 'featSpells', 'masteryPick', 'undo', 'newChar', 'originWizard', 'wizNext', 'wizPrev', 'wizGo']);
 
 // Высота закреплённой шапки — под ней закрепляется панель вкладок (на телефоне шапка не закреплена)
 function syncStickyOffset() {
