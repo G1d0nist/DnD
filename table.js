@@ -591,7 +591,7 @@ function loadBg(src) {
 }
 // Рисунок клетки поверх заливки (без карты-подложки): крона дерева, валун, кустики, доски моста, стол; v — разнообразие
 // Предметы обстановки в плоском виде (вид предмета — в meta.gen.props): свой значок вместо рамки «мебели»
-const PROPS2D = Object.fromEntries(['pillar', 'pillar_b', 'barrel', 'statue', 'urn', 'cage', 'altar', 'candelabra', 'throne', 'rack', 'armor', 'bed', 'table', 'books', 'potions', 'lectern', 'cauldron', 'alembic', 'orb'].map((k) => [k, 1]));
+const PROPS2D = Object.fromEntries(['pillar', 'pillar_b', 'barrel', 'statue', 'urn', 'cage', 'altar', 'candelabra', 'throne', 'rack', 'armor', 'bed', 'table', 'books', 'potions', 'lectern', 'cauldron', 'alembic', 'orb', 'menhir', 'menhir_s', 'menhir_f', 'slab', 'log_w', 'log_e', 'log_n', 'log_s', 'rib_n', 'rib_s', 'rib_w', 'rib_e', 'gskull_w', 'gskull_n', 'spine_w', 'spine_n'].map((k) => [k, 1]));
 function drawProp(g, p, px, py, v) {
   const c = CELL / 2, X = px + c, Y = py + c, circ = (x, y, r, fill, stroke, lw = 1.5) => { g.beginPath(); g.arc(x, y, r, 0, Math.PI * 2); if (fill) { g.fillStyle = fill; g.fill(); } if (stroke) { g.strokeStyle = stroke; g.lineWidth = lw; g.stroke(); } };
   g.save();
@@ -612,6 +612,13 @@ function drawProp(g, p, px, py, v) {
   else if (p === 'cauldron') { circ(X, Y, 13, '#1e1e22', '#4a4a52', 2); circ(X, Y, 9, '#4a8a3a'); circ(X - 3, Y - 2, 2, '#9ad86a'); circ(X + 4, Y + 3, 1.5, '#9ad86a'); }
   else if (p === 'alembic') { g.fillStyle = '#5e3d1f'; g.fillRect(px + 3, py + 8, CELL - 6, CELL - 16); [[-10, '#5ac8f0'], [0, '#c85af0'], [10, '#5af08a']].forEach(([dx, col]) => circ(X + dx, Y, 4, col, 'rgba(255,255,255,.5)', 1)); }
   else if (p === 'orb') { g.fillStyle = '#5e5850'; g.fillRect(px + 8, py + 8, CELL - 16, CELL - 16); circ(X, Y, 7, '#9a6cf0', 'rgba(255,255,255,.6)', 1.5); circ(X - 2, Y - 2, 2, 'rgba(255,255,255,.7)'); }
+  else if (p === 'menhir' || p === 'menhir_s') { const k = p === 'menhir' ? 1 : 0.7; g.fillStyle = '#7c766c'; g.beginPath(); g.ellipse(X, Y, 9 * k, 13 * k, 0.2, 0, Math.PI * 2); g.fill(); g.strokeStyle = 'rgba(0,0,0,.45)'; g.lineWidth = 1.5; g.stroke(); circ(X - 2, Y - 3, 3 * k, '#6a7a4a'); }
+  else if (p === 'menhir_f') { g.fillStyle = '#7c766c'; g.fillRect(px + 4, py + 12, CELL - 8, 14); g.strokeStyle = 'rgba(0,0,0,.45)'; g.strokeRect(px + 4, py + 12, CELL - 8, 14); }
+  else if (p === 'slab') { g.fillStyle = '#6e6860'; g.fillRect(px + 3, py + 9, CELL - 6, CELL - 18); circ(X + 4, Y, 3, '#6a2a20'); }
+  else if (p.startsWith('log_')) { const d = p.slice(4), hz = d === 'w' || d === 'e'; g.fillStyle = '#5e4630'; if (hz) g.fillRect(d === 'w' ? px + 4 : px, py + 12, CELL - 4, 16); else g.fillRect(px + 12, d === 'n' ? py + 4 : py, 16, CELL - 4); if (d === 'w' || d === 'n') { g.fillStyle = '#b8905a'; if (hz) g.fillRect(px + 4, py + 12, 4, 16); else g.fillRect(px + 12, py + 4, 16, 4); } }
+  else if (p.startsWith('rib_')) { const d = p.slice(4); g.strokeStyle = '#d8cfb8'; g.lineWidth = 4; g.beginPath(); if (d === 'n' || d === 's') g.arc(X, d === 'n' ? py + CELL : py, 14, d === 'n' ? Math.PI * 1.1 : Math.PI * 0.1, d === 'n' ? Math.PI * 1.9 : Math.PI * 0.9); else g.arc(d === 'w' ? px + CELL : px, Y, 14, d === 'w' ? Math.PI * 0.6 : -Math.PI * 0.4, d === 'w' ? Math.PI * 1.4 : Math.PI * 0.4); g.stroke(); }
+  else if (p.startsWith('spine_')) { const hz = p === 'spine_w'; g.fillStyle = '#d8cfb8'; for (let i = 0; i < 3; i++) { if (hz) g.fillRect(px + 3 + i * 13, py + 13, 9, 14); else g.fillRect(px + 13, py + 3 + i * 13, 14, 9); } }
+  else if (p.startsWith('gskull_')) { circ(X, Y, 15, '#d8cfb8', 'rgba(0,0,0,.4)', 1.5); circ(X - 5, Y - 3, 3.5, '#2a241c'); circ(X + 5, Y - 3, 3.5, '#2a241c'); g.fillStyle = '#2a241c'; g.fillRect(X - 6, Y + 6, 12, 2); }
   else if (p === 'table') { g.fillStyle = '#7a5230'; g.fillRect(px + 3, py + 7, CELL - 6, CELL - 14); g.strokeStyle = 'rgba(0,0,0,.4)'; g.strokeRect(px + 3, py + 7, CELL - 6, CELL - 14); circ(X - 6, Y, 3, '#b9a07a'); circ(X + 7, Y - 2, 2.5, '#d8cdb4'); }
   g.restore();
 }
@@ -647,12 +654,16 @@ function drawDecals(g) {
     g.restore();
   });
 }
+const SEASON2D = { summer: { tree: ['#2f6b2a', '#3a7a30', '#2a5e26', '#356f2c', '#2d6629'], bush: '#4f8a3a' },
+  autumn: { tree: ['#b8601e', '#c88a24', '#9a3a1c', '#2f5a2a', '#c8702a'], bush: '#a8742a' }, winter: { tree: ['#d8e2ea', '#2f5a3a', '#c8d4de', '#e2eaf0', '#2a4e34'], bush: '#c8d2da' },
+  spring: { tree: ['#4a9a3a', '#e8a8c4', '#5aa844', '#f0c0d4', '#4e9e3e'], bush: '#5fa848' } };
+const seasonNow = () => (game && game.meta && game.meta.season) || 'summer';
 function drawCell(g, type, px, py, v) {
   const c = CELL / 2;
   g.save();
   if (type === 'tree') {
     g.fillStyle = '#4a3220'; g.fillRect(px + c - 3, py + c + 4, 6, 10);
-    g.fillStyle = ['#2f6b2a', '#3a7a30', '#2a5e26', '#356f2c', '#2d6629'][v];
+    g.fillStyle = (SEASON2D[seasonNow()] || SEASON2D.summer).tree[v];
     g.beginPath(); g.arc(px + c, py + c - 1, 14 + (v % 3), 0, Math.PI * 2); g.fill();
     g.fillStyle = 'rgba(255,255,255,.08)'; g.beginPath(); g.arc(px + c - 5, py + c - 6, 6, 0, Math.PI * 2); g.fill();
   } else if (type === 'rock') {
@@ -660,7 +671,7 @@ function drawCell(g, type, px, py, v) {
     g.beginPath(); g.moveTo(px + 6, py + 30); g.lineTo(px + 10 + v, py + 10); g.lineTo(px + 24, py + 6 + v); g.lineTo(px + 34, py + 16); g.lineTo(px + 32, py + 32); g.closePath(); g.fill();
     g.strokeStyle = 'rgba(0,0,0,.35)'; g.stroke();
   } else if (type === 'bush') {
-    g.fillStyle = '#4f8a3a';
+    g.fillStyle = (SEASON2D[seasonNow()] || SEASON2D.summer).bush;
     [[12, 26], [22, 20], [30, 28]].forEach(([dx, dy]) => { g.beginPath(); g.arc(px + dx, py + dy - v, 6, 0, Math.PI * 2); g.fill(); });
   } else if (type === 'bridge') {
     g.strokeStyle = 'rgba(60,35,15,.8)'; g.lineWidth = 2;
@@ -922,6 +933,7 @@ function timeDialog() {
   app.openModal(`<h2>🕰 Время кампании</h2><p><b>${esc(travelClock(T))}</b> · ${dp.ic} ${dp.n}</p>
     <div class="row gap wrap">${[['10м', 1 / 6], ['+1 ч', 1], ['+4 ч', 4], ['+8 ч', 8]].map(([n, h]) => `<button data-tm="${h}">${n.replace(/^(\d)/, '+$1')}</button>`).join('')}<button data-tm="morning">🌅 До утра</button></div>
     <label class="check mt"><input type="checkbox" id="tmLight" ${on ? 'checked' : ''}> Освещение по времени суток (день — светло, сумерки — тускло, ночь — темно; в объёмном виде солнце идёт по небу)</label>
+    <label class="mt">Время года (листва и трава на картах под открытым небом)<select id="tmSeason">${SEASON_N.map(([k, n]) => `<option value="${k}" ${((game.meta || {}).season || '') === k ? 'selected' : ''}>${n}</option>`).join('')}</select></label>
     <label class="mt">Погода (в объёмном виде, под открытым небом)<select id="tmWeather">${WEATHER.map(([k, n]) => `<option value="${k}" ${((game.meta || {}).weather || '') === k ? 'selected' : ''}>${n}</option>`).join('')}</select></label>
     <p class="muted small">Короткий отдых сдвигает часы на час, долгий — на 8 часов. Путешествие по карте мира тоже идёт по этим часам.</p>
     <div class="modal-actions"><button class="primary" data-act="closeModal">Готово</button></div>`);
@@ -933,6 +945,10 @@ function timeDialog() {
     timeDialog(); drawFog(); drawTerrain();
   }));
   $('#tmLight').addEventListener('change', () => { R.update(ref(gpath('meta')), { timeLight: $('#tmLight').checked || null }).catch(() => {}); });
+  $('#tmSeason').addEventListener('change', () => {
+    const v = $('#tmSeason').value; R.update(ref(gpath('meta')), { season: v || null }).catch(() => {});
+    addLog({ kind: 'sys', txt: `Время года: ${(SEASON_N.find(([k]) => k === v) || SEASON_N[0])[1]}` });
+  });
   $('#tmWeather').addEventListener('change', () => {
     const w = $('#tmWeather').value;
     R.update(ref(gpath('meta')), { weather: w || null }).catch(() => {});
@@ -6431,7 +6447,7 @@ function genDialog() {
       <label>Густота<input type="range" id="gD" min="0" max="1" step="0.05" value="${st.d != null ? st.d : 0.3}"></label>
       <label id="gVBox">Вариант<select id="gV"></select></label>
       <label>Освещение${sel('gA', AMB_N)}</label><label>Туман войны${sel('gF', FOG_N)}</label>
-      <label id="gWxBox">Погода${sel('gWx', WEATHER_N)}</label>
+      <label id="gWxBox">Погода${sel('gWx', WEATHER_N)}</label><label id="gSeBox">Время года${sel('gSe', SEASON_N)}</label>
       <label class="check"><input type="checkbox" id="gRoad"> Дорога</label>
       <label class="check"><input type="checkbox" id="gChest"> Сундуки с добычей</label></div>
     <h3 class="mt">Заселение</h3>
@@ -6453,7 +6469,7 @@ function genDialog() {
     $('#gA').value = probe.amb; $('#gF').value = probe.fog; $('#popPeace').checked = !!t.peaceful;
     $('#gName').value = t.n.replace(/^\S+\s/, '');
     $('#gVBox').hidden = !t.variants;
-    $('#gWxBox').hidden = !isOutdoor(tpl); $('#gWx').value = 'clear';
+    $('#gWxBox').hidden = !isOutdoor(tpl); $('#gWx').value = 'clear'; $('#gSeBox').hidden = !isOutdoor(tpl); $('#gSe').value = (game.meta || {}).season || '';
     $('#gV').innerHTML = `<option value="">случайно</option>${(t.variants || []).map(([v, n]) => `<option value="${v}">${n}</option>`).join('')}`;
   };
   const draw = () => {
@@ -6476,10 +6492,12 @@ function genDialog() {
   $('#gRe').onclick = () => { genSeed = Math.floor(Math.random() * 1e9); draw(); };
   $('#gOk').onclick = () => { const P = popOptsRead(), isWorld = T[tpl].kind === 'world'; genApply({ ...res, tpl }, { lvl: P.lvl, amb: $('#gA').value, fog: $('#gF').value, asScene: $('#gScene').checked,
     name: $('#gName').value.trim() || T[tpl].n.replace(/^\S+\s/, ''), clearNpc: $('#gNpc').checked || isWorld, peaceful: !!T[tpl].peaceful, pop: $('#gPop').checked && !isWorld ? P : null, seed: genSeed,
-    weather: isOutdoor(tpl) ? $('#gWx').value : 'clear' }); };
+    weather: isOutdoor(tpl) ? $('#gWx').value : 'clear', season: isOutdoor(tpl) ? $('#gSe').value : null }); };
   setTpl(); draw();
 }
 // Погода и время суток для карт под открытым небом: меняет свет, обзор и местность
+// Время года (вид местности: листва, трава, иней) — выбор в генераторе и в окне времени
+const SEASON_N = [['', '☀ лето'], ['autumn', '🍂 осень'], ['winter', '❄ зима'], ['spring', '🌸 весна']];
 const WEATHER_N = [['clear', '☀ ясно'], ['night', '🌙 ночь'], ['fog', '🌫 туман'], ['rain', '🌧 дождь'], ['snow', '❄ снег']];
 const isOutdoor = (tpl) => { const t = MAPGEN.TEMPLATES[tpl] || {}; return t.kind === 'terrain' || t.kind === 'world' || !!t.connect || ['graveyard', 'ship', 'arena', 'fair', 'tower', 'manor'].includes(tpl); };
 function applyWeather(res, o) {
@@ -6550,6 +6568,7 @@ async function genApply(res, o) {
   const gen = { tpl: res.tpl, rooms: res.rooms, start: res.start, ...(res.floors ? { seed: res.seed, v: res.v || '', floor: res.floor || 1, floors: res.floors } : {}), ...(res.flights ? { flights: res.flights } : {}),
     ...(res.props ? { props: res.props, decor: res.decor || null, v: res.v || '' } : {}) };
   upd['meta/gen'] = gen;
+  if (o.season !== undefined) upd['meta/season'] = o.season || null;
   // Заметки мастеру от генератора (ловушки, загадки, сокровищница): СЛ и урон — по уровню группы
   if (res.notes && res.notes.length) {
     const dc = [12, 14, 16, 18][tier], dmg = ['2d10', '4d10', '10d10', '18d10'][tier], fall = ['3d6', '6d6', '10d6', '15d6'][tier];
@@ -8910,7 +8929,7 @@ function g3State() {
   const gen = (game.meta || {}).gen || {}, rocky = (game.meta || {}).ground === 'stone' && (gen.tpl ? ['mountains', 'pass', 'volcano'].includes(gen.tpl) : (f.amb || 'bright') !== 'dark');
   const sky = skyOpen();
   const hour = (game.meta || {}).timeLight ? gameHour() % 24 : null, weather = sky ? (game.meta || {}).weather || '' : '';
-  return { sky, hour, weather, rocky, rooms: gen.rooms || [], tpl: gen.tpl || '', v: gen.v || '', flights: gen.flights || [], props: gen.props || {}, decor: gen.decor || {}, w: W(), h: H(), bg: !!bgImg, ground: (game.meta || {}).ground || '', map: bgImg ? {} : game.map || {}, doors: game.doors || {}, chests: Object.values(game.chests || {}).map((C) => ({ x: C.x, y: C.y, o: !!C.o, l: +C.lock && !C.lk ? 1 : 0 })), drops: Object.values(game.drops || {}).map((D) => ({ x: D.x, y: D.y })), lights: lights.filter((L) => cellShade(`${Math.floor(L.x)}_${Math.floor(L.y)}`) >= 0), amb, shade: cellShade };
+  return { sky, hour, weather, season: sky ? (game.meta || {}).season || '' : '', rocky, rooms: gen.rooms || [], tpl: gen.tpl || '', v: gen.v || '', flights: gen.flights || [], props: gen.props || {}, decor: gen.decor || {}, w: W(), h: H(), bg: !!bgImg, ground: (game.meta || {}).ground || '', map: bgImg ? {} : game.map || {}, doors: game.doors || {}, chests: Object.values(game.chests || {}).map((C) => ({ x: C.x, y: C.y, o: !!C.o, l: +C.lock && !C.lk ? 1 : 0 })), drops: Object.values(game.drops || {}).map((D) => ({ x: D.x, y: D.y })), lights: lights.filter((L) => cellShade(`${Math.floor(L.x)}_${Math.floor(L.y)}`) >= 0), amb, shade: cellShade };
 }
 // Области, которые держатся на поле, и стены заклинаний — для частиц и объёмных стен; только видимые клетки
 // Нити концентрации: от заклинателя к его зоне (центр клеток) или к цели эффекта

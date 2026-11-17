@@ -397,8 +397,12 @@ export function create(wrap, api) {
     g.fillStyle = 'rgba(255,240,220,.12)'; path(-r * 0.15, -r * 0.2); g.fill();
   }
   // Закрасить прямоугольник грунтом: пятна, крапинки, травинки, камешки, трещины льда, жилы лавы
+  // Трава по времени года: осенью — жухлая, зимой — в инее, весной — сочная
+  const SOIL_SEASON = { autumn: { grass: ['#4a4426', ['#5a5030', '#3c3620', '#6a5a32'], '#86743a'], shade: ['#3a2e1c', ['#46381f', '#2e2416', '#544226'], '#6a5428'] },
+    winter: { grass: ['#8e9aa6', ['#a4b0bc', '#7c8894', '#b8c4cf'], '#c8d2dc'], shade: ['#6c7884', ['#7a8692', '#5e6a76', '#8894a0'], '#a0acb8'] },
+    spring: { grass: ['#355a26', ['#43702f', '#2a4a20', '#5a8a3c'], '#78a84a'], shade: ['#223a1c', ['#2c4622', '#1a2e16', '#355228'], '#4a6e32'] } };
   function soil(g, kind, x0, y0, w, h, s, R) {
-    const [base, tones, blade] = SOIL[kind], n = (w * h) / (s * s), pick = () => tones[Math.floor(R() * tones.length)];
+    const [base, tones, blade] = (SOIL_SEASON[S.season] || {})[kind] || SOIL[kind], n = (w * h) / (s * s), pick = () => tones[Math.floor(R() * tones.length)];
     g.fillStyle = base; g.fillRect(x0, y0, w, h);
     for (let i = 0; i < n * 1.8; i++) { const x = x0 + R() * w, y = y0 + R() * h, r = s * (0.3 + R() * 0.9), c = pick(), gr = g.createRadialGradient(x, y, 0, x, y, r); gr.addColorStop(0, rgba(c, 0.55)); gr.addColorStop(1, rgba(c, 0)); g.fillStyle = gr; g.fillRect(x - r, y - r, r * 2, r * 2); }
     for (let i = 0; i < n * 40; i++) { g.fillStyle = R() < 0.4 ? 'rgba(0,0,0,.16)' : rgba(pick(), 0.6); const d = (1 + R() * 2.2) * (s / 64); g.fillRect(x0 + R() * w, y0 + R() * h, d, d); }
@@ -491,7 +495,7 @@ export function create(wrap, api) {
   function paintGround() {
     TH = (S.tpl === 'dungeon' && STONE_TH[S.v]) || {};
     wallMats[0].color.set(TH.wall || 0xffffff); wallMats[1].color.set(TH.wall ? new THREE.Color(0xd0c8c0).multiply(new THREE.Color(TH.wall)) : 0xd0c8c0);
-    const map = S.map, sig = `${S.w}x${S.h}|${S.ground}${S.rocky ? 'r' : ''}|${S.tpl}|${S.v || ''}|${JSON.stringify(S.flights)}|${Object.keys(S.props).length}|` + Object.entries(map).map(([k, t]) => k + t).join(',');
+    const map = S.map, sig = `${S.w}x${S.h}|${S.ground}${S.rocky ? 'r' : ''}|${S.tpl}|${S.v || ''}|${S.season || ''}|${JSON.stringify(S.flights)}|${Object.keys(S.props).length}|` + Object.entries(map).map(([k, t]) => k + t).join(',');
     if (sig === groundSig) return; groundSig = sig; mapRev++; planRev = mapRev; classify();
     // Текстура пола: на телефонах не больше 2560 точек по длинной стороне (видеопамять)
     const s = Math.max(20, Math.min(64, Math.floor((fine ? 4096 : 2560) / Math.max(S.w, S.h)))), W = S.w * s, H = S.h * s;
@@ -766,9 +770,20 @@ export function create(wrap, api) {
   let propSig = '', doorSig = '', lampSig = '', stale = true, S = null;
   const rnd = (x, y, n) => { const v = Math.sin(x * 127.1 + y * 311.7 + n * 74.7) * 43758.5453; return v - Math.floor(v); };
   const GRAVES = ['grave', 'grave', 'grave2', 'grave2', 'grave3', 'grave4'], RIG = { grave: [0.14, 0.5], grave2: [0.12, 0.5], grave3: [0.05, 0.7], grave4: [0.55, 0.9], crate: [0, 6.28], palm: [0.1, 6.28, 0.16] }; // наклон, поворот, разброс размера
+  // Листва по времени года: осенью лиственные деревья рыжие, жёлтые и красные (ели темнеют), зимой ели под снегом,
+  // а лиственные стоят голыми (крона почти белая и прозрачная — иней), весной часть деревьев в розовом цвету
+  const AUTUMN = [0xc8641e, 0xd8a028, 0xa83a1e, 0xb88a2a, 0xc87a2a];
+  function seasonCol(p, x, y, pi) {
+    const s = S.season; if (!s || (p.m !== leafMat && p.m !== firMat)) return p.c;
+    const q = rnd(x, y, 61);
+    if (s === 'autumn') return p.m === leafMat ? AUTUMN[Math.floor(q * AUTUMN.length)] : new THREE.Color(p.c).multiplyScalar(0.75).getHex();
+    if (s === 'winter') return p.m === firMat ? new THREE.Color(p.c).lerp(new THREE.Color(0xe6eef6), pi % 2 ? 0.55 : 0.75).getHex() : 0xdfe7ee;
+    if (s === 'spring') return p.m === leafMat && q < 0.35 ? (q < 0.17 ? 0xf0b8cc : 0xf6d6e2) : new THREE.Color(p.c).offsetHSL(0.02, 0.08, 0.05).getHex();
+    return p.c;
+  }
   function buildProps() {
     const cells = Object.entries(S.map).filter(([k, t]) => PROPS[t] && S.shade(k) >= 0 && !massif.has(k) && !flightAt.has(k));
-    const sig = `${S.w}x${S.h}|${mapRev}|` + cells.map(([k, t]) => `${k}${t}${S.shade(k)}`).join(',');
+    const sig = `${S.w}x${S.h}|${mapRev}|${S.season || ''}|` + cells.map(([k, t]) => `${k}${t}${S.shade(k)}`).join(',');
     if (sig === propSig) return; propSig = sig;
     propBox.children.slice().forEach((m) => { propBox.remove(m); m.dispose(); });
     const leafy = !['snow', 'sand'].includes(S.ground), by = {};
@@ -790,7 +805,7 @@ export function create(wrap, api) {
         // Предмет из нескольких частей (надгробие) наклоняется и поворачивается целиком
         if (rig) { Q.setFromEuler(E.set((rnd(x, y, 93) - 0.5) * rig[0], (rnd(x, y, 94) - 0.5) * rig[1], (rnd(x, y, 95) - 0.5) * rig[0])); const gs = 1 + (rnd(x, y, 96) - 0.5) * 2 * (rig[2] || 0); M.premultiply(GM.compose(P.set(x + 0.5, 0, y + 0.5), Q, ZERO.set(gs, gs, gs))); }
         im.setMatrixAt(i, M);
-        im.setColorAt(i, C.set(p.c).offsetHSL((rnd(x, y, p.vi ? 11 + pi * 3 : 11) - 0.5) * (p.vi ? 0.1 : 0.06), 0, 0).multiplyScalar(S.shade(k) * (0.88 + rnd(x, y, 9 + (p.vi ? pi : 0)) * 0.24)));
+        im.setColorAt(i, C.set(seasonCol(p, x, y, pi)).offsetHSL((rnd(x, y, p.vi ? 11 + pi * 3 : 11) - 0.5) * (p.vi ? 0.1 : 0.06), 0, 0).multiplyScalar(S.shade(k) * (0.88 + rnd(x, y, 9 + (p.vi ? pi : 0)) * 0.24)));
       });
       im.instanceMatrix.needsUpdate = true; if (im.instanceColor) im.instanceColor.needsUpdate = true;
       propBox.add(im);
@@ -1048,7 +1063,24 @@ export function create(wrap, api) {
         pbox(B, X, 0.03, Z, 0.28, 0.06, 0.28, gold); pbox(B, X, 0.1, Z, 0.14, 0.08, 0.14, gold); pbox(B, X, 0.44, Z, 0.045, 0.7, 0.045, gold); pbox(B, X, 0.8, Z, r & 1 ? 0.05 : 0.42, 0.035, r & 1 ? 0.42 : 0.05, gold);
         [-0.19, 0, 0.19].forEach((a) => { const px = X + (r & 1 ? 0 : a), pz = Z + (r & 1 ? a : 0), up = a ? 0 : 0.05; pbox(B, px, 0.835 + up, pz, 0.07, 0.03, 0.07, gold); pbox(B, px, 0.9 + up, pz, 0.035, 0.1, 0.035, wax); });
       } else if (p === 'lectern') { P(0, 0.04, 0, 0.4, 0.08, 0.4, 0x4a3018); P(0, 0.34, 0, 0.12, 0.56, 0.12, 0x5e3d1f); P(0, 0.65, 0, 0.5, 0.05, 0.38, 0x5e3d1f); P(0, 0.69, 0, 0.34, 0.03, 0.26, 0xefe4c4, 1.2); P(0, 0.692, 0, 0.012, 0.032, 0.26, 0x7a2a24); }
-      else if (p === 'statue') { // статуя на постаменте: воин с мечом у груди
+      else if (p === 'menhir' || p === 'menhir_s' || p === 'menhir_f') { // стоячий камень (малый — у кургана; упавший — лежит), чуть наклонён, с лишайником
+        const st = (c) => C3(c, sh), H = p === 'menhir' ? 1.3 + hs(1) * 0.5 : 0.55 + hs(1) * 0.2, w = p === 'menhir' ? 0.56 : 0.38;
+        if (p === 'menhir_f') { const ax = hs(2) > 0.5; pbox(B, X, 0.14, Z, ax ? 0.95 : 0.4, 0.28, ax ? 0.4 : 0.95, st(0x8a8478)); pbox(B, X + (ax ? 0.2 : 0.05), 0.29, Z + (ax ? 0.05 : 0.2), 0.25, 0.02, 0.18, st(0x6a7a4a)); }
+        else { const P2 = part(cx, cy, Math.floor(hs(3) * 4), sh); for (let i = 0; i < 4; i++) { const t = i / 4, ww = w * (1 - t * 0.25); P2((hs(4) - 0.5) * 0.06 * i, (H / 4) * (i + 0.5), 0, ww, H / 4 + 0.01, ww * 0.62, 0x8a8478); } P2(0.05, H * 0.35, w * 0.28, 0.16, 0.2, 0.02, 0x6a7a4a); }
+      } else if (p === 'slab') { pbox(B, X, 0.12, Z, 0.9, 0.24, 0.6, C3(0x7c766c, sh)); pbox(B, X, 0.25, Z, 0.8, 0.02, 0.5, C3(0x8a847a, sh)); pbox(B, X + 0.1, 0.26, Z, 0.2, 0.01, 0.2, C3(0x6a2a20, sh)); }
+      else if (p.startsWith('log_')) { // поваленный ствол на две клетки: эта клетка — его половина (кора, у конца — срез с кольцами)
+        const d = p.slice(4), ax = d === 'w' || d === 'e' ? 0 : 1, end = d === 'w' || d === 'n' ? -1 : 1, bark = C3(0x5e4630, sh), cut = C3(0xb8905a, sh);
+        plog(B, X + (ax ? 0 : end * 0.05), 0.2, Z + (ax ? end * 0.05 : 0), 0.9, 0.2, ax, bark, cut, 9, B4);
+        if (end > 0) { const bx = X + (ax ? 0.12 : 0.2), bz = Z + (ax ? 0.2 : 0.12); pbox(B, bx, 0.42, bz, ax ? 0.04 : 0.3, 0.04, ax ? 0.3 : 0.04, bark); }
+      } else if (p.startsWith('rib_') || p.startsWith('gskull_') || p.startsWith('spine_')) { // кости великана: рёбра дугой от хребта, позвонки, череп
+        const bone = C3(0xd8cfb8, sh), bone2 = C3(0xc4b9a0, sh), dk = C3(0x2a241c, sh), d = p.split('_')[1];
+        if (p.startsWith('rib_')) { const [ox, oz] = { n: [0, -1], s: [0, 1], w: [-1, 0], e: [1, 0] }[d]; for (let i = 0; i <= 12; i++) { const t = i / 12, h = 0.18 + 1.15 * Math.sin(Math.PI * t * 0.92) * (1 - 0.25 * t), q = -0.95 + 1.45 * t; pbox(B, X + ox * q, h, Z + oz * q, 0.13, 0.15, 0.13, i % 3 ? bone : bone2); } }
+        else if (p.startsWith('spine_')) { const hz = d === 'w'; for (let i = 0; i < 3; i++) { const o = -0.33 + i * 0.33; pbox(B, X + (hz ? o : 0), 0.13, Z + (hz ? 0 : o), hz ? 0.22 : 0.3, 0.22, hz ? 0.3 : 0.22, bone); pbox(B, X + (hz ? o : 0), 0.32, Z + (hz ? 0 : o), 0.07, 0.18, 0.07, bone2); } }
+        else { const P2 = part(cx, cy, d === 'w' ? 3 : 0, sh);
+          P2(0, 0.36, 0.12, 0.84, 0.62, 0.72, 0xd8cfb8); P2(0, 0.24, -0.38, 0.52, 0.34, 0.5, 0xd8cfb8); P2(0, 0.66, -0.12, 0.72, 0.1, 0.22, 0xc4b9a0);
+          [-0.2, 0.2].forEach((o) => P2(o, 0.46, -0.25, 0.18, 0.16, 0.04, 0x2a241c)); P2(0, 0.3, -0.64, 0.14, 0.1, 0.03, 0x2a241c);
+          for (let i = 0; i < 5; i++) P2(-0.18 + i * 0.09, 0.08, -0.6, 0.05, 0.1, 0.04, 0xe8e0cc); P2(0, 0.05, -0.3, 0.56, 0.1, 0.5, 0xc4b9a0); }
+      } else if (p === 'statue') { // статуя на постаменте: воин с мечом у груди
         const st = (c) => C3(c, sh), k = 0.9 + hs(5) * 0.15, P2 = part(cx, cy, r0 < 0 ? 2 : (r0 + 2) % 4, sh);
         pbox(B, X, 0.11, Z, 0.66, 0.22, 0.66, st(0x6e6860)); pbox(B, X, 0.25, Z, 0.56, 0.06, 0.56, st(0x7c766c));
         P2(0, 0.28 + 0.26 * k, 0, 0.34, 0.52 * k, 0.24, 0x9a948a); P2(0, 0.28 + 0.62 * k, 0, 0.4, 0.22 * k, 0.26, 0x9a948a);
