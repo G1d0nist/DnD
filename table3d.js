@@ -41,7 +41,8 @@ const AMB = { bright: { hemi: 1.15, sun: 2.3, col: 0xffe6c4 }, dim: { hemi: 0.6,
 export function create(wrap, api) {
   const CELL = api.CELL;
   const renderer = new THREE.WebGLRenderer({ antialias: true, powerPreference: 'high-performance' });
-  renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, 2));
+  // На телефонах — не больше 1,5 пикселя на точку экрана: на глаз разницы почти нет, а пикселей вдвое меньше
+  renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, window.matchMedia && matchMedia('(pointer: coarse)').matches ? 1.5 : 2));
   renderer.shadowMap.enabled = true; renderer.shadowMap.type = THREE.PCFSoftShadowMap;
   renderer.toneMapping = THREE.ACESFilmicToneMapping; renderer.toneMappingExposure = 1.05;
   const canvas = renderer.domElement; canvas.className = 'tbl-g3';
@@ -471,7 +472,8 @@ export function create(wrap, api) {
   function paintGround() {
     const map = S.map, sig = `${S.w}x${S.h}|${S.ground}${S.rocky ? 'r' : ''}|${S.tpl}|${JSON.stringify(S.flights)}|${Object.keys(S.props).length}|` + Object.entries(map).map(([k, t]) => k + t).join(',');
     if (sig === groundSig) return; groundSig = sig; mapRev++; planRev = mapRev; classify();
-    const s = Math.max(24, Math.min(64, Math.floor(4096 / Math.max(S.w, S.h)))), W = S.w * s, H = S.h * s;
+    // Текстура пола: на телефонах не больше 2560 точек по длинной стороне (видеопамять)
+    const s = Math.max(20, Math.min(64, Math.floor((fine ? 4096 : 2560) / Math.max(S.w, S.h)))), W = S.w * s, H = S.h * s;
     if (groundCv.width !== W || groundCv.height !== H) { groundTex.dispose(); groundCv.width = W; groundCv.height = H; }
     tmpCv.width = W; tmpCv.height = H; gs = s;
     const g = groundCv.getContext('2d'), tg = tmpCv.getContext('2d'), R = mulberry(S.w * 31 + S.h), at = (x, y) => map[`${x}_${y}`];
