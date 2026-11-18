@@ -1070,7 +1070,7 @@ function computeVision() {
     Object.entries(game.tokens || {}).filter(([, t]) => team(t) === 'pc' && !isDown(t)).forEach(([tid, t]) => {
       // Тёмное зрение — из листа или заклинания «Тёмное зрение»; Дьявольское / истинное зрение видит и в магической тьме
       const sn = sensesOf(tid), fdv = Math.max(0, ...fxOf(tid).map(([, e]) => +e.dv || 0));
-      const s = t.size || 1, ox = t.x + s / 2, oy = t.y + s / 2, dv = Math.max(+t.dv || 0, fdv) / FT(), dsr = Math.max(+sn.ds || 0, +sn.ts || 0) / FT();
+      const s = t.size || 1, ox = posOf(t).fx, oy = posOf(t).fy, dv = Math.max(+t.dv || 0, fdv) / FT(), dsr = Math.max(+sn.ds || 0, +sn.ts || 0) / FT();
       for (let x = Math.max(0, Math.floor(ox - R2 - 1)); x < Math.min(W(), Math.ceil(ox + R2 + 1)); x++)
         for (let y = Math.max(0, Math.floor(oy - R2 - 1)); y < Math.min(H(), Math.ceil(oy + R2 + 1)); y++) {
           const k = `${x}_${y}`, inside = x >= t.x && x < t.x + s && y >= t.y && y < t.y + s, dd = Math.hypot(x + 0.5 - ox, y + 0.5 - oy);
@@ -1418,8 +1418,7 @@ function aimHint(e) {
     covTxt, uT ? `${UN[uT]} (помеха)` : '', uA && uA !== 'ослеплён' ? 'цель вас не видит (преимущество)' : '', cov.wind && !aim.atk.spell ? 'Стена ветров — снаряд отклонится' : ''].filter(Boolean);
   hint(parts.join(' · '), e);
   // Линия прицела: зелёная — чисто, жёлтая — ½, оранжевая — ¾, красная — полное укрытие
-  const as = from.size || 1, ts = T.size || 1;
-  const L = { x0: from.x + as / 2, y0: from.y + as / 2, x1: T.x + ts / 2, y1: T.y + ts / 2, col: cov.total ? '#d9534f' : cov.bonus >= 5 ? '#e8833a' : cov.bonus >= 2 ? '#e8c547' : '#6fbf5a', dash: !!uT };
+  const L = { x0: posOf(from).fx, y0: posOf(from).fy, x1: posOf(T).fx, y1: posOf(T).fy, col: cov.total ? '#d9534f' : cov.bonus >= 5 ? '#e8833a' : cov.bonus >= 2 ? '#e8c547' : '#6fbf5a', dash: !!uT };
   if (!aimLine || JSON.stringify(aimLine) !== JSON.stringify(L)) { aimLine = L; drawAreas(); }
 }
 let aimLine = null;
@@ -1492,7 +1491,10 @@ function onUp(e) {
     if (!t || !d.moved) { renderTokens(); return; }
     const s = t.size || 1;
     // Фигура встаёт там, где её отпустили (не обязательно в центре клетки); клетка для механик — та, где её центр
-    const P = placeAt(t, (p.px - d.offX) / CELL + s / 2, (p.py - d.offY) / CELL + s / 2), { x, y } = P;
+    // С Alt — ровно в центр клетки (удобно мастеру расставлять существ по сетке)
+    let fx = (p.px - d.offX) / CELL + s / 2, fy = (p.py - d.offY) / CELL + s / 2;
+    if (e.altKey) { fx = cellOf(fx, s) + s / 2; fy = cellOf(fy, s) + s / 2; }
+    const P = placeAt(t, fx, fy), { x, y } = P;
     const T = TERRAIN[(game.map || {})[`${x}_${y}`]];
     if ((T && T.block) || doorShut(`${x}_${y}`) || WALL.block.has(`${x}_${y}`)) { app.toast(T && T.block || WALL.block.has(`${x}_${y}`) ? 'Там стена' : 'Дверь закрыта'); renderTokens(); return; }
     const upd = posUpd(d.id, P);
@@ -2988,7 +2990,7 @@ function sensesOf(id) {
 // Что на линии между существами (включая их клетки): 'fog' — густое облако или туман, 'dark' — магическая тьма, '' — ничего
 function lineVeil(A, T) {
   if (!WALL.obsc.size) return '';
-  const x0 = A.x + (A.size || 1) / 2, y0 = A.y + (A.size || 1) / 2, x1 = T.x + (T.size || 1) / 2, y1 = T.y + (T.size || 1) / 2, n = Math.ceil(Math.hypot(x1 - x0, y1 - y0) * 3) + 1;
+  const { fx: x0, fy: y0 } = posOf(A), { fx: x1, fy: y1 } = posOf(T), n = Math.ceil(Math.hypot(x1 - x0, y1 - y0) * 3) + 1;
   let dark = false;
   for (let i = 0; i <= n; i++) {
     const k = `${Math.floor(x0 + ((x1 - x0) * i) / n)}_${Math.floor(y0 + ((y1 - y0) * i) / n)}`;
@@ -3213,13 +3215,13 @@ function countercharm(k) {
 // Густой туман или магическая тьма на линии между существами, включая их собственные клетки
 function obscuredBetween(A, T) {
   if (!WALL.obsc.size) return false;
-  const x0 = A.x + (A.size || 1) / 2, y0 = A.y + (A.size || 1) / 2, x1 = T.x + (T.size || 1) / 2, y1 = T.y + (T.size || 1) / 2, n = Math.ceil(Math.hypot(x1 - x0, y1 - y0) * 3) + 1;
+  const { fx: x0, fy: y0 } = posOf(A), { fx: x1, fy: y1 } = posOf(T), n = Math.ceil(Math.hypot(x1 - x0, y1 - y0) * 3) + 1;
   for (let i = 0; i <= n; i++) if (WALL.obsc.has(`${Math.floor(x0 + ((x1 - x0) * i) / n)}_${Math.floor(y0 + ((y1 - y0) * i) / n)}`)) return true;
   return false;
 }
 // Что между атакующим и целью: линия между центрами, клетки самих существ не считаются
 function coverOf(A, T, aid, tid) {
-  const as = A.size || 1, ts = T.size || 1, x0 = A.x + as / 2, y0 = A.y + as / 2, x1 = T.x + ts / 2, y1 = T.y + ts / 2;
+  const { fx: x0, fy: y0 } = posOf(A), { fx: x1, fy: y1 } = posOf(T); // от точного места фигур
   const dx = x1 - x0, dy = y1 - y0, n = Math.ceil(Math.hypot(dx, dy) * 3), seen = new Set();
   const inTok = (t, x, y) => x >= t.x && x < t.x + (t.size || 1) && y >= t.y && y < t.y + (t.size || 1);
   let c = 0, wind = false;
@@ -3983,7 +3985,7 @@ function geo(A) {
   const t = A.shape === 'aura' && A.from && game.tokens[A.from];
   if (!t) return A;
   const s = t.size || 1;
-  return { ...A, ox: t.x + s / 2, oy: t.y + s / 2, r: A.size / FT() + s / 2 };
+  return { ...A, ox: posOf(t).fx, oy: posOf(t).fy, r: A.size / FT() + s / 2 }; // аура — вокруг точного места существа
 }
 // Размер области в клетках при текущем масштабе (не меньше клетки) и полуширина линии
 const aLen = (A) => Math.max(1, (+A.size || 0) / FT());
@@ -4016,11 +4018,20 @@ function areaCells(A) {
 // Кого задевает область: мёртвых (трупы, три провала) — нет; без сознания, но живых — да (урон — провал спасброска от смерти)
 function areaTokens(A) {
   if (A.shape === 'target') return (A.tgts && A.tgts.length ? A.tgts : A.tgt ? [A.tgt] : []).filter((id) => game.tokens[id] && !isDead(game.tokens[id]));
-  const set = new Set(areaCells(A).map(([x, y]) => `${x}_${y}`));
+  // Стены и составные области лежат по клеткам — по клеткам существа; сфера, конус, линия, куб, аура — по самой фигуре:
+  // задета, если область накрывает её центр или хотя бы пару из 12 точек по краю круга под ней (≈ заметную часть)
+  const byCells = A.shape === 'wall' || A.shape === 'multi', set = byCells ? new Set(areaCells(A).map(([x, y]) => `${x}_${y}`)) : null, g = byCells ? null : geo(A);
   return Object.entries(game.tokens).filter(([id, t]) => {
     if ((A.shape === 'aura' && id === A.from) || (t.hidden && !isDM()) || isDead(t) || fxOf(id).some(([, e]) => e.banish)) return false;
     const s = t.size || 1;
-    for (let dx = 0; dx < s; dx++) for (let dy = 0; dy < s; dy++) if (set.has(`${t.x + dx}_${t.y + dy}`)) return true;
+    if (byCells) {
+      for (let dx = 0; dx < s; dx++) for (let dy = 0; dy < s; dy++) if (set.has(`${t.x + dx}_${t.y + dy}`)) return true;
+      return false;
+    }
+    const P = posOf(t), r = 0.4 * s;
+    if (ptIn(g, P.fx, P.fy)) return true;
+    let n = 0;
+    for (let i = 0; i < 12; i++) if (ptIn(g, P.fx + r * Math.cos((i * Math.PI) / 6), P.fy + r * Math.sin((i * Math.PI) / 6)) && ++n >= 2) return true;
     return false;
   }).map(([id]) => id);
 }
@@ -5723,26 +5734,27 @@ function syncEffects() {
 // Толчок: на n клеток прочь от источника, пока не упрётся в стену, закрытую дверь, край поля или другое существо
 function pushToken(id, fromId, n) {
   const t = game.tokens[id], src = fromId && game.tokens[fromId];
-  n = Math.round((n * 5) / FT()); // n — по 5 фт; в клетках при крупном масштабе толчок может не сдвинуть вовсе
-  if (!t || !src || !n) return;
-  const sx = Math.sign(t.x - src.x), sy = Math.sign(t.y - src.y), s = t.size || 1;
-  if (!sx && !sy) return;
-  let x = t.x, y = t.y;
-  for (let i = 0; i < n; i++) {
-    const nx = x + sx, ny = y + sy;
-    if (nx < 0 || ny < 0 || nx + s > W() || ny + s > H()) break;
-    let blocked = false;
-    for (let dx = 0; dx < s; dx++) for (let dy = 0; dy < s; dy++) {
-      const k = `${nx + dx}_${ny + dy}`;
-      if ((TERRAIN[(game.map || {})[k]] || {}).block || doorShut(k) || WALL.block.has(k)) blocked = true;
-      if (Object.entries(game.tokens).some(([oid, o]) => oid !== id && nx + dx >= o.x && nx + dx < o.x + (o.size || 1) && ny + dy >= o.y && ny + dy < o.y + (o.size || 1))) blocked = true;
-    }
-    if (blocked) break;
+  // n — по 5 фт. Толчок — по прямой от толкающего (под любым углом), пока не упрётся в стену, закрытую дверь или существо
+  const D = (n * 5) / FT();
+  if (!t || !src || D < 0.05) return;
+  const s = t.size || 1, P0 = posOf(t), S = posOf(src), L = Math.hypot(P0.fx - S.fx, P0.fy - S.fy);
+  if (L < 1e-3) return;
+  const ux = (P0.fx - S.fx) / L, uy = (P0.fy - S.fy) / L, r = bodyR(s);
+  const bodies = Object.entries(game.tokens).filter(([k, o]) => k !== id && !isDead(o) && !o.ghost).map(([, o]) => { const P = posOf(o); return { x: P.fx, y: P.fy, r: 0.42 * (o.size || 1) }; });
+  const steps = Math.ceil(D / 0.05);
+  let x = P0.fx, y = P0.fy;
+  for (let i = 0; i < steps; i++) {
+    const nx = x + (ux * D) / steps, ny = y + (uy * D) / steps;
+    if (nx < s / 2 || ny < s / 2 || nx > W() - s / 2 || ny > H() - s / 2) break;
+    const [cx, cy] = fwCollide(nx, ny, r, bodies);
+    if (Math.hypot(cx - nx, cy - ny) > 1e-3) break;
     x = nx; y = ny;
   }
-  if (x !== t.x || y !== t.y) {
-    R.update(ref(gpath(`tokens/${id}`)), { x, y }).catch(() => {});
-    addLog({ kind: 'act', who: t.name, txt: `отброшен на ${fmtFt(FT() * Math.max(Math.abs(x - t.x), Math.abs(y - t.y)))}` });
+  const moved = Math.hypot(x - P0.fx, y - P0.fy);
+  if (moved > 0.02) {
+    const P = placeAt(t, x, y);
+    R.update(ref(gpath()), posUpd(id, P)).catch(() => {});
+    addLog({ kind: 'act', who: t.name, txt: `отброшен на ${fmtFt(Math.round(moved * FT()))}` });
   }
 }
 // Провал спасброска против заклинания или приёма: состояние / эффект на цель
