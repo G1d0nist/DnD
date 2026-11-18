@@ -9,9 +9,20 @@ const MODEL_DIR = 'lab/models/';
 // Имя существа → файл модели и рост в клетках (для размера «Средний»)
 // (волк — по началу имени: «Гигантский паук-волк» и «Оборотень-волк» — другие существа)
 // Персонажи игроков собираются из частей на общем скелете: тело по доспеху, голова по виду, оружие в правой руке.
-// Пока есть только латы и головы человека и дварфа; остальные виды берут голову человека, но свой рост и ширину.
-// Оружие, щиты и луки сделаны в Blender из примитивов (lab/models/in/scripts/weapons.py).
-const PC_HEAD = { 'Человек': 'human', 'Дварф': 'dwarf' };
+// Есть головы человека, дварфа и драконорождённого; остальные виды берут голову человека, но свой рост и ширину.
+// Оружие, щиты и луки сделаны в Blender из примитивов (lab/models/in/scripts/weapons.py), длинный меч — по сгенерированной модели.
+const PC_HEAD = { 'Человек': 'human', 'Дварф': 'dwarf', 'Драконорождённый': 'dragonborn' };
+// Тело — по надетому доспеху, без доспеха — по классу. Все тела на одном скелете (pc_rig), поэтому оружие и движения общие.
+// Пока сделаны латы и мантия; недостающее тело заменяется ближайшим из готовых (PC_BODY_ALT)
+const PC_BODY_HAVE = new Set(['plate', 'robe']);
+const PC_BODY_ALT = { mail: 'plate', leather: 'plate', barb: 'plate', monk: 'robe', clothes: 'robe' };
+const PC_ARM_LIGHT = new Set(['padded', 'leather', 'studded']);
+function pcBody(L) {
+  const a = L.arm || '';
+  const want = PC_HEAVY.has(a) && !/^(halfplate|breastplate)$/.test(a) ? 'plate' : a === 'hide' ? 'barb' : a && !PC_ARM_LIGHT.has(a) ? 'mail' : a ? 'leather'
+    : /варвар/i.test(L.c || '') ? 'barb' : /монах/i.test(L.c || '') ? 'monk' : /волшебн|чародей|колдун/i.test(L.c || '') ? 'robe' : 'clothes';
+  return `pc_${PC_BODY_HAVE.has(want) ? want : PC_BODY_ALT[want] || 'plate'}`;
+}
 // Женские головы по виду (пол берётся из листа); пока нет — берётся общая голова вида
 const PC_HEAD_F = {};
 const PC_FORM = { 'Дварф': [0.84, 1.14], 'Гном': [0.66, 1], 'Полурослик': [0.68, 1], 'Голиаф': [1.2, 1.08], 'Орк': [1.1, 1.08], 'Драконорождённый': [1.1, 1.05] };
@@ -34,7 +45,7 @@ function pcParts(L) {
   if (k) parts.push([`wpn_${k}`, PC_LEFT.has(k) ? 'hand.L' : 'hand.R']);
   if (L.sh && !PC_BOTH.has(k)) parts.push([PC_HEAVY.has(L.arm) ? 'shield_heater' : 'shield_round', 'forearm.L']);
   // Движение для выстрела: лук — натянуть тетиву, арбалет — вскинуть к плечу
-  return { body: 'pc_plate', parts, shot: /^(short|long)bow$/.test(k) ? 'shoot' : /xbow$|crossbow$/.test(k) ? 'shootx' : '', h: 1.02 * h, w };
+  return { body: pcBody(L), parts, shot: /^(short|long)bow$/.test(k) ? 'shoot' : /xbow$|crossbow$/.test(k) ? 'shootx' : '', h: 1.02 * h, w };
 }
 const MODELS = [[/гоблин/i, 'goblin', 0.9], [/^\s*(волк|лютоволк|ворг)/i, 'wolf', 0.62], [/бандит/i, 'bandit', 1.05]];
 const PITCH = (55 * Math.PI) / 180, FOV = 35, WALL_H = 0.9, BASE_H = 0; // подставок нет — фигурки стоят прямо на полу

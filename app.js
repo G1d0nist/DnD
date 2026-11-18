@@ -323,7 +323,9 @@ window.dndApp = {
       abil: Object.fromEntries(ABILITIES.map((a) => [a.k, +c.abil[a.k] || 10])),
       // Облик фигурки в 3D: вид, надетый доспех, щит и первое оружие из атак
       look: c.shape ? null : { sp: (speciesOf(c) || {}).n || '', sex: c.info.sex === 'Женский' ? 'f' : c.info.sex === 'Мужской' ? 'm' : '', arm: wearingArmor(c) ? c.armor.id : '', sh: !!c.armor.shield,
-        w: ((c.attacks || []).find((a) => WEAPONS.some((w) => String(a.n || '').toLowerCase().includes(w.n.toLowerCase()))) || {}).n || '' } };
+        // Класс и подкласс — для тела фигурки без доспеха (мантия у заклинателей, у варвара и монаха — своё) и цвета одежды
+        c: (c.info.cls || '').trim(), sc: c.info.subclass || '',
+        w:((c.attacks || []).find((a) => WEAPONS.some((w) => String(a.n || '').toLowerCase().includes(w.n.toLowerCase()))) || {}).n || '' } };
   },
   // Добыча со стола: золото — в кошелёк, магический предмет — как из каталога, прочее — в инвентарь; возвращает название
   addLoot(id, L) {
