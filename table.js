@@ -1398,7 +1398,8 @@ function onDown(e) {
     // Пустое место: мастер и свободная камера — сдвиг поля; игроку пальцем — тоже, камера становится свободной;
     // мышью при слежении за персонажем поле не сдвигается (для этого — нажатие колёсика)
     if (selId) { selId = null; renderSide(); renderTokens(); }
-    if (camFollow() && e.pointerType !== 'touch') return;
+    // …а нажатие мышью по полю — «идти сюда»
+    if (camFollow() && e.pointerType !== 'touch') { routeGo(p); return; }
     drag = { kind: 'pan', x: e.clientX, y: e.clientY, cx: cam.x, cy: cam.y };
   }
   try { $('#tblBoard').setPointerCapture(e.pointerId); } catch (err) { /* указатель уже отпущен */ }
@@ -1439,6 +1440,7 @@ function onMove(e) {
       castHint(e);
     } else if (aim && over) aimHint(e);
     else if ((aim || cast) && game) $('#tblHint').hidden = true;
+    else if (game) routeHover(e, over);
     return;
   }
   const p = cellAt(e);
@@ -8561,12 +8563,15 @@ function fwCollide(x, y, r, bodies) {
   return [x, y];
 }
 // Сколько стоит фут пути в клетке: труднопроходимая местность, чужое (своё) место, зона-помеха — ×2; ползком — ещё +1
-function fwMult(k) {
+function moveMult(k, occ, zd, prone) {
   const T = TERRAIN[(game.map || {})[k]];
-  return 1 + ((T && T.cost) || (FW.occ && FW.occ.get(k) === 'pass') || (FW.zd && FW.zd.has(k)) ? 1 : 0) + (FW.mv && FW.mv.prone ? 1 : 0);
+  return 1 + ((T && T.cost) || (occ && occ.get(k) === 'pass') || (zd && zd.has(k)) ? 1 : 0) + (prone ? 1 : 0);
 }
-function fwStart() {
-  if (FW.raf) return;
+const fwMult = (k) => moveMult(k, FW.occ, FW.zd, FW.mv && FW.mv.prone);
+function fwStart(path) {
+  if (FW.raf) { if (path) FW.path = path; return true; }
+  FW.path = null;
+  if (RT.cur) drawRoute(null); // линия пути под указателем на время ходьбы прячется
   const id = keyTokId(), t = id && game.tokens[id];
   if (!t) { if (isDM()) keyHint(''); return; }
   const forced = isDM() && freeMove;
@@ -8580,8 +8585,9 @@ function fwStart() {
   }
   const B = fwBodies(id);
   Object.assign(FW, { id, mv, forced, cur: null, ft: 0, base: econ(id).move || 0, v: 0, trav: 0, moved: false, solid: forced ? [] : B.solid, pass: B.pass,
-    occ: forced ? null : occupancy(id), zd: forced ? null : zoneDiff(id), t0: performance.now(), last: performance.now(), sent: performance.now(), dir: rot3(...dirNow()) });
+    occ: forced ? null : occupancy(id), zd: forced ? null : zoneDiff(id), t0: performance.now(), last: performance.now(), sent: performance.now(), dir: rot3(...dirNow()), path: path || null, stuck: 0 });
   FW.raf = requestAnimationFrame(fwTick);
+  return true;
 }
 function fwTick(now) {
   FW.raf = 0;
@@ -8589,14 +8595,22 @@ function fwTick(now) {
   if (!t || (!FW.forced && isDown(t))) { fwEnd(); return; }
   const dt = Math.min(0.05, Math.max(0, (now - FW.last) / 1000)); FW.last = now;
   // Направление — относительно камеры, под любым углом; короткое нажатие — хотя бы маленький шажок
-  let [dx, dy] = rot3(...dirNow());
-  if (dx || dy) FW.dir = [dx, dy]; else if ((now - FW.t0) / 1000 < FW_TAP && (FW.dir[0] || FW.dir[1])) [dx, dy] = FW.dir;
+  const s = t.size || 1, P0 = posOf(t), mult = fwMult(`${t.x}_${t.y}`);
+  // Клавиши важнее пути по клику: нажали — путь отменяется
+  let [dx, dy] = rot3(...dirNow()), remPath = Infinity;
+  if (dx || dy) { FW.dir = [dx, dy]; if (FW.path) { FW.path = null; drawRoute(null); } }
+  else if (FW.path) {
+    while (FW.path.length && Math.hypot(FW.path[0][0] - P0.fx, FW.path[0][1] - P0.fy) < 0.02) FW.path.shift();
+    if (!FW.path.length) { FW.path = null; fwEnd(); return; }
+    dx = FW.path[0][0] - P0.fx; dy = FW.path[0][1] - P0.fy;
+    remPath = Math.hypot(dx, dy) + FW.path.slice(1).reduce((a, q, i) => a + Math.hypot(q[0] - FW.path[i][0], q[1] - FW.path[i][1]), 0);
+  } else if ((now - FW.t0) / 1000 < FW_TAP && (FW.dir[0] || FW.dir[1])) [dx, dy] = FW.dir;
   const L = Math.hypot(dx, dy);
   if (!L) { fwEnd(); return; }
   dx /= L; dy /= L;
-  const s = t.size || 1, P0 = posOf(t), mult = fwMult(`${t.x}_${t.y}`);
-  FW.v = Math.min(FW_V, FW.v + FW_ACC * dt);
-  let step = FW.v * dt;
+  // У конца пути — плавно тормозит, а не врезается в точку
+  FW.v = Math.min(FW_V, FW.v + FW_ACC * dt, Math.sqrt(2 * FW_ACC * remPath) + 0.4);
+  let step = Math.min(FW.v * dt, FW.path ? L : Infinity);
   if (FW.mv) {
     const left = FW.mv.leftX - FW.ft;
     if (left < 0.05) { keyHint(`Скорость потрачена${FW.mv.canDash ? ' — Рывок (F)' : ''}`, FW.id); fwEnd(); return; }
@@ -8614,7 +8628,8 @@ function fwTick(now) {
     fwDraw(t);
     if (cell) renderTokens();
     if (cell || now - FW.sent > FW_SEND) fwSend(now);
-  }
+    FW.stuck = 0;
+  } else if (FW.path && (FW.stuck = (FW.stuck || 0) + dt) > 0.3) { FW.path = null; fwEnd(); return; } // путь перегородили — встать
   FW.raf = requestAnimationFrame(fwTick);
 }
 // Пока идём, ответ базы отстаёт на последнюю отправку — своя позиция и потраченные футы важнее (иначе фигуру дёргает назад)
@@ -8648,7 +8663,7 @@ function fwSend(now) {
 // Остановка: на своём (союзнике) стоять нельзя — отодвинуть на ближайшее свободное место; затем отправить итог
 function fwEnd() {
   if (FW.raf) cancelAnimationFrame(FW.raf);
-  FW.raf = 0;
+  FW.raf = 0; FW.path = null;
   const t = game && game.tokens[FW.id];
   if (!t || !FW.moved) return;
   const s = t.size || 1, r = bodyR(s), all = [...FW.solid, ...FW.pass], P0 = posOf(t);
@@ -8669,6 +8684,189 @@ function fwEnd() {
   FW.moved = false;
   fwSend(performance.now());
   renderTokens();
+}
+
+/* ---------- Путь по клику (движение без клеток, этап 3) ---------- */
+// Игрок наводит указатель на поле — видна линия пути и сколько футов она стоит (в бою — зелёная, пока хватает скорости,
+// дальше красная) и мягкая зона, докуда можно дойти. Нажатие — персонаж идёт туда сам; клавиша шага — отменяет.
+// Путь ищется по мелкой сетке (4×4 на клетку) с учётом размера фигуры: стены, закрытые двери, деревья, враги — препятствия;
+// труднопроходимая местность, место союзника, ползком — вдвое дороже. Потом путь выпрямляется, где это не дороже
+const SUB = 4, RT = { key: null, G: null, last: '', reach: null, reachKey: null, cur: null };
+const rtSame = (a, b) => !!a && !!b && a.length === b.length && a.every((v, i) => v === b[i]);
+// Сетка проходимости для существа id: 1 — центр фигуры сюда не встанет; mult — цена фута в клетке
+function rtGrid(id) {
+  const t = game.tokens[id], s = t.size || 1, inF = inFight(), mv = inF ? moveInfo(id) : null;
+  const key = [game.map, game.doors, game.tokens, game.areas, WALL.block.size, W(), H(), id, s, !!(mv && mv.prone)];
+  if (rtSame(RT.key, key)) return RT.G;
+  const r = bodyR(s), B = fwBodies(id), gw = W() * SUB, gh = H() * SUB, block = new Uint8Array(gw * gh);
+  const occ = occupancy(id), zd = zoneDiff(id), prone = !!(mv && mv.prone), mult = new Uint8Array(W() * H());
+  for (let cy = 0; cy < H(); cy++) for (let cx = 0; cx < W(); cx++) mult[cy * W() + cx] = moveMult(`${cx}_${cy}`, occ, zd, prone);
+  for (let j = 0; j < gh; j++) for (let i = 0; i < gw; i++) {
+    const x = (i + 0.5) / SUB, y = (j + 0.5) / SUB;
+    let b = x < s / 2 || y < s / 2 || x > W() - s / 2 || y > H() - s / 2;
+    for (let cx = Math.floor(x - r); !b && cx <= Math.floor(x + r); cx++) for (let cy = Math.floor(y - r); !b && cy <= Math.floor(y + r); cy++) {
+      if (fwWall(cx, cy) && Math.hypot(x - Math.max(cx, Math.min(cx + 1, x)), y - Math.max(cy, Math.min(cy + 1, y))) < r) b = true;
+    }
+    if (!b) b = B.solid.some((o) => Math.hypot(x - o.x, y - o.y) < r + o.r);
+    block[j * gw + i] = b ? 1 : 0;
+  }
+  RT.key = key; RT.reach = null; RT.reachKey = null;
+  RT.G = { gw, gh, block, mult, multAt: (x, y) => mult[Math.max(0, Math.min(H() - 1, Math.floor(y))) * W() + Math.max(0, Math.min(W() - 1, Math.floor(x)))] || 1 };
+  return RT.G;
+}
+// Двоичная куча для поиска пути
+function heap() {
+  const a = [];
+  return { size: () => a.length,
+    push(v, p) { a.push([p, v]); let i = a.length - 1; while (i) { const q = (i - 1) >> 1; if (a[q][0] <= a[i][0]) break; [a[q], a[i]] = [a[i], a[q]]; i = q; } },
+    pop() { const top = a[0], last = a.pop(); if (a.length) { a[0] = last; let i = 0; for (;;) { const l = 2 * i + 1, r = l + 1; let m = i; if (l < a.length && a[l][0] < a[m][0]) m = l; if (r < a.length && a[r][0] < a[m][0]) m = r; if (m === i) break; [a[m], a[i]] = [a[i], a[m]]; i = m; } } return top[1]; } };
+}
+const NB8 = [[1, 0], [-1, 0], [0, 1], [0, -1], [1, 1], [1, -1], [-1, 1], [-1, -1]];
+// Поиск по сетке из точки (fx, fy): к цели (goal — индекс узла) или во все стороны до limit футов (для зоны досягаемости)
+function rtSearch(G, fx, fy, goal, limit) {
+  const { gw, gh, block } = G, si = Math.min(gw - 1, Math.floor(fx * SUB)), sj = Math.min(gh - 1, Math.floor(fy * SUB)), start = sj * gw + si;
+  const dist = new Float32Array(gw * gh).fill(Infinity), prev = new Int32Array(gw * gh).fill(-1), H = heap();
+  const gx = goal != null ? goal % gw : 0, gy = goal != null ? Math.floor(goal / gw) : 0;
+  const hfn = goal != null ? (i, j) => { const ax = Math.abs(i - gx), ay = Math.abs(j - gy); return ((Math.max(ax, ay) + 0.4142 * Math.min(ax, ay)) / SUB) * FT(); } : () => 0;
+  dist[start] = 0; H.push(start, hfn(si, sj));
+  let n = 0;
+  while (H.size() && n++ < 120000) {
+    const u = H.pop(), ui = u % gw, uj = (u - ui) / gw;
+    if (u === goal) break;
+    const du = dist[u];
+    NB8.forEach(([di, dj]) => {
+      const i = ui + di, j = uj + dj;
+      if (i < 0 || j < 0 || i >= gw || j >= gh) return;
+      const v = j * gw + i;
+      if (block[v] || (di && dj && (block[uj * gw + i] || block[j * gw + ui]))) return; // углы не срезать
+      const nd = du + ((di && dj ? Math.SQRT2 : 1) / SUB) * FT() * G.multAt((i + 0.5) / SUB, (j + 0.5) / SUB);
+      if (nd >= dist[v] || nd > limit) return;
+      dist[v] = nd; prev[v] = u; H.push(v, nd + hfn(i, j));
+    });
+  }
+  return { dist, prev, start };
+}
+// Отрезок проходим: по всей длине центр фигуры в свободных узлах
+function rtClear(G, a, b) {
+  const n = Math.ceil(Math.hypot(b[0] - a[0], b[1] - a[1]) * SUB * 3) + 1;
+  for (let k = 1; k < n; k++) {
+    const x = a[0] + ((b[0] - a[0]) * k) / n, y = a[1] + ((b[1] - a[1]) * k) / n, i = Math.floor(x * SUB), j = Math.floor(y * SUB);
+    if (i < 0 || j < 0 || i >= G.gw || j >= G.gh || G.block[j * G.gw + i]) return false;
+  }
+  return true;
+}
+// Цена ломаной в футах (по клеткам, через которые идёт): кусочками по 1/20 клетки
+function rtCost(G, pts) {
+  let ft = 0;
+  for (let i = 1; i < pts.length; i++) {
+    const a = pts[i - 1], b = pts[i], L = Math.hypot(b[0] - a[0], b[1] - a[1]), n = Math.max(1, Math.ceil(L * 20));
+    for (let k = 0; k < n; k++) ft += (L / n) * FT() * G.multAt(a[0] + ((b[0] - a[0]) * (k + 0.5)) / n, a[1] + ((b[1] - a[1]) * (k + 0.5)) / n);
+  }
+  return ft;
+}
+// Путь существа id к точке (x, y) в клетках: { pts, ft } или null
+function rtPath(id, x, y) {
+  const t = game.tokens[id];
+  if (!t) return null;
+  const G = rtGrid(id), P = posOf(t);
+  let gi = Math.floor(x * SUB), gj = Math.floor(y * SUB), goal = null, end = [x, y];
+  const free = (i, j) => i >= 0 && j >= 0 && i < G.gw && j < G.gh && !G.block[j * G.gw + i];
+  if (free(gi, gj)) goal = gj * G.gw + gi;
+  else { // указали в стену или во врага — ближайшее место рядом, куда можно встать
+    let best = null;
+    for (let r = 1; r <= SUB && !best; r++) for (let dj = -r; dj <= r; dj++) for (let di = -r; di <= r; di++) if (free(gi + di, gj + dj) && (!best || Math.hypot(di, dj) < best[2])) best = [gi + di, gj + dj, Math.hypot(di, dj)];
+    if (!best) return null;
+    [gi, gj] = best; goal = gj * G.gw + gi; end = [(gi + 0.5) / SUB, (gj + 0.5) / SUB];
+  }
+  const S = rtSearch(G, P.fx, P.fy, goal, Infinity);
+  if (!isFinite(S.dist[goal])) return null;
+  const nodes = [];
+  for (let u = goal; u !== -1 && u !== S.start; u = S.prev[u]) nodes.push([((u % G.gw) + 0.5) / SUB, (Math.floor(u / G.gw) + 0.5) / SUB]);
+  const raw = [[P.fx, P.fy], ...nodes.reverse().slice(0, -1), end];
+  // Выпрямить: из каждой точки — в самую дальнюю видимую, если по прямой не дороже
+  const pts = [raw[0]];
+  for (let i = 0; i < raw.length - 1;) {
+    let j = raw.length - 1;
+    while (j > i + 1 && !(rtClear(G, raw[i], raw[j]) && rtCost(G, [raw[i], raw[j]]) <= rtCost(G, raw.slice(i, j + 1)) + 0.01)) j--;
+    pts.push(raw[j]); i = j;
+  }
+  return { pts, ft: rtCost(G, pts) };
+}
+// Зона, докуда хватает скорости (в бою, в свой ход): узлы сетки
+function rtReach(id, limit) {
+  const G = rtGrid(id), P = posOf(game.tokens[id]), key = [G, P.fx, P.fy, limit];
+  if (rtSame(RT.reachKey, key)) return RT.reach;
+  const S = rtSearch(G, P.fx, P.fy, null, limit), out = [];
+  S.dist.forEach((d, u) => { if (d <= limit) out.push(u); });
+  RT.reach = { G, nodes: out }; RT.reachKey = key;
+  return RT.reach;
+}
+// Нарисовать путь и зону на слое подсветки хода (в объёмном виде он лежит на полу)
+function drawRoute(Rt) {
+  const cv = $('#tblRange'), g = cv.getContext('2d');
+  g.clearRect(0, 0, cv.width, cv.height);
+  RT.cur = Rt || null;
+  if (!Rt) return;
+  const q = CELL / SUB;
+  if (Rt.reach) { g.fillStyle = 'rgba(90,158,90,.17)'; Rt.reach.nodes.forEach((u) => { const i = u % Rt.reach.G.gw; g.fillRect(i * q, ((u - i) / Rt.reach.G.gw) * q, q + 0.5, q + 0.5); }); }
+  if (!Rt.pts) return;
+  // Где кончается скорость — линия краснеет
+  const G = rtGrid(Rt.id), budget = Rt.budget ?? Infinity, segs = [[Rt.pts[0]]];
+  let ft = 0, over = false;
+  for (let i = 1; i < Rt.pts.length; i++) {
+    const a = Rt.pts[i - 1], b = Rt.pts[i], L = Math.hypot(b[0] - a[0], b[1] - a[1]), n = Math.max(1, Math.ceil(L * 20));
+    for (let k = 1; k <= n; k++) {
+      const x = a[0] + ((b[0] - a[0]) * k) / n, y = a[1] + ((b[1] - a[1]) * k) / n;
+      ft += (L / n) * FT() * G.multAt(x - (b[0] - a[0]) / n / 2, y - (b[1] - a[1]) / n / 2);
+      if (!over && ft > budget + 0.01) { over = true; segs[segs.length - 1].push([x, y]); segs.push([[x, y]]); }
+      else if (k === n) segs[segs.length - 1].push(b);
+    }
+  }
+  g.lineCap = 'round'; g.lineJoin = 'round';
+  segs.forEach((S, i) => {
+    g.beginPath(); S.forEach(([x, y], k) => (k ? g.lineTo(x * CELL, y * CELL) : g.moveTo(x * CELL, y * CELL)));
+    g.strokeStyle = 'rgba(0,0,0,.45)'; g.lineWidth = 7; g.stroke();
+    g.strokeStyle = i ? '#d9534f' : '#e8d9a8'; g.lineWidth = 3.5; g.setLineDash(i ? [8, 6] : []); g.stroke(); g.setLineDash([]);
+  });
+  const e = Rt.pts[Rt.pts.length - 1];
+  g.beginPath(); g.arc(e[0] * CELL, e[1] * CELL, CELL * 0.22, 0, Math.PI * 2); g.strokeStyle = over ? '#d9534f' : '#e8d9a8'; g.lineWidth = 3; g.stroke();
+}
+// Можно ли сейчас вести своего персонажа мышью: «Двигать», не прицел и не заклинание, своя фигура, в бою — свой ход
+function rtWho() {
+  if (!game || tool !== 'move' || aim || cast || drag || ruler || isDM()) return null;
+  const id = keyTokId(), t = id && game.tokens[id];
+  if (!t || isDown(t)) return null;
+  if (inFight() && !isTurnOf(id)) return null;
+  return id;
+}
+function routeHover(e, over) {
+  const id = over && e.pointerType !== 'touch' && !FW.raf && !tokElAt(e) ? rtWho() : null;
+  if (!id) { if (RT.cur) { drawRoute(null); hint('', e); } RT.last = ''; return; }
+  const p = cellAt(e), x = p.px / CELL, y = p.py / CELL, gk = `${Math.floor(x * SUB)}_${Math.floor(y * SUB)}_${game.tokens[id].fx}_${game.tokens[id].fy}`;
+  if (gk === RT.last && RT.cur) { hint(RT.cur.txt, e); return; }
+  RT.last = gk;
+  const P = rtPath(id, x, y), mv = inFight() ? moveInfo(id) : null, budget = mv ? mv.leftX : Infinity;
+  const reach = mv ? rtReach(id, budget) : null;
+  if (!P) { drawRoute(reach ? { id, reach } : null); hint('Туда не пройти', e); RT.cur && (RT.cur.txt = 'Туда не пройти'); return; }
+  const ft = Math.round(P.ft);
+  let txt = mv ? (P.ft <= budget + 0.01 ? `${ft} фт · останется ${Math.max(0, Math.floor(budget - P.ft + 0.01))}` : `${ft} фт — дойдёт на ${Math.floor(budget)} фт${mv.canDash ? ', дальше нужен Рывок' : ''}`) : fmtFt(ft);
+  // Предупреждение заранее: уход из досягаемости врага без Отхода (по клетке в конце пути)
+  if (mv && !econ(id).dis) {
+    const t = game.tokens[id], e2 = P.pts[P.pts.length - 1], s = t.size || 1, oa = foesNear(t, id).filter(([, o]) => distFt({ ...t, x: cellOf(e2[0], s), y: cellOf(e2[1], s) }, o) > 5);
+    if (oa.length) txt += ` · ⚠ атака по возможности: ${oa.map(([, o]) => o.name).join(', ')}`;
+  }
+  drawRoute({ id, pts: P.pts, budget, reach, txt });
+  hint(txt, e);
+}
+// Нажатие по полю — идти туда (в бою — сколько хватит скорости)
+function routeGo(p) {
+  const id = rtWho();
+  if (!id) return false;
+  const P = rtPath(id, p.px / CELL, p.py / CELL);
+  if (!P) { app.toast('Туда не пройти'); return true; }
+  drawRoute(null); RT.last = '';
+  fwStart(P.pts.slice(1));
+  return true;
 }
 // Размещение области клавишами: сфера и куб двигаются по клетке, конус и линия от себя — поворачиваются
 function castKey(dx, dy) {
@@ -9208,7 +9406,7 @@ function g3Sync() {
 // После перерисовки слоя — обновить его текстуру на полу
 {
   const hook = (f, name) => function (...a) { const r = f.apply(this, a); if (g3on) g3.tex(name); return r; };
-  drawTerrain = hook(drawTerrain, 'terrain'); drawAreas = hook(drawAreas, 'areas'); drawRange = hook(drawRange, 'range'); drawRuler = hook(drawRuler, 'range');
+  drawTerrain = hook(drawTerrain, 'terrain'); drawAreas = hook(drawAreas, 'areas'); drawRange = hook(drawRange, 'range'); drawRuler = hook(drawRuler, 'range'); drawRoute = hook(drawRoute, 'range');
   drawFog = hook(drawFog, 'fog'); fxFrame = hook(fxFrame, 'fx'); drawAimRange = hook(drawAimRange, 'range');
 }
 document.addEventListener('keydown', onKeyDown);
