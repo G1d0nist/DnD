@@ -175,10 +175,10 @@ function subscribe(gid, code) {
   on('members', (v) => { game.members = v || {}; syncEffects(); applyXp(); applyLoot(); handleRest(); syncChests(); abilSync(); });
   on('abilSeen', (v) => { game.abilSeen = v || {}; abilSync(); });
   on(`abilEdit/${user.uid}`, (v) => { if (v && v.abil) applyAbilEdit(v); });
-  on('tokens', (v) => { game.tokens = v || {}; cleanupInit(); syncEffects(); hideWatch(); readyWatch(); awardKills(); zoneTick(); concWatch(); undoTrack(); });
+  on('tokens', (v) => { game.tokens = v || {}; fwKeep(); cleanupInit(); syncEffects(); hideWatch(); readyWatch(); awardKills(); zoneTick(); concWatch(); undoTrack(); });
   on('map', (v) => { game.map = v || {}; drawTerrain(); });
   on('init', (v) => { game.init = v; checkMyTurn(); checkNpcTurn(); cleanupInit(); syncEffects(); zoneTurn(); dotTurn(); });
-  on('econ', (v) => { game.econ = v || {}; readyWatch(); undoTrack(); });
+  on('econ', (v) => { game.econ = v || {}; fwKeep(); readyWatch(); undoTrack(); });
   on('cs', (v) => { game.cs = v || {}; csCheck(); notifyCs(); });
   on('log', (v) => { game.log = v || {}; applyLog(); notifyLog(); fxLog(); fightTally(); });
   on('fstats', (v) => { game.fstats = v || null; });
@@ -493,7 +493,7 @@ function layoutBoard() {
 // Поле сдвигается целиком, без полос прокрутки. Игрок: камера следует за своим персонажем; нажатие колёсика мыши
 // (или перетаскивание пальцем по пустому месту) — свободная камера, ещё одно нажатие колёсика или «◎» — снова к персонажу.
 // Мастер: камера всегда свободная, «◎» и колёсико — к выделенному существу или к тому, чей ход
-let cam = { x: 0, y: 0 }, camFree = false, camKey = '', camMid = null;
+let cam = { x: 0, y: 0 }, camFree = false, camKey = '', camMid = null, camWalk = false;
 // Объёмный вид: поворот камеры вокруг точки, на которую она смотрит (радианы; 0 — север вверху экрана).
 // Зажатое колёсико мыши — тянуть: влево-вправо — поворот, вверх-вниз — наклон (как в образце стиля); правая кнопка — сдвиг поля;
 // клавиши (по умолчанию Z и X, C — север вверх); кнопки в углу поля; два пальца — поворот
@@ -573,7 +573,7 @@ function camUpdate() {
   if (key === camKey) return;
   const first = !camKey;
   camKey = key;
-  camCenter(P.fx, P.fy, !first);
+  camCenter(P.fx, P.fy, !first && !camWalk); // при свободной ходьбе позиция меняется каждый кадр — плавность уже в ней
 }
 function camHome() {
   if (isDM()) { const c = currentEntry(), t = game.tokens[selId] || (c && game.tokens[c.tokenId]); if (t) camOn(t); else zoomFit(); return; }
@@ -2057,7 +2057,9 @@ function moveInfo(id) {
   // Ярость в облике орла: Рывок и Отход бонусным действием
   const bonus = [...new Set([...((charOf(t) || {}).bonus || []), ...(fxOf(id).some(([, f]) => f.wildAsp === 'eagle') ? ['dash', 'dis'] : [])])];
   const total = speed * (1 + (e.dash || 0));
-  return { speed, total, used: e.move || 0, left: Math.max(0, total - (e.move || 0)), prone: cond.includes('prone'), incap, bonus,
+  // При свободной ходьбе потрачено дробное число футов: показываем целые (вниз), точный остаток — в leftX
+  const leftX = Math.max(0, total - (e.move || 0));
+  return { speed, total, used: e.move || 0, left: Math.floor(leftX + 0.01), leftX, prone: cond.includes('prone'), incap, bonus,
     canDash: !incap && speed > 0 && (!e.a || (bonus.includes('dash') && !e.b)) };
 }
 async function econAct(a, id, k) {
@@ -8514,10 +8516,159 @@ function walk() {
   if ((!dx && !dy) || walkStop || !game) return;
   if (cast) { castKey(dx, dy); walkT = setTimeout(walk, WALK_MS * (walkN++ ? 0.6 : 1.4)); return; }
   if (aim) return;
-  const r = stepMove(dx, dy);
-  if (r === 'stop') { walkStop = true; return; }
-  if (!r) return;
-  walkT = setTimeout(walk, WALK_MS * (r.slow ? 2 : 1) * (walkN++ ? 1 : 1.4));
+  fwStart();
+}
+
+/* ---------- Свободная ходьба (движение без клеток, этап 2) ---------- */
+// Клавиши шага ведут фигуру плавно в любую сторону (относительно камеры), без привязки к клеткам. Фигура — круг:
+// упирается в стены, закрытые двери, деревья и скалы и скользит вдоль них; сквозь врагов не пройти, сквозь своих — можно
+// (как труднопроходимая местность), но остановиться на своём нельзя — фигуру мягко отодвинет. В бою путь считается в футах
+// по настоящей длине: 1 клетка = 5 фт, в труднопроходимой местности и ползком — вдвое. Позиция уходит в базу ~10 раз в секунду
+const FW_V = 1000 / WALK_MS, FW_ACC = FW_V / 0.12, FW_SEND = 100, FW_TAP = 0.15;
+const FW = { raf: 0, id: null, last: 0, t0: 0, v: 0, dir: [0, 0], ft: 0, base: 0, mv: null, sent: 0, trav: 0, forced: false, solid: [], pass: [], occ: null, zd: null, moved: false };
+const bodyR = (s) => 0.3 * (s || 1);
+// Кто мешает пройти: враги (своего или близкого размера, в сознании) — твёрдые; свои и лежащие — проходимые
+function fwBodies(id) {
+  const mv = game.tokens[id], ms = mv.size || 1, solid = [], pass = [];
+  Object.entries(game.tokens || {}).forEach(([k, t]) => {
+    if (k === id || (t.hidden && !isDM()) || t.ghost || isDead(t)) return;
+    const s = t.size || 1, P = posOf(t), incap = (t.hpMax && (t.hp || 0) <= 0) || (t.cond || []).some((c) => INCAP.includes(c));
+    (!hostile(t, mv) || incap || Math.abs(s - ms) >= 2 ? pass : solid).push({ x: P.fx, y: P.fy, r: 0.42 * s, id: k });
+  });
+  return { solid, pass };
+}
+const fwWall = (cx, cy) => { if (cx < 0 || cy < 0 || cx >= W() || cy >= H()) return true; const k = `${cx}_${cy}`, T = TERRAIN[(game.map || {})[k]]; return !!(T && T.block) || doorShut(k) || WALL.block.has(k); };
+// Вытолкнуть круг (x, y, r) из стен и твёрдых существ: ближайшая точка препятствия → сдвиг наружу (так фигура скользит вдоль стены)
+function fwCollide(x, y, r, bodies) {
+  for (let it = 0; it < 4; it++) {
+    let hit = false;
+    for (let cx = Math.floor(x - r); cx <= Math.floor(x + r); cx++) for (let cy = Math.floor(y - r); cy <= Math.floor(y + r); cy++) {
+      if (!fwWall(cx, cy)) continue;
+      const qx = Math.max(cx, Math.min(cx + 1, x)), qy = Math.max(cy, Math.min(cy + 1, y)), dx = x - qx, dy = y - qy, d = Math.hypot(dx, dy);
+      if (d >= r) continue;
+      hit = true;
+      if (d > 1e-6) { x += (dx / d) * (r - d); y += (dy / d) * (r - d); }
+      else { const o = [[x - cx + r, -1, 0], [cx + 1 - x + r, 1, 0], [y - cy + r, 0, -1], [cy + 1 - y + r, 0, 1]].sort((a, b) => a[0] - b[0])[0]; x += o[1] * o[0]; y += o[2] * o[0]; }
+    }
+    (bodies || []).forEach((b) => {
+      const dx = x - b.x, dy = y - b.y, d = Math.hypot(dx, dy), m = r + b.r;
+      if (d >= m) return;
+      hit = true;
+      if (d > 1e-6) { x += (dx / d) * (m - d); y += (dy / d) * (m - d); } else x += m;
+    });
+    if (!hit) break;
+  }
+  return [x, y];
+}
+// Сколько стоит фут пути в клетке: труднопроходимая местность, чужое (своё) место, зона-помеха — ×2; ползком — ещё +1
+function fwMult(k) {
+  const T = TERRAIN[(game.map || {})[k]];
+  return 1 + ((T && T.cost) || (FW.occ && FW.occ.get(k) === 'pass') || (FW.zd && FW.zd.has(k)) ? 1 : 0) + (FW.mv && FW.mv.prone ? 1 : 0);
+}
+function fwStart() {
+  if (FW.raf) return;
+  const id = keyTokId(), t = id && game.tokens[id];
+  if (!t) { if (isDM()) keyHint(''); return; }
+  const forced = isDM() && freeMove;
+  if (isDown(t) && !forced) { keyHint(isDead(t) ? 'Это труп' : 'Без сознания — не может двигаться', id); return; }
+  let mv = null;
+  if (inFight() && !forced) {
+    if (!(isTurnOf(id) || ((t.comp || t.sum) && t.kind === 'pc' && isTurnOf(`pc_${t.owner}`)) || (t.sum && t.from && isTurnOf(t.from)))) { keyHint(isDM() ? 'Сейчас не его ход' : 'Сейчас не ваш ход', id); return; }
+    mv = moveInfo(id);
+    if (mv.incap || !mv.speed) { keyHint(mv.incap ? 'Недееспособен' : 'Скорость 0', id); return; }
+    if (mv.leftX < 0.05) { keyHint(`Скорость потрачена${mv.canDash ? ' — Рывок (F)' : ''}`, id); return; }
+  }
+  const B = fwBodies(id);
+  Object.assign(FW, { id, mv, forced, cur: null, ft: 0, base: econ(id).move || 0, v: 0, trav: 0, moved: false, solid: forced ? [] : B.solid, pass: B.pass,
+    occ: forced ? null : occupancy(id), zd: forced ? null : zoneDiff(id), t0: performance.now(), last: performance.now(), sent: performance.now(), dir: rot3(...dirNow()) });
+  FW.raf = requestAnimationFrame(fwTick);
+}
+function fwTick(now) {
+  FW.raf = 0;
+  const t = game && game.tokens[FW.id];
+  if (!t || (!FW.forced && isDown(t))) { fwEnd(); return; }
+  const dt = Math.min(0.05, Math.max(0, (now - FW.last) / 1000)); FW.last = now;
+  // Направление — относительно камеры, под любым углом; короткое нажатие — хотя бы маленький шажок
+  let [dx, dy] = rot3(...dirNow());
+  if (dx || dy) FW.dir = [dx, dy]; else if ((now - FW.t0) / 1000 < FW_TAP && (FW.dir[0] || FW.dir[1])) [dx, dy] = FW.dir;
+  const L = Math.hypot(dx, dy);
+  if (!L) { fwEnd(); return; }
+  dx /= L; dy /= L;
+  const s = t.size || 1, P0 = posOf(t), mult = fwMult(`${t.x}_${t.y}`);
+  FW.v = Math.min(FW_V, FW.v + FW_ACC * dt);
+  let step = FW.v * dt;
+  if (FW.mv) {
+    const left = FW.mv.leftX - FW.ft;
+    if (left < 0.05) { keyHint(`Скорость потрачена${FW.mv.canDash ? ' — Рывок (F)' : ''}`, FW.id); fwEnd(); return; }
+    step = Math.min(step, left / (FT() * mult));
+  }
+  const [nx, ny] = fwCollide(P0.fx + dx * step, P0.fy + dy * step, bodyR(s), FW.solid);
+  const P = placeAt(t, nx, ny), d = Math.hypot(P.fx - P0.fx, P.fy - P0.fy);
+  if (d > 1e-4) {
+    FW.moved = true;
+    if (!FW.forced) FW.ft += d * FT() * mult;
+    FW.trav += d;
+    const cell = P.x !== t.x || P.y !== t.y;
+    if (cell && FW.mv) checkOpportunity(FW.id, { ...t, x: P.x, y: P.y }, t.x, t.y);
+    Object.assign(t, P); FW.cur = P;
+    fwDraw(t);
+    if (cell) renderTokens();
+    if (cell || now - FW.sent > FW_SEND) fwSend(now);
+  }
+  FW.raf = requestAnimationFrame(fwTick);
+}
+// Пока идём, ответ базы отстаёт на последнюю отправку — своя позиция и потраченные футы важнее (иначе фигуру дёргает назад)
+function fwKeep() {
+  if (!FW.raf || !FW.cur || !game) return;
+  const t = game.tokens && game.tokens[FW.id];
+  if (t) Object.assign(t, FW.cur);
+  if (FW.mv && game.econ) game.econ[FW.id] = { ...(game.econ[FW.id] || {}), move: +(FW.base + FW.ft).toFixed(2) };
+}
+// Своя фигура рисуется сразу, не дожидаясь базы: плоский вид — без плавного перехода, объёмный — шагом на месте
+function fwDraw(t) {
+  const s = t.size || 1, el = $(`[data-tok="${FW.id}"]`);
+  if (el) { el.style.transitionDuration = '0s'; el._pos = [t.fx - s / 2, t.fy - s / 2]; el.style.left = (t.fx - s / 2) * CELL + 'px'; el.style.top = (t.fy - s / 2) * CELL + 'px'; }
+  if (g3on) g3.walkTo(FW.id, t.fx - s / 2, t.fy - s / 2);
+  camWalk = true; camUpdate(); camWalk = false;
+}
+function fwSend(now) {
+  const t = game.tokens[FW.id];
+  if (!t) return;
+  FW.sent = now;
+  const upd = posUpd(FW.id, { x: t.x, y: t.y, fx: t.fx, fy: t.fy });
+  if (FW.mv) {
+    const used = +(FW.base + FW.ft).toFixed(2);
+    upd[`econ/${FW.id}/move`] = used;
+    game.econ = { ...(game.econ || {}), [FW.id]: { ...econ(FW.id), move: used } }; // остаток — сразу, не дожидаясь базы
+    keyHint(`осталось ${Math.max(0, Math.floor(FW.mv.leftX - FW.ft + 0.01))} фт`, FW.id);
+  }
+  if (FW.trav > 0.01) { travelStep(FW.id, FW.trav); FW.trav = 0; }
+  R.update(ref(gpath()), upd).catch((err) => app.toast(`Не удалось переместить: ${esc(err.code || err.message)}`));
+}
+// Остановка: на своём (союзнике) стоять нельзя — отодвинуть на ближайшее свободное место; затем отправить итог
+function fwEnd() {
+  if (FW.raf) cancelAnimationFrame(FW.raf);
+  FW.raf = 0;
+  const t = game && game.tokens[FW.id];
+  if (!t || !FW.moved) return;
+  const s = t.size || 1, r = bodyR(s), all = [...FW.solid, ...FW.pass], P0 = posOf(t);
+  const clash = (x, y) => all.some((b) => Math.hypot(x - b.x, y - b.y) < r + b.r - 1e-3) || fwCollide(x, y, r, null).some((v, i) => Math.abs(v - [x, y][i]) > 1e-3);
+  if (!FW.forced && FW.pass.some((b) => Math.hypot(P0.fx - b.x, P0.fy - b.y) < r + b.r - 1e-3)) {
+    let best = null;
+    for (let rad = 0.1; rad <= 2.5 && !best; rad += 0.1) for (let a = 0; a < 24; a++) {
+      const x = P0.fx + Math.cos((a / 24) * Math.PI * 2) * rad, y = P0.fy + Math.sin((a / 24) * Math.PI * 2) * rad;
+      if (x < s / 2 || y < s / 2 || x > W() - s / 2 || y > H() - s / 2 || clash(x, y)) continue;
+      best = [x, y]; break;
+    }
+    if (best) {
+      const P = placeAt(t, best[0], best[1]);
+      if ((P.x !== t.x || P.y !== t.y) && FW.mv) checkOpportunity(FW.id, { ...t, x: P.x, y: P.y }, t.x, t.y);
+      Object.assign(t, P); FW.cur = P; fwDraw(t);
+    }
+  }
+  FW.moved = false;
+  fwSend(performance.now());
+  renderTokens();
 }
 // Размещение области клавишами: сфера и куб двигаются по клетке, конус и линия от себя — поворачиваются
 function castKey(dx, dy) {

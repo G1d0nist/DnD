@@ -1893,7 +1893,7 @@ export function create(wrap, api) {
           const gap = now - (T.cmdAt || -9), d = Math.max(Math.abs(tx - T.pos.x), Math.abs(tz - T.pos.z));
           if (!T.walk || !moving) T.v = 0;
           // С места — чуть медленнее: при удержании второй шаг приходит позже (×1,4 в table.js), и фигурка как раз к нему успевает
-          T.vmax = !moving ? WALK_V * 0.8 : gap < 0.8 ? Math.min(WALK_V * 1.6, Math.max(WALK_V * 0.45, d / Math.max(gap, 0.2))) : WALK_V;
+          T.vmax = !moving ? WALK_V * 0.8 : gap < 0.8 ? Math.min(WALK_V * 1.6, Math.max(WALK_V * 0.45, d / Math.max(gap, 0.06))) : WALK_V; // (свободная ходьба шлёт позицию ~10 раз в секунду)
           T.walk = true; T.cmdAt = now; T.len = T.from.distanceTo(T.to) || 1;
         } else T.walk = false;
         T.yaw = Math.atan2(tx - T.from.x, tz - T.from.z);
@@ -1904,6 +1904,13 @@ export function create(wrap, api) {
     });
     [...toks.values()].forEach((T) => { if (!seen.has(T.id)) dropTok(T); });
     stale = true; zoneStale = true; kick(1100);
+  }
+  // Свободная ходьба своего персонажа: позиция ставится сразу (её считает table.js каждый кадр), фигурка идёт и смотрит по ходу
+  function walkTo(id, x, y) {
+    const T = toks.get(id); if (!T) return;
+    const nx = x + T.t.size / 2, nz = y + T.t.size / 2, dx = nx - T.pos.x, dz = nz - T.pos.z;
+    if (Math.abs(dx) + Math.abs(dz) > 1e-5) T.yaw = Math.atan2(dx, dz);
+    T.pos.set(nx, 0, nz); T.to.copy(T.pos); T.from.copy(T.pos); T.mt = 1; T.walk = false; T.endAt = performance.now() / 1000; kick();
   }
   function dragTo(id, x, y) { const T = toks.get(id); if (!T) return; T.pos.set(x + T.t.size / 2, 0, y + T.t.size / 2); T.to.copy(T.pos); T.mt = 1; T.lift = 1; kick(); }
   function hit(id, miss) {
@@ -2757,5 +2764,5 @@ export function create(wrap, api) {
   }
   // Для проверок: прогнать кадры без requestAnimationFrame (в скрытой вкладке он стоит)
   function step(k = 1, dt = 1 / 30) { resize(); for (let i = 0; i < k; i++) update(dt); draw(); }
-  return { _toks: toks, rune, missiles, heal: healFx, setOn, tokens, tex, ground, pick, project, tokTop, dragTo, hit, kick, step, attack, burst, fx: fxBox, refresh() { stale = true; kick(); }, info: () => ({ toks: toks.size, props: propBox.children.reduce((a, m) => a + m.count, 0), walls: wallMesh ? wallMesh.geometry.index.count / 3 : 0, ground: [groundCv.width, groundCv.height], liquids: Object.keys(liquids).filter((k) => liquids[k].mesh && liquids[k].mesh.visible), doors: doorBox.children.length, lamps: LAMPS.filter((L) => L.intensity > 0).length, sparks: SPARK.ps.length, smoke: SMOKE.ps.length, fx: FX.length, zones: zones.map((z) => z.kind), zoneMeshes: zoneBox.children.length, anims: [...toks.values()].filter((T) => T.anim).map((T) => `${T.id}:${T.anim.cur}`), sizes: [...toks.values()].map((T) => { const v = new THREE.Box3().setFromObject(T.body, true).getSize(new THREE.Vector3()); return `${T.id}:${v.x.toFixed(2)}x${v.y.toFixed(2)}x${v.z.toFixed(2)}`; }), calls: renderer.info.render.calls, tris: renderer.info.render.triangles, cam: { ...cur } }) };
+  return { _toks: toks, rune, missiles, heal: healFx, setOn, tokens, tex, ground, pick, project, tokTop, dragTo, walkTo, hit, kick, step, attack, burst, fx: fxBox, refresh() { stale = true; kick(); }, info: () => ({ toks: toks.size, props: propBox.children.reduce((a, m) => a + m.count, 0), walls: wallMesh ? wallMesh.geometry.index.count / 3 : 0, ground: [groundCv.width, groundCv.height], liquids: Object.keys(liquids).filter((k) => liquids[k].mesh && liquids[k].mesh.visible), doors: doorBox.children.length, lamps: LAMPS.filter((L) => L.intensity > 0).length, sparks: SPARK.ps.length, smoke: SMOKE.ps.length, fx: FX.length, zones: zones.map((z) => z.kind), zoneMeshes: zoneBox.children.length, anims: [...toks.values()].filter((T) => T.anim).map((T) => `${T.id}:${T.anim.cur}`), sizes: [...toks.values()].map((T) => { const v = new THREE.Box3().setFromObject(T.body, true).getSize(new THREE.Vector3()); return `${T.id}:${v.x.toFixed(2)}x${v.y.toFixed(2)}x${v.z.toFixed(2)}`; }), calls: renderer.info.render.calls, tris: renderer.info.render.triangles, cam: { ...cur } }) };
 }
