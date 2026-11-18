@@ -526,6 +526,21 @@ function renderRot() {
   $('#tblNorth').style.transform = `rotate(${camYaw}rad)`;
   el.classList.toggle('on', !!camYaw || Math.abs(camPitch - PITCH0) > 0.01);
 }
+// Точная позиция существа: fx, fy — центр фигуры в клетках (дробный), x, y — клетка для механик (левый верхний угол
+// места, где стоит центр). Все правила (досягаемость, области, туман, занятость) смотрят на x, y; положение на поле — fx, fy.
+// Кто записывает только x, y (старый код, старые игры) — fx, fy не совпадают с клеткой и не учитываются: фигура в центре клетки
+const cellOf = (c, s) => Math.round(c - s / 2);
+function posOf(t) {
+  const s = t.size || 1;
+  return typeof t.fx === 'number' && typeof t.fy === 'number' && cellOf(t.fx, s) === t.x && cellOf(t.fy, s) === t.y ? { fx: t.fx, fy: t.fy } : { fx: t.x + s / 2, fy: t.y + s / 2 };
+}
+// Поставить существо в точку (центр fx, fy): в пределах карты; клетка для механик считается сама. Возвращает { x, y, fx, fy }
+function placeAt(t, fx, fy) {
+  const s = t.size || 1;
+  fx = +Math.max(s / 2, Math.min(W() - s / 2, fx)).toFixed(3); fy = +Math.max(s / 2, Math.min(H() - s / 2, fy)).toFixed(3);
+  return { x: Math.max(0, Math.min(W() - s, cellOf(fx, s))), y: Math.max(0, Math.min(H() - s, cellOf(fy, s))), fx, fy };
+}
+const posUpd = (id, P, upd = {}) => Object.assign(upd, { [`tokens/${id}/x`]: P.x, [`tokens/${id}/y`]: P.y, [`tokens/${id}/fx`]: P.fx, [`tokens/${id}/fy`]: P.fy });
 const myTok = () => (user && game ? game.tokens[`pc_${user.uid}`] : null);
 const camFollow = () => !isDM() && !camFree && !!myTok();
 // В объёмном виде можно приблизиться к самому персонажу (до 800%), в плоском хватает 250%
@@ -548,17 +563,17 @@ function camCenter(x, y, smooth) {
   if (smooth) { b.style.transition = 'transform .3s ease'; clearTimeout(camCenter.t); camCenter.t = setTimeout(() => { b.style.transition = ''; }, 320); }
   layoutBoard();
 }
-const camOn = (t) => camCenter(t.x + (t.size || 1) / 2, t.y + (t.size || 1) / 2, true);
+const camOn = (t) => camCenter(posOf(t).fx, posOf(t).fy, true);
 // После каждой перерисовки: если персонаж сдвинулся (или поменялся масштаб, размер окна) — камера за ним
 function camUpdate() {
   renderCam();
   const t = camFollow() && myTok(), w = $('#tblWrap');
   if (!t || (drag && drag.kind === 'token' && drag.id === `pc_${user.uid}`)) return;
-  const key = `${t.x}_${t.y}_${zoom}_${W()}x${H()}_${w.clientWidth}x${w.clientHeight}`;
+  const P = posOf(t), key = `${P.fx}_${P.fy}_${zoom}_${W()}x${H()}_${w.clientWidth}x${w.clientHeight}`;
   if (key === camKey) return;
   const first = !camKey;
   camKey = key;
-  camCenter(t.x + (t.size || 1) / 2, t.y + (t.size || 1) / 2, !first);
+  camCenter(P.fx, P.fy, !first);
 }
 function camHome() {
   if (isDM()) { const c = currentEntry(), t = game.tokens[selId] || (c && game.tokens[c.tokenId]); if (t) camOn(t); else zoomFit(); return; }
@@ -1029,10 +1044,10 @@ function lightMap() {
   const base = AMB[fogSet().amb || 'bright'] ?? 2, lv = new Map();
   if (base >= 2) return { at: (k) => (WALL.dark.has(k) ? 0 : 2) }; // магическая тьма гасит и дневной свет
   const srcs = [...Object.values(game.lights || {}).map((L) => ({ x: L.x + 0.5, y: L.y + 0.5, b: +L.b || 20, d: +L.d || 20 })),
-    ...Object.values(game.tokens || {}).filter((t) => t.lt && !(t.hidden && !isDM())).map((t) => { const s = t.size || 1; return { x: t.x + s / 2, y: t.y + s / 2, b: +t.lt.b || 0, d: +t.lt.d || 0 }; }),
+    ...Object.values(game.tokens || {}).filter((t) => t.lt && !(t.hidden && !isDM())).map((t) => { const P = posOf(t); return { x: P.fx, y: P.fy, b: +t.lt.b || 0, d: +t.lt.d || 0 }; }),
     // Заклинания: область света (Дневной свет) и светящиеся существа («Свет», Огонь фей — тусклый 10 фт)
     ...Object.values(game.areas || {}).filter((A) => A.light && A.keep).map((A) => ({ x: +A.ox || 0, y: +A.oy || 0, b: +A.light.b || 0, d: +A.light.d || 0 })),
-    ...Object.values(game.effects || {}).filter((e) => e.glow && game.tokens[e.tgt]).map((e) => { const t = game.tokens[e.tgt], s = t.size || 1; return { x: t.x + s / 2, y: t.y + s / 2, b: +e.glow.b || 0, d: +e.glow.d || 0 }; })];
+    ...Object.values(game.effects || {}).filter((e) => e.glow && game.tokens[e.tgt]).map((e) => { const P = posOf(game.tokens[e.tgt]); return { x: P.fx, y: P.fy, b: +e.glow.b || 0, d: +e.glow.d || 0 }; })];
   srcs.forEach((L) => {
     const rb = L.b / FT(), rd = (L.b + L.d) / FT();
     for (let x = Math.max(0, Math.floor(L.x - rd - 1)); x < Math.min(W(), Math.ceil(L.x + rd + 1)); x++)
@@ -1204,10 +1219,11 @@ function renderTokens() {
     const showNums = t.kind === 'pc' || isDM();
     if (!(drag && drag.kind === 'token' && drag.id === id)) {
       // Шаг — плавно; чем дальше, тем дольше (но не дольше секунды), чтобы было видно, куда пошёл
-      const n = el._pos ? Math.max(Math.abs(el._pos[0] - t.x), Math.abs(el._pos[1] - t.y)) : 0;
+      const P = posOf(t), lx = P.fx - s / 2, ly = P.fy - s / 2; // по точной позиции, а не по клетке
+      const n = el._pos ? Math.max(Math.abs(el._pos[0] - lx), Math.abs(el._pos[1] - ly)) : 0;
       if (n) el.style.transitionDuration = `${Math.min(1, 0.2 + n * 0.12).toFixed(2)}s`;
-      el._pos = [t.x, t.y];
-      el.style.left = t.x * CELL + 'px'; el.style.top = t.y * CELL + 'px';
+      el._pos = [lx, ly];
+      el.style.left = lx * CELL + 'px'; el.style.top = ly * CELL + 'px';
     }
     el.style.width = el.style.height = s * CELL + 'px';
     el.style.setProperty('--tc', t.kind === 'npc' ? SIDE_COLOR[t.side || 'enemy'] : t.color || '#d4a64a');
@@ -1223,7 +1239,7 @@ function renderTokens() {
       ${+t.alt ? `<div class="tok-alt" title="Высота">↑${t.alt}</div>` : ''}${+t.ward ? `<div class="tok-ward" title="Магическая защита: принимает урон первой">🛡${t.ward}</div>` : ''}<div class="tok-name">${esc(label || '')}${fxOf(id).filter(([, f]) => f.ic).slice(0, 4).map(([, f]) => `<span class="tok-fx" title="${esc(fxTip(f))}">${f.ic}</span>`).join('')}${(t.cond || []).length ? ` <span class="tok-cond">●${t.cond.length}</span>` : ''}</div>`;
     // Пересоздавать содержимое только при изменении — иначе касание пальцем «теряет» токен посреди перетаскивания
     if (el._html !== html) { el.innerHTML = html; el._html = html; }
-    if (g3on) list3.push({ id, x: t.x, y: t.y, size: s, color: t.kind === 'npc' ? SIDE_COLOR[t.side || 'enemy'] : t.color || '#d4a64a', img: t.img || '', ic: t.ic || '', name: t.name || '',
+    if (g3on) list3.push({ id, x: posOf(t).fx - s / 2, y: posOf(t).fy - s / 2, size: s, color: t.kind === 'npc' ? SIDE_COLOR[t.side || 'enemy'] : t.color || '#d4a64a', img: t.img || '', ic: t.ic || '', name: t.name || '',
       label: `${esc(label || '')}${fxOf(id).filter(([, f]) => f.ic).slice(0, 4).map(([, f]) => f.ic).join('')}${(t.cond || []).length ? ` <span class="tok-cond">●${t.cond.length}</span>` : ''}`,
       look: t.kind === 'pc' && !t.comp && !t.wild ? t.look || null : null,
       aura: dead ? null : aura3(id), cond: down ? [] : t.cond || [], pct: t.hpMax ? pct : null, down, dead, sel: selId === id, turn: !!(cur && cur.tokenId === id), ghost: !!(t.hidden || invis || banned), alt: +t.alt || 0, cls: `side-${team(t)} ${t.kind}` });
@@ -1473,11 +1489,16 @@ function onUp(e) {
     $(`[data-tok="${d.id}"]`)?.classList.remove('dragging');
     if (!t || !d.moved) { renderTokens(); return; }
     const s = t.size || 1;
-    const x = Math.max(0, Math.min(W() - s, Math.round((p.px - d.offX) / CELL))), y = Math.max(0, Math.min(H() - s, Math.round((p.py - d.offY) / CELL)));
+    // Фигура встаёт там, где её отпустили (не обязательно в центре клетки); клетка для механик — та, где её центр
+    const P = placeAt(t, (p.px - d.offX) / CELL + s / 2, (p.py - d.offY) / CELL + s / 2), { x, y } = P;
     const T = TERRAIN[(game.map || {})[`${x}_${y}`]];
     if ((T && T.block) || doorShut(`${x}_${y}`) || WALL.block.has(`${x}_${y}`)) { app.toast(T && T.block || WALL.block.has(`${x}_${y}`) ? 'Там стена' : 'Дверь закрыта'); renderTokens(); return; }
-    if (x === d.sx && y === d.sy) { renderTokens(); return; }
-    const upd = { [`tokens/${d.id}/x`]: x, [`tokens/${d.id}/y`]: y };
+    const upd = posUpd(d.id, P);
+    if (x === d.sx && y === d.sy) { // сдвинули внутри своей клетки — только поправить положение
+      t.fx = P.fx; t.fy = P.fy; renderTokens();
+      R.update(ref(gpath()), upd).catch((err) => { app.toast(`Не удалось переместить: ${esc(err.code || err.message)}`); });
+      return;
+    }
     if (d.fight) {
       const cost = d.dist.get(`${x}_${y}`);
       let busy = false;
@@ -1493,7 +1514,7 @@ function onUp(e) {
         checkOpportunity(d.id, { ...t, x, y }, d.sx, d.sy);
       }
     }
-    t.x = x; t.y = y;
+    t.x = x; t.y = y; t.fx = P.fx; t.fy = P.fy;
     renderTokens();
     travelStep(d.id, Math.max(Math.abs(x - d.sx), Math.abs(y - d.sy)));
     R.update(ref(gpath()), upd).catch((err) => { app.toast(`Не удалось переместить: ${esc(err.code || err.message)}`); });
@@ -8466,7 +8487,8 @@ function stepMove(dx, dy) {
   }
   const cost = reachMap(t.x, t.y, FT() * 4, forced ? null : occ, mv && mv.prone, forced ? null : zoneDiff(id)).get(`${x}_${y}`);
   if (cost == null) return false;
-  const upd = { [`tokens/${id}/x`]: x, [`tokens/${id}/y`]: y };
+  // Шаг на клетку сохраняет, где внутри клетки стоит фигура
+  const P0 = posOf(t), P = { x, y, fx: +(P0.fx + dx).toFixed(3), fy: +(P0.fy + dy).toFixed(3) }, upd = posUpd(id, P);
   if (mv) {
     if (cost > mv.left) { keyHint(mv.left ? `Шаг ${cost} фт, осталось ${mv.left} фт` : `Скорость потрачена${mv.canDash ? ' — Рывок (F)' : ''}`, id); return 'stop'; }
     const used = (econ(id).move || 0) + cost;
@@ -8474,7 +8496,7 @@ function stepMove(dx, dy) {
     game.econ = { ...(game.econ || {}), [id]: { ...econ(id), move: used } }; // следующий шаг — от свежего остатка, не дожидаясь базы
     checkOpportunity(id, { ...t, x, y }, t.x, t.y);
   }
-  t.x = x; t.y = y;
+  t.x = x; t.y = y; t.fx = P.fx; t.fy = P.fy;
   renderTokens(); camUpdate();
   travelStep(id, 1);
   R.update(ref(gpath()), upd).catch((err) => app.toast(`Не удалось переместить: ${esc(err.code || err.message)}`));
@@ -8973,12 +8995,12 @@ function g3State() {
   const lights = [...Object.values(game.lights || {}).map((L) => ({ x: L.x + 0.5, y: L.y + 0.5, r: ((+L.b || 20) + (+L.d || 20)) / FT(), fix: 1 })),
     // Свет в руках — идёт вместе с существом: факел и свеча — тёплые и мерцают, фонарь ровнее, заговор «Свет» — холодный белый
     ...Object.entries(game.tokens || {}).filter(([, t]) => t.lt && (+t.lt.b || +t.lt.d) && !(t.hidden && !isDM()) && !fogHides(t)).map(([id, t]) => {
-      const i = +t.lt.i || 0; return { x: t.x + (t.size || 1) / 2, y: t.y + (t.size || 1) / 2, r: ((+t.lt.b || 0) + (+t.lt.d || 0)) / FT(), id, c: i === 3 ? '#dfe9ff' : i === 2 || i === 5 ? '#ffc070' : '#ff9a4a', fl: i === 3 ? 0 : i === 2 || i === 5 ? 0.35 : 1, hand: 1 }; }),
+      const i = +t.lt.i || 0; return { x: posOf(t).fx, y: posOf(t).fy, r: ((+t.lt.b || 0) + (+t.lt.d || 0)) / FT(), id, c: i === 3 ? '#dfe9ff' : i === 2 || i === 5 ? '#ffc070' : '#ff9a4a', fl: i === 3 ? 0 : i === 2 || i === 5 ? 0.35 : 1, hand: 1 }; }),
     // Заклинания: «Дневной свет» и другие области света; светящиеся существа («Свет» на предмете, Огонь фей, Сияющая кара…)
     ...Object.values(game.areas || {}).filter((A) => A.light && A.keep).map((A) => ({ x: +A.ox || 0, y: +A.oy || 0, r: ((+A.light.b || 0) + (+A.light.d || 0)) / FT(), c: '#fff4dc', fl: 0, big: 1 })),
     ...Object.values(game.effects || {}).filter((e) => e.glow && game.tokens[e.tgt] && !fogHides(game.tokens[e.tgt]) && !(game.tokens[e.tgt].hidden && !isDM())).map((e) => {
       const t = game.tokens[e.tgt], n = e.n || '';
-      return { x: t.x + (t.size || 1) / 2, y: t.y + (t.size || 1) / 2, r: Math.max(1, ((+e.glow.b || 0) + (+e.glow.d || 0)) / FT()), id: e.tgt, fl: /пламя/i.test(n) ? 0.8 : 0, hand: /^(Свет|Вечное пламя)$/.test(n) ? 1 : 0,
+      return { x: posOf(t).fx, y: posOf(t).fy, r: Math.max(1, ((+e.glow.b || 0) + (+e.glow.d || 0)) / FT()), id: e.tgt, fl: /пламя/i.test(n) ? 0.8 : 0, hand: /^(Свет|Вечное пламя)$/.test(n) ? 1 : 0,
         c: /фей/i.test(n) ? '#b98cff' : /пламя/i.test(n) ? '#ff9a4a' : /Свет/.test(n) ? '#dfe9ff' : '#ffe39a' }; })];
   // rocky — каменная земля под открытым небом (горы, перевал), а не плиты подземелья; rooms — что за комнаты (кровати, стойки)
   const gen = (game.meta || {}).gen || {}, rocky = (game.meta || {}).ground === 'stone' && (gen.tpl ? ['mountains', 'pass', 'volcano'].includes(gen.tpl) : (f.amb || 'bright') !== 'dark');
