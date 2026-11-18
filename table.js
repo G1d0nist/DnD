@@ -537,13 +537,14 @@ function renderRot() {
   let el = $('#tblRot');
   if (!el) {
     el = document.createElement('div'); el.id = 'tblRot'; el.className = 'tbl-rot';
-    el.innerHTML = '<button data-tbl="shoulder" id="tblShoulder" title="Вид из-за плеча (клавиша V): камера близко за персонажем, правая кнопка мыши — крутить камеру">👁</button><button data-tbl="rotL" title="Повернуть камеру влево (клавиша Z). Мышью: зажать колёсико и тянуть — поворот и наклон">⟲</button><button data-tbl="rotN" title="Север вверх, обычный наклон (клавиша C)"><span id="tblNorth">▲</span></button><button data-tbl="rotR" title="Повернуть камеру вправо (клавиша X)">⟳</button>';
+    el.innerHTML = '<button data-tbl="grid3" id="tblGrid3" title="Клетки на поле">▦</button><button data-tbl="shoulder" id="tblShoulder" title="Вид из-за плеча (клавиша V): камера близко за персонажем, правая кнопка мыши — крутить камеру">👁</button><button data-tbl="rotL" title="Повернуть камеру влево (клавиша Z). Мышью: зажать колёсико и тянуть — поворот и наклон">⟲</button><button data-tbl="rotN" title="Север вверх, обычный наклон (клавиша C)"><span id="tblNorth">▲</span></button><button data-tbl="rotR" title="Повернуть камеру вправо (клавиша X)">⟳</button>';
     $('#tblWrap').appendChild(el);
   }
   el.hidden = !game || !g3on;
   $('#tblNorth').style.transform = `rotate(${camYaw}rad)`;
   el.classList.toggle('on', !!camYaw || Math.abs(camPitch - PITCH0) > 0.01);
   const sb = $('#tblShoulder'); if (sb) { sb.classList.toggle('active', !!shoulder); sb.hidden = isDM(); }
+  const gb = $('#tblGrid3'); if (gb) { const m = grid3Mode(); gb.classList.toggle('active', m === 'on'); gb.style.opacity = m === 'off' ? 0.5 : ''; gb.title = `${GRID3_T[m]} — нажать, чтобы переключить (в бою → всегда → скрыты)`; }
 }
 // Точная позиция существа: fx, fy — центр фигуры в клетках (дробный), x, y — клетка для механик (левый верхний угол
 // места, где стоит центр). Все правила (досягаемость, области, туман, занятость) смотрят на x, y; положение на поле — fx, fy.
@@ -925,14 +926,26 @@ function drawTerrain() {
   // Брошенные вещи — маленький мешок в углу клетки (под токеном тоже видно)
   if (!g3on) Object.values(game.drops || {}).forEach((D) => { g.font = '15px system-ui'; g.fillText('🎒', D.x * CELL + CELL - 18, D.y * CELL + CELL - 4); });
   drawPois(g);
-  // В объёмном виде сетка не рисуется: клетки остаются (ход, дальность, области считаются по ним), но линий на поле нет
-  if ((!bgImg || bg.grid) && !g3on) {
-    g.strokeStyle = bgImg ? 'rgba(0,0,0,.35)' : 'rgba(255,255,255,.07)';
+  // В объёмном виде сетка — по настройке (кнопка ▦): «авто» — только в бою, где по ней удобно прикидывать расстояния
+  if ((!bgImg || bg.grid) && (!g3on || grid3On())) {
+    g.strokeStyle = g3on ? 'rgba(255,255,255,.055)' : bgImg ? 'rgba(0,0,0,.35)' : 'rgba(255,255,255,.07)';
     g.beginPath();
     for (let x = 0; x <= W(); x++) { g.moveTo(x * CELL + 0.5, 0); g.lineTo(x * CELL + 0.5, cv.height); }
     for (let y = 0; y <= H(); y++) { g.moveTo(0, y * CELL + 0.5); g.lineTo(cv.width, y * CELL + 0.5); }
     g.stroke();
   }
+  lastGrid3 = g3on && grid3On();
+}
+// Сетка в объёмном виде: 'auto' (в бою), 'on', 'off' — хранится на устройстве
+const GRID3 = ['auto', 'on', 'off'], GRID3_T = { auto: 'Клетки: в бою', on: 'Клетки: всегда', off: 'Клетки: скрыты' };
+const grid3Mode = () => (GRID3.includes(ls.get('dnd55-grid3')) ? ls.get('dnd55-grid3') : 'auto');
+const grid3On = () => { const m = grid3Mode(); return m === 'on' || (m === 'auto' && !!game && inFight()); };
+let lastGrid3 = false;
+// После перерисовки: начался или кончился бой — сетка появляется или прячется сама
+function grid3Sync() { if (g3on && game && grid3On() !== lastGrid3) drawTerrain(); }
+function grid3Next() {
+  const m = GRID3[(GRID3.indexOf(grid3Mode()) + 1) % GRID3.length];
+  ls.set('dnd55-grid3', m); drawTerrain(); renderRot(); app.toast(GRID3_T[m]);
 }
 // Уменьшить картинку до 2400 пикселей по большей стороне и сжать в JPEG — чтобы быстро грузилась у всех
 function shrinkImage(file, max = 2400, q = 0.82) {
@@ -7867,7 +7880,7 @@ function renderAll() {
   $('#tblCode').textContent = `Код: ${game.code}`;
   $('#tblLeave').textContent = isDM() ? '⏏ Выйти' : 'Покинуть'; $('#tblLeave').title = isDM() ? 'Выйти из игры: сохранить и выйти или удалить' : 'Покинуть игру';
   renderTools();
-  g3Sync();
+  g3Sync(); grid3Sync();
   renderHud(); // панель хода меняет высоту поля — до раскладки поля
   layoutBoard();
   if (!$('#tblTerrain').dataset.drawn || $('#tblTerrain').dataset.drawn !== game.id) { $('#tblTerrain').dataset.drawn = game.id; drawTerrain(); }
@@ -9107,6 +9120,7 @@ async function onClick(e) {
     else if (a === 'initGo') { const t = game.tokens[b.dataset.id]; if (t) { if (!isDM()) camSetFree(true); camOn(t); if (isDM()) { selId = b.dataset.id; renderAll(); } } }
     else if (a === 'rotL' || a === 'rotR' || a === 'rotN') camTurn(a === 'rotN' ? null : a === 'rotL' ? Math.PI / 4 : -Math.PI / 4);
     else if (a === 'shoulder') shoulderSet(!shoulder);
+    else if (a === 'grid3') grid3Next();
     else if (a === 'g3') g3Toggle(!g3on);
     else if (a === 'rollInit') {
       const m = me(), roll = app.mute(() => app.rollInit(m.charId)), s = app.summary(m.charId);
