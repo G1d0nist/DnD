@@ -1913,22 +1913,25 @@ export function create(wrap, api) {
   }
 
   // ---------- Камера ----------
-  const cur = { x: 0, z: 0, d: 0, yaw: 0, pitch: PITCH, ok: false }, tan = Math.tan((FOV * Math.PI) / 360);
+  const cur = { x: 0, z: 0, d: 0, h: 0, yaw: 0, pitch: PITCH, ok: false }, tan = Math.tan((FOV * Math.PI) / 360);
   function camStep(dt) {
     const v = api.view(), d = v.vh / (CELL * v.zoom) / (2 * tan), k = cur.ok ? 1 - Math.exp(-dt * 16) : 1;
     // Поворот — вокруг точки, на которую смотрит камера; к новому углу идём кратчайшей дугой
     const turn = Math.atan2(Math.sin((v.yaw || 0) - cur.yaw), Math.cos((v.yaw || 0) - cur.yaw));
-    const tilt = (v.pitch || PITCH) - cur.pitch;
+    // Сильное приближение (больше 250%) — камера опускается ниже и смотрит на уровень груди, как в игре от третьего лица
+    const close = Math.max(0, Math.min(1, (v.zoom - 2.5) / 5.5)), p0 = v.pitch || PITCH;
+    const tilt = p0 - Math.max(0, p0 - 0.6) * close * 0.7 - cur.pitch;
+    cur.h += (0.45 * close - (cur.h || 0)) * (cur.ok ? 1 - Math.exp(-dt * 16) : 1);
     // Камера при слежении — за самой фигуркой, а не прыжком к клетке, куда она только идёт: персонаж плывёт ровно
     const F = v.follow && toks.get(v.follow);
     if (F) v.cx += F.pos.x - F.to.x, v.cy += F.pos.z - F.to.z;
-    const moved = Math.abs(v.cx - cur.x) + Math.abs(v.cy - cur.z) + Math.abs(d - cur.d) / Math.max(1, d) + Math.abs(turn) + Math.abs(tilt) > 0.002;
+    const moved = Math.abs(v.cx - cur.x) + Math.abs(v.cy - cur.z) + Math.abs(d - cur.d) / Math.max(1, d) + Math.abs(turn) + Math.abs(tilt) + Math.abs(0.45 * close - cur.h) > 0.002;
     cur.x += (v.cx - cur.x) * k; cur.z += (v.cy - cur.z) * k; cur.d += (d - cur.d) * k; cur.yaw += turn * k; cur.pitch += tilt * k; cur.ok = true;
     const flat = cur.d * Math.cos(cur.pitch);
-    camera.position.set(cur.x + flat * Math.sin(cur.yaw), cur.d * Math.sin(cur.pitch), cur.z + flat * Math.cos(cur.yaw)); camera.lookAt(cur.x, 0, cur.z);
+    camera.position.set(cur.x + flat * Math.sin(cur.yaw), cur.h + cur.d * Math.sin(cur.pitch), cur.z + flat * Math.cos(cur.yaw)); camera.lookAt(cur.x, cur.h, cur.z);
     if (shake > 0) { const q = shake * cur.d * 0.012; camera.position.x += rr(-q, q); camera.position.y += rr(-q, q); camera.position.z += rr(-q, q); } // встряска от взрыва
     camera.far = cur.d * 4 + 100; camera.updateProjectionMatrix(); camera.updateMatrixWorld();
-    scene.fog.near = cur.d * 1.15; scene.fog.far = cur.d * 3.4; // даль тонет в дымке
+    const fd = Math.max(cur.d, 9); scene.fog.near = fd * 1.15; scene.fog.far = fd * 3.4; // даль тонет в дымке (вблизи — не ближе обычного)
     const R = Math.max(10, Math.min(60, cur.d * 0.75)), sc = sun.shadow.camera;
     sun.target.position.set(cur.x, 0, cur.z); sun.position.set(cur.x + sunDir.x * R, sunDir.y * R, cur.z + sunDir.z * R);
     if (WX.mesh) WX.mesh.position.set(cur.x, 0, cur.z);

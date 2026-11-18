@@ -528,7 +528,9 @@ function renderRot() {
 }
 const myTok = () => (user && game ? game.tokens[`pc_${user.uid}`] : null);
 const camFollow = () => !isDM() && !camFree && !!myTok();
-const ZMIN = 0.3, ZMAX = 2.5;
+// В объёмном виде можно приблизиться к самому персонажу (до 800%), в плоском хватает 250%
+const ZMIN = 0.3, ZMAX2 = 2.5, ZMAX3 = 8;
+const zmax = () => (g3on ? ZMAX3 : ZMAX2);
 function camClamp() {
   const w = $('#tblWrap'), vw = w.clientWidth, vh = w.clientHeight;
   if (!vw || !vh) return;
@@ -576,7 +578,7 @@ function renderCam() {
 }
 // Масштаб вокруг точки окна (ox, oy); при слежении — вокруг персонажа
 function zoomAt(z, ox, oy) {
-  z = Math.max(ZMIN, Math.min(ZMAX, +z.toFixed(2)));
+  z = Math.max(ZMIN, Math.min(zmax(), +z.toFixed(2)));
   if (z === zoom) return;
   if (g3on) { // объёмный вид: точка пола под указателем остаётся под ним
     const w = $('#tblWrap'), r = w.getBoundingClientRect(), P = g3.ground({ clientX: r.left + ox, clientY: r.top + oy }), k = zoom / z;
@@ -7857,7 +7859,7 @@ function renderMtabs() {
 }
 function zoomFit() {
   const w = $('#tblWrap');
-  zoom = Math.max(ZMIN, Math.min(ZMAX, +Math.min(w.clientWidth / (W() * CELL), w.clientHeight / (H() * CELL)).toFixed(2)));
+  zoom = Math.max(ZMIN, Math.min(ZMAX2, +Math.min(w.clientWidth / (W() * CELL), w.clientHeight / (H() * CELL)).toFixed(2)));
   // Всё поле целиком — значит, камера не привязана к персонажу
   if (!isDM() && myTok()) camFree = true;
   camCenter(W() / 2, H() / 2);
@@ -9023,6 +9025,7 @@ async function g3Toggle(want) {
   if (g3) g3.setOn(g3on);
   const b = $('#tblG3Btn'); if (b) b.classList.toggle('on', g3on);
   renderRot();
+  if (!g3on && zoom > ZMAX2) { zoom = ZMAX2; camKey = ''; } // из близкого объёмного вида — в плоский с допустимым масштабом
   if (game) { drawTerrain(); renderAll(); }
 }
 // При каждой перерисовке: включить сохранённый на устройстве выбор
