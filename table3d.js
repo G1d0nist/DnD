@@ -1750,7 +1750,8 @@ export function create(wrap, api) {
     A.cur = name; kick(300);
   }
   // Что фигурка делает сама по себе: лежит, идёт или стоит
-  const baseAnim = (T) => (T.t.dead || T.t.down ? 'death' : T.mt < 1 ? 'walk' : 'idle');
+  // (между шагами при удержании клавиши фигурка может дойти на миг раньше следующего шага — походку не сбрасываем)
+  const baseAnim = (T) => (T.t.dead || T.t.down ? 'death' : T.mt < 1 || performance.now() / 1000 - (T.endAt || -9) < 0.12 ? 'walk' : 'idle');
   const ringGeo = new THREE.RingGeometry(0.47, 0.54, 48); ringGeo.rotateX(-Math.PI / 2);
   const teamGeo = new THREE.RingGeometry(0.4, 0.44, 48); teamGeo.rotateX(-Math.PI / 2);
   const turnGeo = new THREE.RingGeometry(0.57, 0.62, 48); turnGeo.rotateX(-Math.PI / 2);
@@ -1863,6 +1864,8 @@ export function create(wrap, api) {
     T.root.traverse((o) => { if (o.userData.own) { o.material.map && o.material.map.dispose(); o.material.dispose(); o.geometry.dispose(); } });
     T.base.geometry.dispose(); T.base.material.dispose(); T.sel.material.dispose(); T.turn.material.dispose(); T.pick.geometry.dispose();
   }
+  // Ходьба по шагу: клетка за 0,28 с (как WALK_MS в table.js), разгон с места — за десятую долю секунды
+  const WALK_V = 1000 / 280, WALK_A = WALK_V / 0.1;
   let dragId = null;
   function tokens(list, drag) {
     const seen = new Set(); dragId = drag || null;
@@ -1881,8 +1884,18 @@ export function create(wrap, api) {
       T.op = op; T.base.material.opacity = 0.42 * op; chainSet(T, t);
       const tx = t.x + s / 2, tz = t.y + s / 2;
       if (fresh) { T.pos.set(tx, 0, tz); T.to.copy(T.pos); T.from.copy(T.pos); } else if (t.id !== dragId && (T.to.x !== tx || T.to.z !== tz)) {
-        const n = Math.max(Math.abs(T.to.x - tx), Math.abs(T.to.z - tz));
+        const n = Math.max(Math.abs(T.to.x - tx), Math.abs(T.to.z - tz)), now = performance.now() / 1000, moving = T.mt < 1 || now - (T.endAt || -9) < 0.12;
         T.from.copy(T.pos); T.to.set(tx, 0, tz); T.mt = 0; T.dur = Math.min(1, 0.2 + n * 0.12);
+        // Шаг на клетку — ровной походкой: следующий шаг подхватывается на ходу, без остановки и нового разгона.
+        // На ходу скорость подстраивается под то, как часто приходят шаги: оставшийся путь — за время между шагами,
+        // так фигурка не обгоняет шаги (иначе встаёт) и не копит отставание; реже шаги (трудная местность) — идёт медленнее
+        if (n <= 1) {
+          const gap = now - (T.cmdAt || -9), d = Math.max(Math.abs(tx - T.pos.x), Math.abs(tz - T.pos.z));
+          if (!T.walk || !moving) T.v = 0;
+          // С места — чуть медленнее: при удержании второй шаг приходит позже (×1,4 в table.js), и фигурка как раз к нему успевает
+          T.vmax = !moving ? WALK_V * 0.8 : gap < 0.8 ? Math.min(WALK_V * 1.6, Math.max(WALK_V * 0.45, d / Math.max(gap, 0.2))) : WALK_V;
+          T.walk = true; T.cmdAt = now; T.len = T.from.distanceTo(T.to) || 1;
+        } else T.walk = false;
         T.yaw = Math.atan2(tx - T.from.x, tz - T.from.z);
       }
       const html = `<div class="t3-n">${t.label}</div>${t.pct != null ? `<div class="t3-hp"><i style="width:${t.pct * 100}%;background:${t.pct > 0.5 ? '#5a9e5a' : t.pct > 0.25 ? '#d4a64a' : '#c94a3d'}"></i></div>` : ''}`;
@@ -1906,6 +1919,9 @@ export function create(wrap, api) {
     // Поворот — вокруг точки, на которую смотрит камера; к новому углу идём кратчайшей дугой
     const turn = Math.atan2(Math.sin((v.yaw || 0) - cur.yaw), Math.cos((v.yaw || 0) - cur.yaw));
     const tilt = (v.pitch || PITCH) - cur.pitch;
+    // Камера при слежении — за самой фигуркой, а не прыжком к клетке, куда она только идёт: персонаж плывёт ровно
+    const F = v.follow && toks.get(v.follow);
+    if (F) v.cx += F.pos.x - F.to.x, v.cy += F.pos.z - F.to.z;
     const moved = Math.abs(v.cx - cur.x) + Math.abs(v.cy - cur.z) + Math.abs(d - cur.d) / Math.max(1, d) + Math.abs(turn) + Math.abs(tilt) > 0.002;
     cur.x += (v.cx - cur.x) * k; cur.z += (v.cy - cur.z) * k; cur.d += (d - cur.d) * k; cur.yaw += turn * k; cur.pitch += tilt * k; cur.ok = true;
     const flat = cur.d * Math.cos(cur.pitch);
@@ -2637,7 +2653,14 @@ export function create(wrap, api) {
     if (wxStep(dt)) busy = true;
     toks.forEach((T) => {
       const t = T.t;
-      if (T.mt < 1) { T.mt = Math.min(1, T.mt + dt / T.dur); const f = T.mt * T.mt * (3 - 2 * T.mt); T.pos.lerpVectors(T.from, T.to, f); busy = true; }
+      if (T.mt < 1 && T.walk) {
+        // По диагонали — так же за один шаг (клетка по-соседски), поэтому скорость считаем по большей из осей
+        const rx = T.to.x - T.pos.x, rz = T.to.z - T.pos.z, rem = Math.hypot(rx, rz), k = rem / Math.max(Math.abs(rx), Math.abs(rz), 1e-6);
+        T.v = Math.min(T.vmax, T.v + WALK_A * dt);
+        const s = T.v * k * dt;
+        if (s >= rem) { T.pos.copy(T.to); T.mt = 1; T.endAt = performance.now() / 1000; } else { T.pos.x += (rx / rem) * s; T.pos.z += (rz / rem) * s; T.mt = Math.min(0.999, Math.max(0, 1 - (rem - s) / T.len)); }
+        busy = true;
+      } else if (T.mt < 1) { T.mt = Math.min(1, T.mt + dt / T.dur); const f = T.mt * T.mt * (3 - 2 * T.mt); T.pos.lerpVectors(T.from, T.to, f); busy = true; }
       if (T.anim) {
         // Удар и вздрагивание доигрываются до конца, потом — обратно к своему: стоять, идти или лежать
         const A = T.anim, base = baseAnim(T), a = A.acts[A.cur];

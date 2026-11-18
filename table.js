@@ -9013,7 +9013,7 @@ async function g3Toggle(want) {
     try {
       const m = await import('./table3d.js');
       g3 = m.create($('#tblWrap'), { CELL, canvases: { terrain: $('#tblTerrain'), areas: $('#tblAreas'), range: $('#tblRange'), fog: $('#tblFog'), fx: $('#tblFxCv') }, state: g3State, zones: g3Zones, links: g3Links,
-        view: () => { const w = $('#tblWrap'); return { cx: (cam.x + w.clientWidth / 2) / zoom / CELL, cy: (cam.y + w.clientHeight / 2) / zoom / CELL, zoom, vh: w.clientHeight, yaw: camYaw, pitch: camPitch }; } });
+        view: () => { const w = $('#tblWrap'); return { cx: (cam.x + w.clientWidth / 2) / zoom / CELL, cy: (cam.y + w.clientHeight / 2) / zoom / CELL, zoom, vh: w.clientHeight, yaw: camYaw, pitch: camPitch, follow: camFollow() ? `pc_${user.uid}` : null }; } });
       window.__g3 = g3;
     } catch (err) { g3busy = false; ls.set('dnd55-3d', '0'); app.toast('Не удалось включить объёмный вид: нужен интернет при первом включении и видеокарта с WebGL'); console.error(err); return; }
     g3busy = false;
