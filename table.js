@@ -508,10 +508,28 @@ function rot3(dx, dy, snap) {
   const c = Math.cos(a), s = Math.sin(a), x = dx * c + dy * s, y = -dx * s + dy * c;
   return snap ? [Math.round(x) || 0, Math.round(y) || 0] : [x, y];
 }
+// Вид «из-за плеча» (объёмный вид, игрок): камера близко и низко за персонажем, правая кнопка мыши — крутить камеру
+// вокруг него (влево-вправо и вверх-вниз), клавиши шага ведут туда, куда смотрит камера. Выключение — прежний вид
+let shoulder = null; // { zoom, pitch } — что было до включения
+function shoulderSet(on) {
+  if (on && (!g3on || isDM() || !myTok())) { if (g3on || !isDM()) app.toast(g3on ? 'Вид из-за плеча — для своего персонажа' : 'Вид из-за плеча — в объёмном виде (кнопка «3D»)'); return; }
+  if (!!on === !!shoulder) return;
+  const w = $('#tblWrap');
+  if (on) {
+    shoulder = { zoom, pitch: camPitch };
+    camFree = false; camKey = ''; camPitch = 0.42;
+    zoomAt(Math.max(zoom, 6), w.clientWidth / 2, w.clientHeight / 2);
+  } else {
+    const S = shoulder; shoulder = null;
+    camPitch = S.pitch; camKey = '';
+    zoomAt(S.zoom, w.clientWidth / 2, w.clientHeight / 2);
+  }
+  camUpdate(); renderRot();
+}
 function camTurn(d) {
   if (!g3on) return;
   camYaw = d == null ? 0 : Math.atan2(Math.sin(camYaw + d), Math.cos(camYaw + d));
-  if (d == null) camPitch = PITCH0;
+  if (d == null) camPitch = shoulder ? 0.42 : PITCH0;
   layoutBoard(); renderRot();
 }
 // Кнопки поворота в углу поля (только объёмный вид); стрелка компаса показывает, где север
@@ -519,12 +537,13 @@ function renderRot() {
   let el = $('#tblRot');
   if (!el) {
     el = document.createElement('div'); el.id = 'tblRot'; el.className = 'tbl-rot';
-    el.innerHTML = '<button data-tbl="rotL" title="Повернуть камеру влево (клавиша Z). Мышью: зажать колёсико и тянуть — поворот и наклон">⟲</button><button data-tbl="rotN" title="Север вверх, обычный наклон (клавиша C)"><span id="tblNorth">▲</span></button><button data-tbl="rotR" title="Повернуть камеру вправо (клавиша X)">⟳</button>';
+    el.innerHTML = '<button data-tbl="shoulder" id="tblShoulder" title="Вид из-за плеча (клавиша V): камера близко за персонажем, правая кнопка мыши — крутить камеру">👁</button><button data-tbl="rotL" title="Повернуть камеру влево (клавиша Z). Мышью: зажать колёсико и тянуть — поворот и наклон">⟲</button><button data-tbl="rotN" title="Север вверх, обычный наклон (клавиша C)"><span id="tblNorth">▲</span></button><button data-tbl="rotR" title="Повернуть камеру вправо (клавиша X)">⟳</button>';
     $('#tblWrap').appendChild(el);
   }
   el.hidden = !game || !g3on;
   $('#tblNorth').style.transform = `rotate(${camYaw}rad)`;
   el.classList.toggle('on', !!camYaw || Math.abs(camPitch - PITCH0) > 0.01);
+  const sb = $('#tblShoulder'); if (sb) { sb.classList.toggle('active', !!shoulder); sb.hidden = isDM(); }
 }
 // Точная позиция существа: fx, fy — центр фигуры в клетках (дробный), x, y — клетка для механик (левый верхний угол
 // места, где стоит центр). Все правила (досягаемость, области, туман, занятость) смотрят на x, y; положение на поле — fx, fy.
@@ -579,7 +598,7 @@ function camHome() {
   if (isDM()) { const c = currentEntry(), t = game.tokens[selId] || (c && game.tokens[c.tokenId]); if (t) camOn(t); else zoomFit(); return; }
   camFree = false; camKey = ''; camUpdate();
 }
-function camSetFree(on) { if (camFree === on) return; camFree = on; if (!on) camKey = ''; camUpdate(); }
+function camSetFree(on) { if (camFree === on) return; if (on && shoulder) shoulderSet(false); camFree = on; if (!on) camKey = ''; camUpdate(); }
 // Значок в углу поля: свободная камера и кнопка «◎»
 function renderCam() {
   renderRot();
@@ -8431,7 +8450,7 @@ const KEY_ACTS = [
   ['next', 'Следующая цель', ['Tab']], ['ok', 'Подтвердить: удар, заклинание', ['Enter']],
   ['endTurn', 'Закончить ход', ['Space']], ['dash', 'Рывок', ['KeyF']], ['dis', 'Отход', ['KeyG']], ['dodge', 'Уклонение', ['KeyH']],
   ['items', 'Вещи', ['KeyI']], ['chat', 'Журнал и чат', ['KeyJ']], ['cam', 'Камера: к персонажу / свободная', ['KeyM']],
-  ['rotL', 'Объёмный вид: повернуть камеру влево', ['KeyZ']], ['rotR', 'Объёмный вид: повернуть камеру вправо', ['KeyX']], ['rotN', 'Объёмный вид: север вверх', ['KeyC']], ['keys', 'Это окно — клавиши', ['KeyK']],
+  ['shoulder', 'Объёмный вид: из-за плеча (вкл/выкл)', ['KeyV']], ['rotL', 'Объёмный вид: повернуть камеру влево', ['KeyZ']], ['rotR', 'Объёмный вид: повернуть камеру вправо', ['KeyX']], ['rotN', 'Объёмный вид: север вверх', ['KeyC']], ['keys', 'Это окно — клавиши', ['KeyK']],
 ];
 const KEY_STORE = 'dnd55-keys';
 let keyMap = null;
@@ -8987,6 +9006,7 @@ function keyAction(a) {
   else if (a === 'chat') { mtab('log'); const c = $('#tblChat'); if (c) { c.focus(); c.scrollIntoView({ block: 'nearest' }); } }
   else if (a === 'cam') { if (isDM() || camFree) camHome(); else camSetFree(true); }
   else if (a === 'rotL' || a === 'rotR' || a === 'rotN') camTurn(a === 'rotN' ? null : a === 'rotL' ? Math.PI / 4 : -Math.PI / 4);
+  else if (a === 'shoulder') shoulderSet(!shoulder);
   else if (a === 'next') pickNext();
   else if (a === 'ok') keyOk();
   return pid;
@@ -9086,6 +9106,7 @@ async function onClick(e) {
     else if (a === 'camHome') camHome();
     else if (a === 'initGo') { const t = game.tokens[b.dataset.id]; if (t) { if (!isDM()) camSetFree(true); camOn(t); if (isDM()) { selId = b.dataset.id; renderAll(); } } }
     else if (a === 'rotL' || a === 'rotR' || a === 'rotN') camTurn(a === 'rotN' ? null : a === 'rotL' ? Math.PI / 4 : -Math.PI / 4);
+    else if (a === 'shoulder') shoulderSet(!shoulder);
     else if (a === 'g3') g3Toggle(!g3on);
     else if (a === 'rollInit') {
       const m = me(), roll = app.mute(() => app.rollInit(m.charId)), s = app.summary(m.charId);
@@ -9398,11 +9419,12 @@ async function g3Toggle(want) {
     try {
       const m = await import('./table3d.js');
       g3 = m.create($('#tblWrap'), { CELL, canvases: { terrain: $('#tblTerrain'), areas: $('#tblAreas'), range: $('#tblRange'), fog: $('#tblFog'), fx: $('#tblFxCv') }, state: g3State, zones: g3Zones, links: g3Links,
-        view: () => { const w = $('#tblWrap'); return { cx: (cam.x + w.clientWidth / 2) / zoom / CELL, cy: (cam.y + w.clientHeight / 2) / zoom / CELL, zoom, vh: w.clientHeight, yaw: camYaw, pitch: camPitch, follow: camFollow() ? `pc_${user.uid}` : null }; } });
+        view: () => { const w = $('#tblWrap'); return { cx: (cam.x + w.clientWidth / 2) / zoom / CELL, cy: (cam.y + w.clientHeight / 2) / zoom / CELL, zoom, vh: w.clientHeight, yaw: camYaw, pitch: camPitch, follow: camFollow() ? `pc_${user.uid}` : null, shoulder: !!shoulder }; } });
       window.__g3 = g3;
     } catch (err) { g3busy = false; ls.set('dnd55-3d', '0'); app.toast('Не удалось включить объёмный вид: нужен интернет при первом включении и видеокарта с WebGL'); console.error(err); return; }
     g3busy = false;
   }
+  if (!want && shoulder) { camPitch = shoulder.pitch; shoulder = null; } // из-за плеча — только в объёмном виде
   g3on = !!(want && g3 && game);
   $('#tblWrap').classList.toggle('g3', g3on);
   if (g3) g3.setOn(g3on);
@@ -9451,7 +9473,7 @@ $('#tblWrap').addEventListener('pointermove', (e) => {
   if (g3on) {
     camMid.moved = true;
     const a = camMid.yaw - dx * 0.008;
-    camYaw = Math.atan2(Math.sin(a), Math.cos(a)); camPitch = Math.max(0.45, Math.min(1.5, camMid.pitch + dy * 0.006));
+    camYaw = Math.atan2(Math.sin(a), Math.cos(a)); camPitch = Math.max(shoulder ? 0.2 : 0.45, Math.min(1.5, camMid.pitch + dy * 0.006));
     layoutBoard(); renderRot();
     return;
   }
@@ -9468,13 +9490,21 @@ $('#tblWrap').addEventListener('pointerup', (e) => {
 $('#tblWrap').addEventListener('pointerdown', (e) => {
   if (e.button !== 2 || !game || !g3on) return;
   e.preventDefault();
-  camRot = { x: e.clientX, y: e.clientY, cx: cam.x, cy: cam.y, moved: false, id: e.pointerId };
+  camRot = { x: e.clientX, y: e.clientY, cx: cam.x, cy: cam.y, yaw: camYaw, pitch: camPitch, moved: false, id: e.pointerId };
   try { $('#tblWrap').setPointerCapture(e.pointerId); } catch (err) { /* уже отпущен */ }
 });
 $('#tblWrap').addEventListener('pointermove', (e) => {
   if (!camRot || e.pointerId !== camRot.id) return;
   const dx = e.clientX - camRot.x, dy = e.clientY - camRot.y;
   if (!camRot.moved && Math.hypot(dx, dy) < 6) return;
+  // Из-за плеча правая кнопка не сдвигает поле, а крутит камеру вокруг персонажа
+  if (shoulder) {
+    camRot.moved = true;
+    const a = camRot.yaw - dx * 0.006;
+    camYaw = Math.atan2(Math.sin(a), Math.cos(a)); camPitch = Math.max(0.2, Math.min(1.2, camRot.pitch + dy * 0.004));
+    layoutBoard(); renderRot();
+    return;
+  }
   if (!camRot.moved) { camRot.moved = true; if (!isDM()) camSetFree(true); }
   const [rx, ry] = rot3(dx, dy); cam.x = camRot.cx - rx; cam.y = camRot.cy - ry; layoutBoard();
 });

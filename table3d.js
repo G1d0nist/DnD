@@ -55,7 +55,40 @@ export function create(wrap, api) {
 
   const scene = new THREE.Scene(); scene.background = new THREE.Color(0x0a0806); scene.fog = new THREE.Fog(0x0a0806, 10, 100);
   const camera = new THREE.PerspectiveCamera(FOV, 1, 0.1, 600);
-  const hemi = new THREE.HemisphereLight(0xaab6d0, 0x2a2018, 1); scene.add(hemi);
+  // ---------- Сквозь препятствия ----------
+  // Что стоит между камерой и своим персонажем (деревья, стены, скалы, мебель, крыши) — в круге вокруг него становится
+  // «решётчато» прозрачным: часть точек не рисуется (к центру круга — больше), без сортировки прозрачного. Пол не трогаем
+  // (только то, что выше 0,12 над полом), фигурки существ — тоже. Делается в шейдере любого освещаемого материала
+  const SEE = { uSeeOn: { value: 0 }, uSeeC: { value: new THREE.Vector2() }, uSeeR: { value: 1 }, uSeeZ: { value: 0 }, uSeeCam: { value: new THREE.Matrix4() } };
+  const SEE_HEAD = `uniform float uSeeOn; uniform vec2 uSeeC; uniform float uSeeR; uniform float uSeeZ; uniform mat4 uSeeCam;
+    const float SEE_B[16] = float[16](0., 8., 2., 10., 12., 4., 14., 6., 3., 11., 1., 9., 15., 7., 13., 5.);`;
+  const SEE_BODY = `if (uSeeOn > 0.5 && gl_FragCoord.z < uSeeZ) {
+      float sd = length(gl_FragCoord.xy - uSeeC) / uSeeR;
+      if (sd < 1.0 && (uSeeCam * vec4(-vViewPosition, 1.0)).y > 0.12) {
+        vec2 sq = mod(floor(gl_FragCoord.xy), 4.0);
+        if ((SEE_B[int(sq.x + sq.y * 4.0)] + 0.5) / 16.0 >= mix(0.2, 1.0, smoothstep(0.45, 1.0, sd))) discard;
+      }
+    }`;
+  function seeMat(m) {
+    if (!m || m.userData.see || m.transparent || !(m.isMeshStandardMaterial || m.isMeshLambertMaterial || m.isMeshPhongMaterial)) return;
+    m.userData.see = 1;
+    const prev = m.onBeforeCompile, k0 = m.customProgramCacheKey();
+    m.onBeforeCompile = function (sh, r) {
+      prev.call(this, sh, r);
+      if (!sh.fragmentShader.includes('vViewPosition') || !sh.fragmentShader.includes('#include <clipping_planes_fragment>')) return;
+      Object.assign(sh.uniforms, SEE);
+      sh.fragmentShader = sh.fragmentShader.replace('#include <common>', `#include <common>\n${SEE_HEAD}`).replace('#include <clipping_planes_fragment>', `#include <clipping_planes_fragment>\n${SEE_BODY}`);
+    };
+    m.customProgramCacheKey = () => `${k0}|see1`; // у разных материалов свои добавки в шейдер — не смешивать программы
+    m.needsUpdate = true;
+  }
+  let seeT = 0;
+  function seePatch() {
+    const skip = new Set([...toks.values()].map((T) => T.root));
+    const walk = (o) => { if (skip.has(o)) return; if (o.material) (Array.isArray(o.material) ? o.material : [o.material]).forEach(seeMat); o.children.forEach(walk); };
+    scene.children.forEach(walk);
+  }
+  const hemi =new THREE.HemisphereLight(0xaab6d0, 0x2a2018, 1); scene.add(hemi);
   const sun = new THREE.DirectionalLight(0xffe6c4, 2); sun.castShadow = true;
   sun.shadow.mapSize.set(2048, 2048); sun.shadow.bias = -0.0006; sun.shadow.normalBias = 0.03;
   scene.add(sun); scene.add(sun.target);
@@ -1928,16 +1961,18 @@ export function create(wrap, api) {
     // Сильное приближение (больше 250%) — камера опускается ниже и смотрит на уровень груди, как в игре от третьего лица
     const close = Math.max(0, Math.min(1, (v.zoom - 2.5) / 5.5)), p0 = v.pitch || PITCH;
     const tilt = p0 - Math.max(0, p0 - 0.6) * close * 0.7 - cur.pitch;
-    cur.h += (0.45 * close - (cur.h || 0)) * (cur.ok ? 1 - Math.exp(-dt * 16) : 1);
+    const hT = v.shoulder ? 0.75 : 0.45 * close; // из-за плеча — смотрим на уровень плеч
+    cur.h += (hT - (cur.h || 0)) * (cur.ok ? 1 - Math.exp(-dt * 16) : 1);
     // Камера при слежении — за самой фигуркой, а не прыжком к клетке, куда она только идёт: персонаж плывёт ровно
     const F = v.follow && toks.get(v.follow);
     if (F) v.cx += F.pos.x - F.to.x, v.cy += F.pos.z - F.to.z;
-    const moved = Math.abs(v.cx - cur.x) + Math.abs(v.cy - cur.z) + Math.abs(d - cur.d) / Math.max(1, d) + Math.abs(turn) + Math.abs(tilt) + Math.abs(0.45 * close - cur.h) > 0.002;
+    const moved = Math.abs(v.cx - cur.x) + Math.abs(v.cy - cur.z) + Math.abs(d - cur.d) / Math.max(1, d) + Math.abs(turn) + Math.abs(tilt) + Math.abs(hT - cur.h) > 0.002;
     cur.x += (v.cx - cur.x) * k; cur.z += (v.cy - cur.z) * k; cur.d += (d - cur.d) * k; cur.yaw += turn * k; cur.pitch += tilt * k; cur.ok = true;
     const flat = cur.d * Math.cos(cur.pitch);
     camera.position.set(cur.x + flat * Math.sin(cur.yaw), cur.h + cur.d * Math.sin(cur.pitch), cur.z + flat * Math.cos(cur.yaw)); camera.lookAt(cur.x, cur.h, cur.z);
     if (shake > 0) { const q = shake * cur.d * 0.012; camera.position.x += rr(-q, q); camera.position.y += rr(-q, q); camera.position.z += rr(-q, q); } // встряска от взрыва
     camera.far = cur.d * 4 + 100; camera.updateProjectionMatrix(); camera.updateMatrixWorld();
+    seeAt(F);
     const fd = Math.max(cur.d, 9); scene.fog.near = fd * 1.15; scene.fog.far = fd * 3.4; // даль тонет в дымке (вблизи — не ближе обычного)
     const R = Math.max(10, Math.min(60, cur.d * 0.75)), sc = sun.shadow.camera;
     sun.target.position.set(cur.x, 0, cur.z); sun.position.set(cur.x + sunDir.x * R, sunDir.y * R, cur.z + sunDir.z * R);
@@ -1945,7 +1980,22 @@ export function create(wrap, api) {
     if (sc.right !== R) { sc.left = -R; sc.right = R; sc.top = R; sc.bottom = -R; sc.near = 1; sc.far = R * 4; sc.updateProjectionMatrix(); }
     return moved;
   }
-  const ray = new THREE.Raycaster(), ndc = new THREE.Vector2(), floor = new THREE.Plane(new THREE.Vector3(0, 1, 0), 0), v3 = new THREE.Vector3();
+  // Круг «сквозь препятствия» — вокруг своего персонажа (за кем следит камера): по размеру фигурки на экране
+  const sv = [new THREE.Vector3(), new THREE.Vector3(), new THREE.Vector3(), new THREE.Vector3()], sbuf = new THREE.Vector2();
+  function seeAt(F) {
+    SEE.uSeeOn.value = F ? 1 : 0;
+    if (!F) return;
+    const top = (F.top || 1) + BASE_H, s = F.t.size || 1;
+    renderer.getDrawingBufferSize(sbuf);
+    const c = sv[0].set(F.pos.x, top * 0.55, F.pos.z), z = sv[1].copy(c).sub(camera.position).normalize().multiplyScalar(-0.45 * s).add(c).project(camera);
+    const head = sv[2].set(F.pos.x, top + 0.15, F.pos.z).project(camera), feet = sv[3].set(F.pos.x, 0, F.pos.z).project(camera);
+    c.project(camera);
+    SEE.uSeeC.value.set((c.x * 0.5 + 0.5) * sbuf.x, (c.y * 0.5 + 0.5) * sbuf.y);
+    SEE.uSeeZ.value = z.z * 0.5 + 0.5;
+    SEE.uSeeR.value = Math.max(70 * renderer.getPixelRatio(), 0.95 * Math.hypot((head.x - feet.x) * 0.5 * sbuf.x, (head.y - feet.y) * 0.5 * sbuf.y));
+    SEE.uSeeCam.value.copy(camera.matrixWorld);
+  }
+  const ray = new THREE.Raycaster(), ndc = new THREE.Vector2(), floor =new THREE.Plane(new THREE.Vector3(0, 1, 0), 0), v3 = new THREE.Vector3();
   function aimRay(e) { const r = canvas.getBoundingClientRect(); ndc.set(((e.clientX - r.left) / r.width) * 2 - 1, -((e.clientY - r.top) / r.height) * 2 + 1); ray.setFromCamera(ndc, camera); }
   // Точка пола под указателем — в пикселях 2D-поля
   function ground(e) { aimRay(e); const p = ray.ray.intersectPlane(floor, v3); return p ? { px: p.x * CELL, py: p.z * CELL } : { px: cur.x * CELL, py: cur.z * CELL }; }
@@ -2658,7 +2708,8 @@ export function create(wrap, api) {
   function kick(ms = 400) { until = Math.max(until, performance.now() + ms); }
   function update(dt) {
     time += dt;
-    if (stale) pull();
+    if (stale) { pull(); seeT = 0; }
+    if ((seeT -= dt) <= 0) { seeT = 1; seePatch(); } // новые предметы (и подгруженные модели) — тоже сквозные
     let busy = camStep(dt);
     if (wxStep(dt)) busy = true;
     toks.forEach((T) => {
