@@ -91,13 +91,67 @@ export function create(wrap, api) {
       sh.fragmentShader = sh.fragmentShader.replace('#include <common>', `#include <common>\n${SEE_HEAD}`).replace('#include <clipping_planes_fragment>', `#include <clipping_planes_fragment>\n${SEE_BODY}`);
     };
     m.customProgramCacheKey = () => `${k0}|see1`; // у разных материалов свои добавки в шейдер — не смешивать программы
+    m.onBeforeCompile._lm = prev._lm; // карта света уже подключена ниже по цепочке — не подключать второй раз
     m.needsUpdate = true;
+  }
+  // ---------- Карта света: свет всех источников на полу, стенах, предметах и фигурках ----------
+  // Текстура над полем (LMK точек на клетку): сколько света от источников приходит в точку с учётом стен. Любой освещаемый
+  // материал берёт её по своему месту (стены и предметы — чуть впереди своей поверхности, чтобы не брать тьму внутри стены)
+  const LMU = { uLM: { value: null }, uLMd: { value: null }, uLMinv: { value: new THREE.Vector2(1, 1) }, uLMk: { value: 0 }, uLMCam: { value: new THREE.Matrix4() } };
+  const LM_HEAD = 'uniform sampler2D uLM; uniform sampler2D uLMd; uniform vec2 uLMinv; uniform float uLMk; uniform mat4 uLMCam;';
+  // Отражения: из второй текстуры — откуда в среднем идёт свет (смещение к источнику на полу); источник считаем на высоте ~0,9
+  // (факел, пламя). Блик по GGX от шероховатости: на металле, воде, гладком камне — яркий и узкий, на ткани и земле — едва заметный
+  const LM_BODY = `if (uLMk > 0.0) {
+      vec3 lmW = (uLMCam * vec4(-vViewPosition, 1.0)).xyz; vec3 lmN = normalize(mat3(uLMCam) * normal);
+      vec2 lmUV = (lmW.xz + lmN.xz * 0.3) * uLMinv;
+      vec3 lmL = texture2D(uLM, lmUV).rgb * uLMk;
+      #ifdef STANDARD
+        reflectedLight.indirectDiffuse += material.diffuseColor * lmL;
+        vec2 lmO = texture2D(uLMd, lmUV).xy;
+        vec3 lmLw = normalize(vec3(lmO.x, max(0.9 - lmW.y, 0.12), lmO.y));
+        vec3 lmLv = normalize(mat3(viewMatrix) * lmLw), lmV = normalize(vViewPosition), lmH = normalize(lmLv + lmV);
+        float lmR = max(material.roughness, 0.08), lmA = lmR * lmR * lmR * lmR, lmNH = max(dot(normal, lmH), 0.0), lmNL = max(dot(normal, lmLv), 0.0);
+        float lmDd = lmNH * lmNH * (lmA - 1.0) + 1.0, lmD = min(lmA / (PI * lmDd * lmDd), 40.0);
+        vec3 lmF = material.specularColor + (1.0 - material.specularColor) * pow(1.0 - max(dot(lmV, lmH), 0.0), 5.0);
+        reflectedLight.directSpecular += lmL * lmF * lmD * lmNL * 0.3;
+      #else
+        reflectedLight.indirectDiffuse += diffuseColor.rgb * lmL;
+      #endif
+    }`;
+  // Окружение для металла: тёмное, с тёплым отсветом снизу и по горизонту (огонь, факелы) — доспехи и оружие не чёрные,
+  // а с тёплыми отражениями. Строится один раз
+  let warmEnv = null;
+  function envOf() {
+    if (warmEnv) return warmEnv;
+    const es = new THREE.Scene(), g = new THREE.SphereGeometry(10, 32, 16);
+    const col = []; const p = g.attributes.position;
+    for (let i = 0; i < p.count; i++) { const y = p.getY(i) / 10, warm = Math.max(0, 1 - Math.abs(y + 0.15) * 2.2), c = new THREE.Color(0x0b0a10).lerp(new THREE.Color(0x8a4a1c), warm * 0.85); if (y < -0.4) c.lerp(new THREE.Color(0x2a1a10), 0.6); col.push(c.r, c.g, c.b); }
+    g.setAttribute('color', new THREE.Float32BufferAttribute(col, 3));
+    es.add(new THREE.Mesh(g, new THREE.MeshBasicMaterial({ vertexColors: true, side: THREE.BackSide })));
+    const pm = new THREE.PMREMGenerator(renderer); warmEnv = pm.fromScene(es, 0.04).texture; pm.dispose(); g.dispose();
+    return warmEnv;
+  }
+  function lmMat(m) {
+    if (!m || !(m.isMeshStandardMaterial || m.isMeshLambertMaterial || m.isMeshPhongMaterial) || (m.onBeforeCompile && m.onBeforeCompile._lm)) return;
+    // Металл (доспехи, клинки, оковы) без своего окружения — с тёплыми отражениями
+    if (m.isMeshStandardMaterial && !m.envMap && (m.metalness || 0) >= 0.5) { m.envMap = envOf(); m.envMapIntensity = 0.7; }
+    const prev = m.onBeforeCompile, k0 = m.customProgramCacheKey();
+    const fn = function (sh, r) {
+      prev.call(this, sh, r);
+      if (!sh.fragmentShader.includes('#include <lights_fragment_end>') || !sh.fragmentShader.includes('vViewPosition')) return;
+      Object.assign(sh.uniforms, LMU);
+      sh.fragmentShader = sh.fragmentShader.replace('#include <common>', `#include <common>\n${LM_HEAD}`).replace('#include <lights_fragment_end>', `#include <lights_fragment_end>\n${LM_BODY}`);
+    };
+    fn._lm = true; m.onBeforeCompile = fn;
+    m.customProgramCacheKey = () => `${k0}|lm1`; m.needsUpdate = true;
   }
   let seeT = 0;
   function seePatch() {
     const skip = new Set([...toks.values()].map((T) => T.root));
     const walk = (o) => { if (skip.has(o)) return; if (o.material) (Array.isArray(o.material) ? o.material : [o.material]).forEach(seeMat); o.children.forEach(walk); };
     scene.children.forEach(walk);
+    // Карта света — всем, и фигуркам тоже (их материалы иногда пересобираются — тогда подключаем заново)
+    scene.traverse((o) => { if (o.material) (Array.isArray(o.material) ? o.material : [o.material]).forEach(lmMat); });
   }
   const hemi =new THREE.HemisphereLight(0xaab6d0, 0x2a2018, 1); scene.add(hemi);
   const sun = new THREE.DirectionalLight(0xffe6c4, 2); sun.castShadow = true;
@@ -1673,7 +1727,8 @@ export function create(wrap, api) {
       lampSig = sig; lampBox.clear();
       const add = (geo, mat, x, y, z) => { const m = new THREE.Mesh(geo, mat); m.position.set(x, y, z); lampBox.add(m); return m; };
       const flame = (x, y, z, k = 1, bare = false) => { const a = new THREE.Sprite(flameMat); a.center.set(0.5, 0.08); a.position.set(x, y - 0.07, z); a.userData.flame = [0.17 * k, 0.27 * k]; lampBox.add(a); if (bare) return; const b = new THREE.Sprite(coreMat); b.position.set(x, y, z); b.userData.flame = [0.42 * k, 0.42 * k]; lampBox.add(b); };
-      S.lights.filter((L) => L.fix).forEach((L) => {
+      // Сам светильник в невидимой клетке не рисуем — только его свет на видимых
+      S.lights.filter((L) => L.fix && !L.hid).forEach((L) => {
         if (L.hang) flame(L.x, L.hang, L.y, 0.6);
         else if (L.fire) { flame(L.px, 0.2, L.pz, 1.6, true); flame(L.px + 0.09, 0.17, L.pz - 0.06, 1.05, true); flame(L.px - 0.1, 0.17, L.pz + 0.05, 0.9, true); }
         else if (L.dir) {
@@ -1690,21 +1745,124 @@ export function create(wrap, api) {
     }
     // Настоящих источников — не больше восьми, ближайшие к центру экрана; свет в руках существ — первым:
     // он берёт место с тенями, и стены отбрасывают тень от факела идущего героя
-    const dist = (a) => Math.hypot(a.x - cur.x, a.y - cur.z);
-    const near = S.lights.concat(S.bg ? [] : lavaGlow.filter((g) => S.shade(`${Math.floor(g.x)}_${Math.floor(g.y)}`) >= 0)).sort((a, b) => (b.id ? 1 : 0) - (a.id ? 1 : 0) || dist(a) - dist(b));
+    // Живых источников (мерцают, дают тени от фигурок) — только с тенями: три ближайших на компьютере; остальной свет,
+    // лава и стена огня — в карте света (она не просачивается сквозь стены)
+    const dist = (a) => Math.hypot(a.x - cur.x, a.y - cur.z), REAL = fine ? 3 : 0;
+    const near = S.lights.filter((s) => !s.fw && !s.big).sort((a, b) => (b.id ? 1 : 0) - (a.id ? 1 : 0) || dist(a) - dist(b));
     const power = S.amb === 'bright' ? 0.35 : 1;
+    S.lights.forEach((s) => { s.real = 0; });
     LAMPS.forEach((L, i) => {
-      const s = near[i];
+      const s = i < REAL ? near[i] : null;
       if (!s) { L.intensity = 0; L.userData.base = 0; L.userData.tok = null; return; }
+      s.real = 1;
       L.position.set(s.px, s.py, s.pz); L.distance = Math.max(3, s.r * (s.big ? 1.1 : 1.25)); L.decay = s.big ? 1.1 : 1.6;
       L.userData.base = s.lava ? 5 * Math.max(power, 0.6) : s.big ? 9 * power : s.id ? (s.fl ? 5.5 : 4.5) * power : (s.fire ? 4.2 : 6.5) * power;
       L.color.set(s.lava ? 0xff4a14 : s.c || 0xff9a4a); L.userData.seed = s.x * 7 + s.y * 13; L.userData.fl = s.fl ?? 1; L.userData.tok = s.id || null; L.userData.hand = !!s.hand; L.intensity = L.userData.base;
     });
+    LM.dirty = true;
+  }
+
+  // ---------- Карта света: расчёт ----------
+  // Каждый источник — свой вклад (кэш по месту и радиусу): свет до b яркий и почти ровный, дальше плавно гаснет к r;
+  // точка освещена, если луч от источника до неё не проходит сквозь стену, закрытую дверь, непрозрачную стену заклинания
+  const LMK = 3, LM = { w: 0, h: 0, occ: null, occSig: '', cache: new Map(), sum: null, data: null, tex: null, dirty: true, t: 0, moved: new Map() };
+  const lmCol = new THREE.Color();
+  function lmOcc() {
+    const sig = `${S.w}x${S.h}|${(S.lblock || []).join(',')}`;
+    if (sig === LM.occSig) return;
+    LM.occSig = sig; LM.cache.clear();
+    const occ = new Uint8Array(S.w * S.h);
+    (S.lblock || []).forEach((k) => { const [x, y] = k.split('_').map(Number); if (x >= 0 && y >= 0 && x < S.w && y < S.h) occ[y * S.w + x] = 1; });
+    LM.occ = occ;
+  }
+  function lmSrc(x, z, B, R) {
+    const key = `${x.toFixed(2)}|${z.toFixed(2)}|${B.toFixed(2)}|${R.toFixed(2)}`;
+    let C = LM.cache.get(key); if (C) { C.used = 1; return C; }
+    const K = LMK, sw = S.w, occ = LM.occ, scx = Math.floor(x), scz = Math.floor(z);
+    const x0 = Math.max(0, Math.floor((x - R) * K)), x1 = Math.min(S.w * K - 1, Math.ceil((x + R) * K)), z0 = Math.max(0, Math.floor((z - R) * K)), z1 = Math.min(S.h * K - 1, Math.ceil((z + R) * K));
+    const cw = Math.max(0, x1 - x0 + 1), ch = Math.max(0, z1 - z0 + 1), v = new Float32Array(cw * ch), b = Math.min(B, R);
+    for (let j = 0; j < ch; j++) for (let i = 0; i < cw; i++) {
+      const tx = (x0 + i + 0.5) / K, tz = (z0 + j + 0.5) / K, dx = tx - x, dz = tz - z, d = Math.hypot(dx, dz);
+      if (d > R) continue;
+      const cx = Math.floor(tx), cz = Math.floor(tz);
+      if (occ[cz * sw + cx] && !(cx === scx && cz === scz)) continue; // внутри стены темно (у её подножия — мягкая тень)
+      const n = Math.ceil(d * 2.5); let ok = true;
+      for (let k = 1; k < n; k++) {
+        const qx = Math.floor(x + (dx * k) / n), qz = Math.floor(z + (dz * k) / n);
+        if ((qx === scx && qz === scz) || (qx === cx && qz === cz)) continue;
+        if (occ[qz * sw + qx]) { ok = false; break; }
+      }
+      if (!ok) continue;
+      // Спад как у живого огня: у источника ярко, к краю яркого света — около трети, к краю тусклого — плавно в ноль
+      const u = d / R, s = (1 - u) ** 1.7 * (1 + 0.6 * Math.max(0, 1 - d / Math.max(b, 0.01)));
+      v[j * cw + i] = s;
+    }
+    C = { x0, z0, cw, ch, v, used: 1 }; LM.cache.set(key, C); return C;
+  }
+  // Что идёт в карту: источники без живой лампы (и всё — на телефонах), стена огня, лава; свет в руках — с места фигурки
+  function lmSources() {
+    const out = [];
+    if (S.bg) return out;
+    S.lights.forEach((s) => {
+      if (s.real || (s.fw && (Math.floor(s.x) + Math.floor(s.y)) % 2)) return; // стена огня: соседние клетки светят одинаково — хватит каждой второй
+      const T = s.id && toks.get(s.id), x = T ? T.pos.x : s.px ?? s.x, z = T ? T.pos.z : s.pz ?? s.y;
+      out.push({ x, z, b: s.b ?? s.r / 2, r: s.r, c: s.c || '#ff9a4a', k: s.fw ? 0.42 : s.big ? 1.5 : 1, id: s.id });
+    });
+    lavaGlow.forEach((g) => out.push({ x: g.x, z: g.y, b: 0.6, r: 3, c: '#ff4a14', k: 0.7 }));
+    return out;
+  }
+  function lmBuild() {
+    if (!S || !S.w) return;
+    lmOcc();
+    const W = S.w * LMK, H = S.h * LMK;
+    if (!LM.tex || LM.w !== W || LM.h !== H) {
+      LM.w = W; LM.h = H; LM.sum = new Float32Array(W * H * 3); LM.data = new Uint16Array(W * H * 4);
+      LM.dacc = new Float32Array(W * H * 3); LM.ddata = new Uint16Array(W * H * 4);
+      if (LM.tex) { LM.tex.dispose(); LM.dtex.dispose(); }
+      const mk = (d) => { const t = new THREE.DataTexture(d, W, H, THREE.RGBAFormat, THREE.HalfFloatType); t.magFilter = t.minFilter = THREE.LinearFilter; t.wrapS = t.wrapT = THREE.ClampToEdgeWrapping; return t; };
+      LM.tex = mk(LM.data); LM.dtex = mk(LM.ddata);
+      LMU.uLM.value = LM.tex; LMU.uLMd.value = LM.dtex;
+    }
+    LMU.uLMinv.value.set(1 / S.w, 1 / S.h);
+    // dacc — откуда в точку приходит свет: сумма (смещение к источнику × сила) и сумма сил — для бликов на металле, воде, камне
+    const sum = LM.sum, dacc = LM.dacc; sum.fill(0); dacc.fill(0);
+    LM.cache.forEach((C) => { C.used = 0; });
+    LM.moved.clear();
+    lmSources().forEach((s) => {
+      const C = lmSrc(s.x, s.z, s.b, s.r); lmCol.set(s.c); const r = lmCol.r * s.k, g = lmCol.g * s.k, b = lmCol.b * s.k;
+      if (s.id) LM.moved.set(s.id, [s.x, s.z]);
+      for (let j = 0; j < C.ch; j++) for (let i = 0; i < C.cw; i++) {
+        const f = C.v[j * C.cw + i]; if (!f) continue;
+        const p = ((C.z0 + j) * W + C.x0 + i) * 3; sum[p] += r * f; sum[p + 1] += g * f; sum[p + 2] += b * f;
+        const w = f * f * (r + g + b); dacc[p] += (s.x - (C.x0 + i + 0.5) / LMK) * w; dacc[p + 1] += (s.z - (C.z0 + j + 0.5) / LMK) * w; dacc[p + 2] += w;
+      }
+    });
+    LM.cache.forEach((C, k) => { if (!C.used) LM.cache.delete(k); });
+    // Мягкий предел: где светит много источников разом (длинная стена огня, зал с факелами), свет растёт всё медленнее, без пересвета
+    const H16 = THREE.DataUtils.toHalfFloat, one = H16(1), sat = (v) => 2.2 * (1 - Math.exp(-v / 2.2));
+    for (let i = 0, n = W * H; i < n; i++) {
+      LM.data[i * 4] = H16(sat(sum[i * 3])); LM.data[i * 4 + 1] = H16(sat(sum[i * 3 + 1])); LM.data[i * 4 + 2] = H16(sat(sum[i * 3 + 2])); LM.data[i * 4 + 3] = one;
+      const w = dacc[i * 3 + 2]; LM.ddata[i * 4] = H16(w ? dacc[i * 3] / w : 0); LM.ddata[i * 4 + 1] = H16(w ? dacc[i * 3 + 1] / w : 0); LM.ddata[i * 4 + 2] = 0; LM.ddata[i * 4 + 3] = one;
+    }
+    LM.tex.needsUpdate = true; LM.dtex.needsUpdate = true; LM.dirty = false;
+  }
+  // Каждый кадр: свет в руках без живой лампы сдвинулся — пересчитать (не чаще 8 раз в секунду); сила — по общему свету
+  function lmStep(dt) {
+    LMU.uLMCam.value.copy(camera.matrixWorld);
+    if (!S || !S.lights) return;
+    LM.t -= dt;
+    if (!LM.dirty) for (const [id, p] of LM.moved) { const T = toks.get(id); if (T && Math.hypot(T.pos.x - p[0], T.pos.z - p[1]) > 0.12) { LM.dirty = true; break; } }
+    if (LM.dirty && LM.t <= 0) { LM.t = 0.12; lmBuild(); }
+    const base = S.amb === 'bright' ? 0.3 : S.amb === 'dim' ? 0.75 : 1;
+    LMU.uLMk.value = LM.tex ? base * 4.5 * (1 + 0.035 * Math.sin(time * 9.1) * Math.sin(time * 5.7)) : 0;
   }
   function pull() {
     stale = false; S = api.state();
     [groundMesh, ...Object.values(layers).map((L) => L.mesh)].forEach((m) => { m.scale.set(S.w, 1, S.h); m.position.x = S.w / 2; m.position.z = S.h / 2; });
     terr.mesh.material = S.bg ? terrLit : terrMarks; terr.mesh.position.y = S.bg ? 0 : 0.004; groundMesh.visible = !S.bg;
+    // Камень подземелий — влажный, чуть глаже: от факелов и огня на плитах мягкие блики (в затопленных руинах — сильнее)
+    const wet = DUNG.includes(S.tpl) || (!S.sky && ['', 'stone'].includes(S.ground || '') && S.amb === 'dark');
+    groundMesh.material.roughness = S.tpl === 'dungeon' && S.v === 'flooded' ? 0.42 : wet ? 0.58 : 0.9;
     if (S.bg) Object.values(liquids).forEach((L) => { if (L.mesh) L.mesh.visible = false; }); else paintGround();
     buildWalls();
     slab.scale.set(S.w + 0.7, 1, S.h + 0.7); slab.position.x = S.w / 2; slab.position.z = S.h / 2;
@@ -2239,11 +2397,28 @@ export function create(wrap, api) {
     zoneStale = false; zones = api.zones ? api.zones() : []; zones.forEach((z) => { z.acc = 0; z.E = elOf(z.color); });
     const fs = JSON.stringify(zones.map((z) => [z.kind, z.n, z.color, z.cells]));
     if (fs !== fillSig) { fillSig = fs; buildFills(); }
-    const solid = zones.filter((z) => /^wall-(stone|ice|force|prism|thorns|fire)$/.test(z.kind)), sig = JSON.stringify(solid.map((z) => [z.kind, z.cells]));
+    const solid = zones.filter((z) => /^wall-(stone|ice|force|prism|thorns|fire)$/.test(z.kind)), sig = JSON.stringify(solid.map((z) => [z.kind, z.cells, z.band || [], z.geo || 0]));
     if (sig === zoneSig) return; zoneSig = sig;
     zoneBox.children.slice().forEach((m) => { zoneBox.remove(m); if (m.userData.own) m.material.dispose(); if (m.userData.geo) m.geometry.dispose(); });
-    zones.filter((z) => z.kind === 'wall-fire').forEach((z) => fireCurtain(z.cells));
-    solid.forEach((z) => z.cells.forEach(([x, y], i) => {
+    zones.filter((z) => z.kind === 'wall-fire').forEach((z) => fireCurtain(z.cells, z.band || [], z.geo, z.side, z.bandR));
+    // Свободные стены (без привязки к сетке) — кусками вдоль своей точной линии, повёрнутыми по ней
+    solid.filter((z) => z.geo && z.kind !== 'wall-fire').forEach((z) => geoLines(z.geo).forEach((pts) => {
+      let i = 0;
+      for (let s = 1; s < pts.length; s++) {
+        const [ax, az] = pts[s - 1], [bx, bz] = pts[s], L = Math.hypot(bx - ax, bz - az); if (L < 1e-4) continue;
+        const n = Math.max(1, Math.ceil(L / 1.05)), yaw = -Math.atan2(bz - az, bx - ax);
+        for (let k = 0; k < n; k++, i++) {
+          const t0 = k / n, t1 = (k + 1) / n, x = ax + (bx - ax) * (t0 + t1) / 2, zz = az + (bz - az) * (t0 + t1) / 2, len = L / n + 0.02;
+          const piece = (geo, mat, y, sx, sy, sz, shadow) => { const m = new THREE.Mesh(geo, mat); m.position.set(x, y, zz); m.rotation.y = yaw; m.scale.set(sx, sy, sz); m.castShadow = m.receiveShadow = !!shadow; zoneBox.add(m); return m; };
+          if (z.kind === 'wall-stone') piece(slabG, zStone, WALL_H / 2, len, 1, 0.32, true);
+          else if (z.kind === 'wall-ice') piece(iceG, zIce, 0.43, len / 0.96, 1, 0.36, true);
+          else if (z.kind === 'wall-force') piece(paneG, zForce, 0.575, len / 0.98, 1, 0.1);
+          else if (z.kind === 'wall-prism') { const m = piece(paneG, zForce.clone(), 0.575, len / 0.98, 1, 0.12); m.material.color.setHSL(((i * 47) % 360) / 360, 0.9, 0.6); m.material.opacity = 0.3; m.userData.own = true; }
+          else for (let q = 0; q < 4; q++) { const u = rnd(i, q, 3) - 0.5, w = (rnd(q, i, 7) - 0.5) * 0.5; const m = new THREE.Mesh(thornG, zThorn); m.position.set(x + Math.cos(-yaw) * u * len - Math.sin(-yaw) * w, 0.36, zz + Math.sin(-yaw) * u * len + Math.cos(-yaw) * w); m.rotation.set((rnd(i, q, 20) - 0.5) * 0.9, 0, (rnd(i, q, 30) - 0.5) * 0.9); m.scale.setScalar(0.7 + rnd(i, q, 40) * 0.7); m.castShadow = true; zoneBox.add(m); }
+        }
+      }
+    }));
+    solid.filter((z) => !z.geo).forEach((z) => z.cells.forEach(([x, y], i) => {
       const add = (geo, mat, px, py, pz, shadow) => { const m = new THREE.Mesh(geo, mat); m.position.set(px, py, pz); m.castShadow = m.receiveShadow = !!shadow; zoneBox.add(m); return m; };
       if (z.kind === 'wall-fire') return;
       if (z.kind === 'wall-stone') add(slabG, zStone, x + 0.5, WALL_H / 2, y + 0.5, true);
@@ -2252,6 +2427,20 @@ export function create(wrap, api) {
       else if (z.kind === 'wall-prism') { const m = add(paneG, zForce.clone(), x + 0.5, 0.575, y + 0.5); m.material.color.setHSL(((i * 47) % 360) / 360, 0.9, 0.6); m.material.opacity = 0.3; m.userData.own = true; }
       else for (let k = 0; k < 5; k++) { const m = add(thornG, zThorn, x + 0.15 + rnd(x, y, k) * 0.7, 0.36, y + 0.15 + rnd(y, x, k + 9) * 0.7, true); m.rotation.set((rnd(x, y, k + 20) - 0.5) * 0.9, 0, (rnd(x, y, k + 30) - 0.5) * 0.9); m.scale.setScalar(0.7 + rnd(x, y, k + 40) * 0.7); }
     }));
+  }
+  // Линии свободной стены: ломаная как есть, кольцо — замкнутый многоугольник
+  function geoLines(G) {
+    if (!G) return [];
+    if (G.ring) { const n = Math.max(16, Math.round(G.r * 10)), pts = []; for (let i = 0; i <= n; i++) { const a = (i / n) * Math.PI * 2; pts.push([G.cx + Math.cos(a) * G.r, G.cy + Math.sin(a) * G.r]); } return [pts]; }
+    return (G.pts || []).length > 1 ? [G.pts] : (G.pts || []).length ? [[[G.pts[0][0] - 0.3, G.pts[0][1]], [G.pts[0][0] + 0.3, G.pts[0][1]]]] : [];
+  }
+  // Случайная точка на свободной стене (для искр, дыма) — равномерно по длине
+  function geoRandom(G) {
+    const L = geoLines(G), segs = []; let tot = 0;
+    L.forEach((p) => { for (let i = 1; i < p.length; i++) { const l = Math.hypot(p[i][0] - p[i - 1][0], p[i][1] - p[i - 1][1]); segs.push([p[i - 1], p[i], l]); tot += l; } });
+    let r = Math.random() * tot;
+    for (const [a, b, l] of segs) { if (r <= l) { const t = r / (l || 1); return [a[0] + (b[0] - a[0]) * t, a[1] + (b[1] - a[1]) * t]; } r -= l; }
+    return segs.length ? segs[0][0] : [0, 0];
   }
   const FIRE = EL['#e0703a'].c, mote = (x, z, c, up = 1) => SPARK.emit({ x, y: rr(0.1, 1), z, vx: rr(-0.15, 0.15), vy: rr(0.2, 0.7) * up, vz: rr(-0.15, 0.15), life: rr(0.8, 1.6), size: rr(0.06, 0.12), a: 0.8, c });
   const flame = (x, z, k = 1) => { SPARK.emit({ x, y: rr(0.05, 0.3), z, vx: rr(-0.2, 0.2), vy: rr(1.2, 2.6) * k, vz: rr(-0.2, 0.2), life: rr(0.5, 1), size: rr(0.5, 0.9) * k, grow: -0.4, a: 0.7, c: pickOf(FIRE) }); if (Math.random() < 0.07) SMOKE.emit({ x, y: 1, z, vy: rr(0.5, 1), life: rr(1, 1.8), size: 0.6, grow: 0.7, a: 0.22, c: [0.14, 0.12, 0.11] }); };
@@ -2281,8 +2470,21 @@ export function create(wrap, api) {
     });
     zones.forEach((z) => {
       const K = ZK[z.kind] || (z.kind === 'zone' && (ZE[z.E.n] || [2, (x, zz, E) => mote(x, zz, pickOf(E.c))])); if (!K) return;
-      z.acc = Math.min(40, z.acc + K[0] * z.cells.length * dt);
-      while (z.acc >= 1 && budget-- > 0) { z.acc -= 1; const c = pickOf(z.cells); K[1](c[0] + Math.random(), c[1] + Math.random(), z.E); }
+      z.acc = Math.min(40, z.acc + K[0] * (z.geo ? Math.max(1, z.cells.length * 0.8) : z.cells.length) * dt);
+      while (z.acc >= 1 && budget-- > 0) {
+        z.acc -= 1;
+        if (z.geo) { const p = geoRandom(z.geo); K[1](p[0] + rr(-0.1, 0.1), p[1] + rr(-0.1, 0.1), z.E); continue; } // свободная стена — по своей линии
+        const c = pickOf(z.cells); K[1](c[0] + Math.random(), c[1] + Math.random(), z.E);
+      }
+      // Жар над опасной стороной стены огня: прозрачные тёплые струйки поднимаются от земли и тают, изредка — искра
+      if (z.kind === 'wall-fire' && (z.band || []).length) {
+        z.hacc = Math.min(20, (z.hacc || 0) + 1.6 * z.band.length * dt);
+        while (z.hacc >= 1 && budget-- > 0) {
+          z.hacc -= 1; const c = pickOf(z.band), x = c[0] + Math.random(), y = c[1] + Math.random();
+          if (Math.random() < 0.8) SMOKE.emit({ x, y: 0.08, z: y, vx: rr(-0.05, 0.05), vy: rr(0.35, 0.6), vz: rr(-0.05, 0.05), life: rr(1.1, 1.7), size: rr(0.45, 0.75), grow: 0.5, a: 0.07, c: [1, 0.5, 0.2] });
+          else SPARK.emit({ x, y: 0.1, z: y, vx: rr(-0.2, 0.2), vy: rr(0.5, 1.1), vz: rr(-0.2, 0.2), drag: 0.97, life: rr(0.6, 1.1), size: rr(0.03, 0.06), a: 0.9, c: pickOf(FIRE) });
+        }
+      }
     });
   }
   // ---------- Длительные зоны: живая заливка и узнаваемый вид ----------
@@ -2612,9 +2814,9 @@ export function create(wrap, api) {
   // Земля у стены: угли под самим пламенем и тёплый отсвет вокруг
   const fireGround = new THREE.ShaderMaterial({
     uniforms: { uTime: fireTime, uGlow: { value: 1 } },
-    vertexShader: `attribute float aD; varying float vD; varying vec2 vW; void main(){ vD = aD; vec4 w = modelMatrix * vec4(position, 1.0); vW = w.xz; gl_Position = projectionMatrix * viewMatrix * w; }`,
+    vertexShader: `attribute float aD; attribute float aH; varying float vD; varying float vH; varying vec2 vW; void main(){ vD = aD; vH = aH; vec4 w = modelMatrix * vec4(position, 1.0); vW = w.xz; gl_Position = projectionMatrix * viewMatrix * w; }`,
     fragmentShader: `#define OCT 4
-      uniform float uTime, uGlow; varying float vD; varying vec2 vW;
+      uniform float uTime, uGlow; varying float vD; varying float vH; varying vec2 vW;
       ${GLSL_NOISE}
       void main(){
         float n = fbm(vW * 2.2 + vec2(uTime * 0.15, -uTime * 0.25)), m = fbm(vW * 6.0 - vec2(0.0, uTime * 0.4));
@@ -2622,25 +2824,47 @@ export function create(wrap, api) {
         float glow = exp(-vD * 1.4) * fl * (0.6 + 0.4 * n);
         float coal = smoothstep(0.6, 0.15, vD) * smoothstep(0.42, 0.75, m) * (0.7 + 0.5 * sin(uTime * 3.0 + m * 12.0));
         vec3 c = vec3(1.0, 0.38, 0.08) * glow * 0.9 + mix(vec3(0.7, 0.08, 0.0), vec3(1.0, 0.6, 0.15), m) * coal * mix(0.9, 1.6, uGlow);
+        // Опасная сторона: жар — раскалённая земля, сильнее у пламени, к краю полосы слабее, за краем гаснет;
+        // по ней от стены бегут дрожащие волны горячего воздуха
+        float h = smoothstep(0.0, 1.0, vH);
+        float q = fbm(vW * 1.6 + vec2(uTime * 0.35, uTime * 0.2));
+        float wave = 0.5 + 0.5 * sin(vD * 7.0 - uTime * 3.2 + q * 7.0);
+        float heat = h * mix(0.38, 1.0, exp(-vD * 0.55)) * (0.72 + 0.28 * wave) * (0.8 + 0.4 * q);
+        c += mix(vec3(0.9, 0.16, 0.03), vec3(1.0, 0.42, 0.1), exp(-vD * 0.8)) * heat * 0.5;
         gl_FragColor = vec4(c, 1.0);
       }`,
     transparent: true, depthWrite: false, blending: THREE.AdditiveBlending, toneMapped: false,
   });
-  function fireCurtain(cells) {
+  // Расстояние до свободной стены и сторона — как wallDist в table.js (кольцо: +1 внутри; ломаная: +1 слева по ходу)
+  function geoSide(G, px, py) {
+    if (G.ring) { const d = Math.hypot(px - G.cx, py - G.cy); return { d: Math.abs(d - G.r), side: d < G.r ? 1 : -1 }; }
+    const P = G.pts || []; let best = { d: Infinity, side: 0 };
+    for (let i = 1; i < P.length; i++) {
+      const [ax, ay] = P[i - 1], [bx, by] = P[i], dx = bx - ax, dy = by - ay, l2 = dx * dx + dy * dy || 1e-9, t = Math.max(0, Math.min(1, ((px - ax) * dx + (py - ay) * dy) / l2));
+      const d = Math.hypot(px - ax - dx * t, py - ay - dy * t);
+      if (d < best.d) best = { d, side: Math.sign(dx * (py - ay) - dy * (px - ax)) || 1 };
+    }
+    return best;
+  }
+  function fireCurtain(cells, band = [], geo = null, side = 1, bandR = 2) {
     if (!cells.length) return;
     fireMat.uniforms.uGlow.value = fireGround.uniforms.uGlow.value = fireHalo.uniforms.uGlow.value = glowK ? 1 : 0.3;
-    // Цепочки соседних клеток (в т.ч. по диагонали) — отдельные ленты
+    // Свободная стена — пламя ровно по её линии; старая (по клеткам) — цепочки соседних клеток (в т.ч. по диагонали)
     const runs = []; let run = [];
-    cells.forEach(([x, y], i) => {
-      const p = cells[i - 1];
-      if (p && Math.max(Math.abs(p[0] - x), Math.abs(p[1] - y)) > 1) { runs.push(run); run = []; }
-      run.push([x + 0.5, y + 0.5]);
-    });
-    runs.push(run);
+    if (geo) runs.push(...geoLines(geo));
+    else {
+      cells.forEach(([x, y], i) => {
+        const p = cells[i - 1];
+        if (p && Math.max(Math.abs(p[0] - x), Math.abs(p[1] - y)) > 1) { runs.push(run); run = []; }
+        run.push([x + 0.5, y + 0.5]);
+      });
+      runs.push(run);
+    }
     const runsPts = [];
     runs.forEach((pts) => {
-      // Концы продлены на полклетки, чтобы пламя закрывало крайние клетки
-      if (pts.length === 1) pts = [[pts[0][0] - 0.5, pts[0][1]], [pts[0][0] + 0.5, pts[0][1]]];
+      // Концы старой стены продлены на полклетки, чтобы пламя закрывало крайние клетки
+      if (geo) { /* точная линия — как есть */ }
+      else if (pts.length === 1) pts = [[pts[0][0] - 0.5, pts[0][1]], [pts[0][0] + 0.5, pts[0][1]]];
       else {
         const e = (a, b) => { const dx = a[0] - b[0], dy = a[1] - b[1], l = Math.hypot(dx, dy) || 1; return [a[0] + (dx / l) * 0.5, a[1] + (dy / l) * 0.5]; };
         pts = [e(pts[0], pts[1]), ...pts, e(pts[pts.length - 1], pts[pts.length - 2])];
@@ -2654,7 +2878,7 @@ export function create(wrap, api) {
         const nx = -(b[1] - a[1]) / L, nz = (b[0] - a[0]) / L, step = 0.4;
         for (let d = (walked ? step - (walked % step) : 0); d <= L + 1e-6; d += step) {
           const t = d / L, x = a[0] + (b[0] - a[0]) * t, z = a[1] + (b[1] - a[1]) * t, along = walked + d;
-          const end = Math.min(1, Math.min(along, total - along) / 0.7 + 0.35), j = rr(-0.1, 0.1);
+          const end = geo && geo.ring ? 1 : Math.min(1, Math.min(along, total - along) / 0.7 + 0.35), j = rr(-0.1, 0.1); // у кольца концов нет
           const big = Math.random() < 0.35; add(x + nx * j, z + nz * j, rr(0.9, 1.3), (big ? rr(1.9, 2.5) : rr(1.1, 1.7)) * end);
           if (Math.random() < 0.45) { const k = rr(-0.22, 0.22); add(x + nx * k + rr(-0.15, 0.15), z + nz * k, rr(0.6, 0.9), rr(0.6, 1) * end); }
         }
@@ -2674,10 +2898,26 @@ export function create(wrap, api) {
     });
     // Свечение земли: клетки до двух от стены; у каждой вершины — расстояние до линии пламени
     const segD = (px, pz) => { let best = 9; runsPts.forEach((pts) => { for (let i = 1; i < pts.length; i++) { const [ax, az] = pts[i - 1], [bx, bz] = pts[i], dx = bx - ax, dz = bz - az, l2 = dx * dx + dz * dz || 1, t = Math.max(0, Math.min(1, ((px - ax) * dx + (pz - az) * dz) / l2)); best = Math.min(best, Math.hypot(px - ax - dx * t, pz - az - dz * t)); } }); return best; };
+    // Опасная сторона (band): у вершины — доля соседних клеток полосы (0…1), так край жара мягкий, но держится границы полосы;
+    // каждая клетка — 4×4 кусочка, чтобы край не расплывался на целую клетку
+    const bset = new Set(band.map(([x, y]) => `${x}_${y}`)), wset = new Set(cells.map(([x, y]) => `${x}_${y}`));
     const near = new Set(); cells.forEach(([x, y]) => { for (let dy = -2; dy <= 2; dy++) for (let dx = -2; dx <= 2; dx++) near.add(`${x + dx}_${y + dy}`); });
-    const pos = [], dd = [], idx = []; let n = 0;
-    near.forEach((k) => { const [x, z] = k.split('_').map(Number); [[0, 0], [1, 0], [0, 1], [1, 1]].forEach(([a, b]) => { pos.push(x + a, 0.016, z + b); dd.push(segD(x + a, z + b)); }); idx.push(n, n + 2, n + 1, n + 1, n + 2, n + 3); n += 4; });
-    const gg = new THREE.BufferGeometry(); gg.setAttribute('position', new THREE.Float32BufferAttribute(pos, 3)); gg.setAttribute('aD', new THREE.Float32BufferAttribute(dd, 1)); gg.setIndex(idx);
+    band.forEach(([x, y]) => { for (let dy = -1; dy <= 1; dy++) for (let dx = -1; dx <= 1; dx++) near.add(`${x + dx}_${y + dy}`); });
+    // Насколько точка в полосе: 1 — внутри, к краю полосы спадает на ~0,3 клетки наружу (клетки стены считаются полосой — жар у пламени)
+    const inB = (x, y) => bset.has(`${Math.floor(x)}_${Math.floor(y)}`) || wset.has(`${Math.floor(x)}_${Math.floor(y)}`);
+    const heatAt = (px, pz) => {
+      // Свободная стена: жар ровно по опасную сторону, до bandR от линии, край — мягкий на ~0,3 клетки
+      if (geo) { const w = geoSide(geo, px, pz); return w.side === side ? Math.max(0, Math.min(1, (bandR + 0.15 - w.d) / 0.3)) : w.d < 0.15 ? 1 : 0; }
+      if (inB(px, pz)) return 1; let best = 0; for (let k = 0; k < 8; k++) { const a = (k / 8) * Math.PI * 2; for (const r of [0.12, 0.24, 0.36]) if (inB(px + Math.cos(a) * r, pz + Math.sin(a) * r)) { best = Math.max(best, 1 - r / 0.4); break; } } return best; };
+    const pos = [], dd = [], hh = [], idx = []; let n = 0; const S4 = band.length ? 4 : 1;
+    near.forEach((k) => {
+      const [x, z] = k.split('_').map(Number);
+      for (let j = 0; j < S4; j++) for (let i = 0; i < S4; i++) {
+        [[i, j], [i + 1, j], [i, j + 1], [i + 1, j + 1]].forEach(([a, b]) => { const px = x + a / S4, pz = z + b / S4; pos.push(px, 0.016, pz); dd.push(segD(px, pz)); hh.push(band.length ? heatAt(px, pz) : 0); });
+        idx.push(n, n + 2, n + 1, n + 1, n + 2, n + 3); n += 4;
+      }
+    });
+    const gg = new THREE.BufferGeometry(); gg.setAttribute('position', new THREE.Float32BufferAttribute(pos, 3)); gg.setAttribute('aD', new THREE.Float32BufferAttribute(dd, 1)); gg.setAttribute('aH', new THREE.Float32BufferAttribute(hh, 1)); gg.setIndex(idx);
     const gm = new THREE.Mesh(gg, fireGround); gm.renderOrder = 2; gm.userData.geo = true; gm.userData.fire = true; zoneBox.add(gm);
   }
 
@@ -2779,7 +3019,7 @@ export function create(wrap, api) {
     LAMPS.forEach((L) => { if (!L.userData.base && L.userData.spr) L.userData.spr.forEach((o) => { o.visible = false; }); });
     lampBox.children.forEach((o) => { const f = o.userData.flame; if (!f) return; const ph = o.position.x * 5 + o.position.z * 3, k = Math.sin(time * 11 + ph) * Math.sin(time * 7.3 + ph); o.scale.set(f[0] * (1 - 0.1 * k), f[1] * (1 + 0.16 * k + 0.06 * Math.sin(time * 23 + ph)), 1); });
     if (zoneStale) pullZones();
-    emitZones(dt); runFx(dt); SPARK.update(dt); SMOKE.update(dt); fireTime.value = time; runRunes(dt); zoneTime.value = time;
+    emitZones(dt); runFx(dt); SPARK.update(dt); SMOKE.update(dt); fireTime.value = time; runRunes(dt); zoneTime.value = time; lmStep(dt);
     fillBox.children.forEach((m) => { if (m.userData.spin) m.rotation.y += dt * m.userData.spin; });
     if (fillBox.children.length) busy = true;
     if (runResidue(dt)) busy = true;
@@ -2828,5 +3068,6 @@ export function create(wrap, api) {
   }
   // Для проверок: прогнать кадры без requestAnimationFrame (в скрытой вкладке он стоит)
   function step(k = 1, dt = 1 / 30) { resize(); for (let i = 0; i < k; i++) update(dt); draw(); }
-  return { _toks: toks, rune, missiles, heal: healFx, setOn, tokens, tex, ground, pick, project, tokTop, dragTo, walkTo, hit, kick, step, attack, burst, fx: fxBox, refresh() { stale = true; kick(); }, info: () => ({ toks: toks.size, props: propBox.children.reduce((a, m) => a + m.count, 0), walls: wallMesh ? wallMesh.geometry.index.count / 3 : 0, ground: [groundCv.width, groundCv.height], liquids: Object.keys(liquids).filter((k) => liquids[k].mesh && liquids[k].mesh.visible), doors: doorBox.children.length, lamps: LAMPS.filter((L) => L.intensity > 0).length, sparks: SPARK.ps.length, smoke: SMOKE.ps.length, fx: FX.length, zones: zones.map((z) => z.kind), zoneMeshes: zoneBox.children.length, anims: [...toks.values()].filter((T) => T.anim).map((T) => `${T.id}:${T.anim.cur}`), sizes: [...toks.values()].map((T) => { const v = new THREE.Box3().setFromObject(T.body, true).getSize(new THREE.Vector3()); return `${T.id}:${v.x.toFixed(2)}x${v.y.toFixed(2)}x${v.z.toFixed(2)}`; }), calls: renderer.info.render.calls, tris: renderer.info.render.triangles, cam: { ...cur } }) };
+  return { _toks: toks, rune, missiles, heal: healFx, setOn, tokens, tex, ground, pick, project, tokTop, dragTo, walkTo, hit, kick, step, attack, burst, fx: fxBox, refresh() { stale = true; kick(); }, info: () => ({ toks: toks.size, props: propBox.children.reduce((a, m) => a + m.count, 0), walls: wallMesh ? wallMesh.geometry.index.count / 3 : 0, ground: [groundCv.width, groundCv.height], liquids: Object.keys(liquids).filter((k) => liquids[k].mesh && liquids[k].mesh.visible), doors: doorBox.children.length, lamps: LAMPS.filter((L) => L.intensity > 0).length, sparks: SPARK.ps.length, smoke: SMOKE.ps.length, fx: FX.length, zones: zones.map((z) => z.kind), zoneMeshes: zoneBox.children.length, anims: [...toks.values()].filter((T) => T.anim).map((T) => `${T.id}:${T.anim.cur}`), sizes: [...toks.values()].map((T) => { const v = new THREE.Box3().setFromObject(T.body, true).getSize(new THREE.Vector3()); return `${T.id}:${v.x.toFixed(2)}x${v.y.toFixed(2)}x${v.z.toFixed(2)}`; }), calls: renderer.info.render.calls, tris: renderer.info.render.triangles, cam: { ...cur },
+    lm: { w: LM.w, h: LM.h, srcs: LM.cache.size, k: +LMU.uLMk.value.toFixed(2), max: LM.sum ? +Math.max(...LM.sum.filter((_, i) => i % 3 === 0)).toFixed(2) : 0, real: (S.lights || []).filter((s) => s.real).length } }) };
 }
