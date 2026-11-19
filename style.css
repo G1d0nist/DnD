@@ -822,6 +822,5 @@ body.printing .hpbar { background: #eee !important; }
 .tbl-rot[hidden] { display: none; }
 .tbl-rot button { width: 32px; height: 30px; padding: 0; border-radius: 99px; background: rgba(20,18,16,.85); border: 1px solid var(--line); color: var(--gold2); font-size: 15px; line-height: 1; }
 .tbl-rot button[hidden] { display: none; }
+button.hud-cm.active { border-color: var(--gold) !important; background: rgba(212,166,74,.28) !important; color: var(--gold2); }
 .tbl-rot button.active { border-color: var(--gold) !important; background: rgba(212,166,74,.28) !important; }
-.tbl-rot.on button[data-tbl="rotN"] { border-color: var(--gold); box-shadow: 0 0 0 2px rgba(212,166,74,.25); }
-#tblNorth { display: inline-block; font-size: 11px; transition: transform .15s; }

@@ -146,7 +146,8 @@ function subscribe(gid, code) {
   game = { id: gid, code, meta: null, members: {}, tokens: {}, map: {}, init: null, econ: {}, log: {}, areas: {}, reveal: {}, seen: {}, lights: {}, doors: {}, effects: {}, xp: {}, cs: {} };
   ls.set(GAME_KEY, JSON.stringify({ id: gid, code, uid: user.uid }));
   const lost = (e) => { if (String(e && e.code).includes('PERMISSION')) { app.toast('Нет доступа к игре — возможно, вас исключили'); leaveLocal(); renderAll(); } };
-  const on = (p, fn) => unsubs.push(R.onValue(ref(gpath(p)), (s) => { if (game && game.id === gid) { fn(s.val()); renderAll(); } }, lost));
+  // Обработчик может вернуть 'light' — тогда полная перерисовка не нужна (он сам обновил что надо)
+  const on = (p, fn) => unsubs.push(R.onValue(ref(gpath(p)), (s) => { if (game && game.id === gid) { if (fn(s.val()) !== 'light') renderAll(); } }, lost));
   // Мастер: игра в списке «Мои игры» (и для игр, созданных раньше, чем появился список)
   let indexed = false;
   on('meta', (v) => {
@@ -175,10 +176,21 @@ function subscribe(gid, code) {
   on('members', (v) => { game.members = v || {}; syncEffects(); applyXp(); applyLoot(); handleRest(); syncChests(); abilSync(); });
   on('abilSeen', (v) => { game.abilSeen = v || {}; abilSync(); });
   on(`abilEdit/${user.uid}`, (v) => { if (v && v.abil) applyAbilEdit(v); });
-  on('tokens', (v) => { game.tokens = v || {}; fwKeep(); cleanupInit(); syncEffects(); hideWatch(); readyWatch(); awardKills(); zoneTick(); concWatch(); undoTrack(); });
+  on('tokens', (v) => {
+    // Кто-то идёт: сдвинулась только точная позиция внутри той же клетки — перерисовать одни фигуры. Полная перерисовка
+    // (туман, области, панели, текстуры пола) 10 раз в секунду давала рывки при ходьбе; при переходе в другую клетку — как обычно
+    const light = posOnly(game.tokens, v || {});
+    game.tokens = v || {}; fwKeep();
+    if (light) { renderTokens(true); return 'light'; }
+    cleanupInit(); syncEffects(); hideWatch(); readyWatch(); awardKills(); zoneTick(); concWatch(); undoTrack(); });
   on('map', (v) => { game.map = v || {}; drawTerrain(); });
   on('init', (v) => { game.init = v; checkMyTurn(); checkNpcTurn(); cleanupInit(); syncEffects(); zoneTurn(); dotTurn(); });
-  on('econ', (v) => { game.econ = v || {}; fwKeep(); readyWatch(); undoTrack(); });
+  on('econ', (v) => {
+    // При ходьбе в бою меняются только потраченные футы — обновить панель хода, а не весь стол
+    const light = moveOnly(game.econ, v || {});
+    game.econ = v || {}; fwKeep();
+    if (light) { renderHud(); renderTurn(); return 'light'; }
+    readyWatch(); undoTrack(); });
   on('cs', (v) => { game.cs = v || {}; csCheck(); notifyCs(); });
   on('log', (v) => { game.log = v || {}; applyLog(); notifyLog(); fxLog(); fightTally(); });
   on('fstats', (v) => { game.fstats = v || null; });
@@ -532,17 +544,16 @@ function camTurn(d) {
   if (d == null) camPitch = shoulder ? 0.42 : PITCH0;
   layoutBoard(); renderRot();
 }
-// Кнопки поворота в углу поля (только объёмный вид); стрелка компаса показывает, где север
+// Кнопки в углу поля (только объёмный вид): клетки и вид из-за плеча. Поворот камеры — клавишами Z, X, C
+// и зажатым колёсиком мыши (кнопки поворота убраны по просьбе игроков)
 function renderRot() {
   let el = $('#tblRot');
   if (!el) {
     el = document.createElement('div'); el.id = 'tblRot'; el.className = 'tbl-rot';
-    el.innerHTML = '<button data-tbl="grid3" id="tblGrid3" title="Клетки на поле">▦</button><button data-tbl="shoulder" id="tblShoulder" title="Вид из-за плеча (клавиша V): камера близко за персонажем, правая кнопка мыши — крутить камеру">👁</button><button data-tbl="rotL" title="Повернуть камеру влево (клавиша Z). Мышью: зажать колёсико и тянуть — поворот и наклон">⟲</button><button data-tbl="rotN" title="Север вверх, обычный наклон (клавиша C)"><span id="tblNorth">▲</span></button><button data-tbl="rotR" title="Повернуть камеру вправо (клавиша X)">⟳</button>';
+    el.innerHTML = '<button data-tbl="grid3" id="tblGrid3" title="Клетки на поле">▦</button><button data-tbl="shoulder" id="tblShoulder" title="Вид из-за плеча (клавиша V): камера близко за персонажем, правая кнопка мыши — крутить камеру. Повернуть камеру: Z, X, север вверх: C, или зажать колёсико и тянуть">👁</button>';
     $('#tblWrap').appendChild(el);
   }
   el.hidden = !game || !g3on;
-  $('#tblNorth').style.transform = `rotate(${camYaw}rad)`;
-  el.classList.toggle('on', !!camYaw || Math.abs(camPitch - PITCH0) > 0.01);
   const sb = $('#tblShoulder'); if (sb) { sb.classList.toggle('active', !!shoulder); sb.hidden = isDM(); }
   const gb = $('#tblGrid3'); if (gb) { const m = grid3Mode(); gb.classList.toggle('active', m === 'on'); gb.style.opacity = m === 'off' ? 0.5 : ''; gb.title = `${GRID3_T[m]} — нажать, чтобы переключить (в бою → всегда → скрыты)`; }
 }
@@ -1236,7 +1247,7 @@ function aura3(id) {
   const [c, k] = AURA3[f.n];
   return f.n === 'Огненный щит' && /холод/.test(f.retalType || '') ? { c: '#7fc8ff', k: 'ice' } : { c, k };
 }
-function renderTokens() {
+function renderTokens(light) {
   const box = $('#tblTokens'), cur = currentEntry();
   const seen = new Set(), list3 = [];
   Object.entries(game.tokens || {}).forEach(([id, t]) => {
@@ -1276,7 +1287,7 @@ function renderTokens() {
       look: t.kind === 'pc' && !t.comp && !t.wild ? t.look || null : null,
       aura: dead ? null : aura3(id), cond: down ? [] : t.cond || [], pct: t.hpMax ? pct : null, down, dead, sel: selId === id, turn: !!(cur && cur.tokenId === id), ghost: !!(t.hidden || invis || banned), alt: +t.alt || 0, cls: `side-${team(t)} ${t.kind}` });
   });
-  if (g3on) g3.tokens(list3, drag && drag.kind === 'token' ? drag.id : null);
+  if (g3on) g3.tokens(list3, drag && drag.kind === 'token' ? drag.id : null, light === true);
   $$('[data-tok]', box).forEach((el) => { if (!seen.has(el.dataset.tok)) el.remove(); });
 }
 
@@ -8399,7 +8410,7 @@ function renderHud() {
       ${fight && t && isTurnOf(id) && !dm ? `<button class="primary hud-end" data-tbl="endTurn">${window.ic('check')}<span>Закончить ход</span><small>Пробел</small></button>`
         : fight && dm ? `<button class="primary hud-end" data-tbl="next">${window.ic('play')}<span>Дальше</span><small>Пробел</small></button>`
         : fight ? `<div class="hud-wait">Ходит: <b>${esc((currentEntry() || {}).name || '')}</b></div>` : dm && initList().length ? `<button class="primary hud-end" data-tbl="startFight">${window.ic('crossed')}<span>Начать бой</span></button>` : '<div class="hud-wait">Вне боя</div>'}
-      <div class="row gap"><button data-tbl="hudSide" title="Журнал, чат, очередь и игроки">📜</button><button data-tbl="keys" title="Клавиши (K)">⌨</button><button data-tbl="full" title="Выйти из полноэкранного режима">✕</button></div></div>`;
+      <div class="row gap">${isDM() ? '' : `<button data-tbl="clickMove" class="hud-cm ${clickMove() ? 'active' : ''}" title="${clickMove() ? 'Ход по клику включён: нажатие по полю — идти туда. Нажмите, чтобы выключить' : 'Ход по клику выключен (ходьба — клавишами). Нажмите, чтобы включить: нажатие по полю — идти туда'}">🖱</button>`}<button data-tbl="hudSide" title="Журнал, чат, очередь и игроки">📜</button><button data-tbl="keys" title="Клавиши (K)">⌨</button><button data-tbl="full" title="Выйти из полноэкранного режима">✕</button></div></div>`;
   if (!t) { box.innerHTML = `<div class="hud-left"><div class="muted small">${dm ? 'Выделите существо — здесь появятся его действия' : 'Поставьте персонажа на поле'}</div></div><div class="hud-mid"></div>${side}`; return; }
   const e = econ(id), mv = moveInfo(id), pct = Math.max(0, Math.min(1, (t.hp || 0) / (t.hpMax || 1))), ch = !dm && charOf(t);
   const pip = (k, n) => `<span class="hpip ${e[k] ? 'used' : ''}" title="${n}${e[k] ? ' — потрачено' : ''}">${n}</span>`;
@@ -8615,7 +8626,7 @@ const fwMult = (k) => moveMult(k, FW.occ, FW.zd, FW.mv && FW.mv.prone);
 function fwStart(path) {
   if (FW.raf) { if (path) FW.path = path; return true; }
   FW.path = null;
-  if (RT.cur) drawRoute(null); // линия пути под указателем на время ходьбы прячется
+  if (RT.cur) { drawRoute(null); $('#tblHint').hidden = true; } // линия пути под указателем на время ходьбы прячется
   const id = keyTokId(), t = id && game.tokens[id];
   if (!t) { if (isDM()) keyHint(''); return; }
   const forced = isDM() && freeMove;
@@ -8670,11 +8681,40 @@ function fwTick(now) {
     if (cell && FW.mv) checkOpportunity(FW.id, { ...t, x: P.x, y: P.y }, t.x, t.y);
     Object.assign(t, P); FW.cur = P;
     fwDraw(t);
-    if (cell) renderTokens();
+    // Новая клетка — туман, области, панели: полная перерисовка (ответ базы потом придёт «лёгким» — позиция уже своя)
+    if (cell) renderAll();
     if (cell || now - FW.sent > FW_SEND) fwSend(now);
     FW.stuck = 0;
   } else if (FW.path && (FW.stuck = (FW.stuck || 0) + dt) > 0.3) { FW.path = null; fwEnd(); return; } // путь перегородили — встать
   FW.raf = requestAnimationFrame(fwTick);
+}
+// Изменилась только точная позиция существ (fx, fy) — те же существа, те же клетки, всё остальное как было
+function posOnly(prev, next) {
+  if (!prev || !next) return false;
+  const ids = Object.keys(next);
+  if (ids.length !== Object.keys(prev).length) return false;
+  let moved = false;
+  for (const id of ids) {
+    const p = prev[id], n = next[id];
+    if (!p || !n) return false;
+    for (const k of new Set([...Object.keys(p), ...Object.keys(n)])) {
+      if (k === 'fx' || k === 'fy') { if (p[k] !== n[k]) moved = true; continue; }
+      if (p[k] !== n[k] && JSON.stringify(p[k]) !== JSON.stringify(n[k])) return false;
+    }
+  }
+  return moved || ids.length > 0;
+}
+// В экономии хода изменились только потраченные футы
+function moveOnly(prev, next) {
+  if (!prev || !next) return false;
+  const ids = Object.keys(next);
+  if (ids.length !== Object.keys(prev).length) return false;
+  for (const id of ids) {
+    const p = prev[id], n = next[id];
+    if (!p || !n) return false;
+    for (const k of new Set([...Object.keys(p), ...Object.keys(n)])) if (k !== 'move' && JSON.stringify(p[k]) !== JSON.stringify(n[k])) return false;
+  }
+  return true;
 }
 // Пока идём, ответ базы отстаёт на последнюю отправку — своя позиция и потраченные футы важнее (иначе фигуру дёргает назад)
 function fwKeep() {
@@ -8876,8 +8916,17 @@ function drawRoute(Rt) {
   g.beginPath(); g.arc(e[0] * CELL, e[1] * CELL, CELL * 0.22, 0, Math.PI * 2); g.strokeStyle = over ? '#d9534f' : '#e8d9a8'; g.lineWidth = 3; g.stroke();
 }
 // Можно ли сейчас вести своего персонажа мышью: «Двигать», не прицел и не заклинание, своя фигура, в бою — свой ход
+// Ход по клику — по желанию игрока (кнопка 🖱 на панели внизу), по умолчанию выключен; выбор хранится на устройстве
+const clickMove = () => ls.get('dnd55-clickmove') === '1';
+function clickMoveSet(on) {
+  ls.set('dnd55-clickmove', on ? '1' : '0');
+  if (!on) { if (RT.cur) drawRoute(null); $('#tblHint').hidden = true; }
+  RT.last = '';
+  renderHud();
+  app.toast(on ? 'Ход по клику включён: нажатие по полю — идти туда' : 'Ход по клику выключен');
+}
 function rtWho() {
-  if (!game || tool !== 'move' || aim || cast || drag || ruler || isDM()) return null;
+  if (!game || !clickMove() || tool !== 'move' || aim || cast || drag || ruler || isDM()) return null;
   const id = keyTokId(), t = id && game.tokens[id];
   if (!t || isDown(t)) return null;
   if (inFight() && !isTurnOf(id)) return null;
@@ -8908,7 +8957,7 @@ function routeGo(p) {
   if (!id) return false;
   const P = rtPath(id, p.px / CELL, p.py / CELL);
   if (!P) { app.toast('Туда не пройти'); return true; }
-  drawRoute(null); RT.last = '';
+  drawRoute(null); RT.last = ''; $('#tblHint').hidden = true;
   fwStart(P.pts.slice(1));
   return true;
 }
@@ -9121,6 +9170,7 @@ async function onClick(e) {
     else if (a === 'rotL' || a === 'rotR' || a === 'rotN') camTurn(a === 'rotN' ? null : a === 'rotL' ? Math.PI / 4 : -Math.PI / 4);
     else if (a === 'shoulder') shoulderSet(!shoulder);
     else if (a === 'grid3') grid3Next();
+    else if (a === 'clickMove') clickMoveSet(!clickMove());
     else if (a === 'g3') g3Toggle(!g3on);
     else if (a === 'rollInit') {
       const m = me(), roll = app.mute(() => app.rollInit(m.charId)), s = app.summary(m.charId);

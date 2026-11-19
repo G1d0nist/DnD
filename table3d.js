@@ -1911,7 +1911,8 @@ export function create(wrap, api) {
   // Ходьба по шагу: клетка за 0,28 с (как WALK_MS в table.js), разгон с места — за десятую долю секунды
   const WALK_V = 1000 / 280, WALK_A = WALK_V / 0.1;
   let dragId = null;
-  function tokens(list, drag) {
+  // light — сдвинулись только фигуры: карту, стены и предметы не пересобирать
+  function tokens(list, drag, light) {
     const seen = new Set(); dragId = drag || null;
     list.forEach((t) => {
       seen.add(t.id);
@@ -1947,7 +1948,8 @@ export function create(wrap, api) {
       T.lab.className = `t3-lab ${t.cls || ''}`;
     });
     [...toks.values()].forEach((T) => { if (!seen.has(T.id)) dropTok(T); });
-    stale = true; zoneStale = true; kick(1100);
+    if (!light) { stale = true; zoneStale = true; }
+    kick(1100);
   }
   // Свободная ходьба своего персонажа: позиция ставится сразу (её считает table.js каждый кадр), фигурка идёт и смотрит по ходу
   function walkTo(id, x, y) {
