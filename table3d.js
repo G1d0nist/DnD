@@ -70,9 +70,30 @@ export function create(wrap, api) {
   // Что стоит между камерой и своим персонажем (деревья, стены, скалы, мебель, крыши) — в круге вокруг него становится
   // «решётчато» прозрачным: часть точек не рисуется (к центру круга — больше), без сортировки прозрачного. Пол не трогаем
   // (только то, что выше 0,12 над полом), фигурки существ — тоже. Делается в шейдере любого освещаемого материала
-  const SEE = { uSeeOn: { value: 0 }, uSeeC: { value: new THREE.Vector2() }, uSeeR: { value: 1 }, uSeeZ: { value: 0 }, uSeeCam: { value: new THREE.Matrix4() } };
+  // ---------- Видимость (туман войны) — в шейдере ----------
+  // Текстура «точка на клетку»: R — яркость клетки (видна ярко / в полумраке / разведана), G — известна ли клетка вообще.
+  // Стены, предметы, скалы, мебель строятся один раз целиком, а темнеют и прячутся по этой текстуре — при переходе
+  // персонажа в другую клетку ничего не пересобирается, меняется лишь она (и плавно перетекает к новой за ~0,3 с)
+  const VIS = { tex: null, w: 0, h: 0, cur: null, tgt: null, data: null, on: false, moving: false, first: true };
+  const SEE = { uSeeOn: { value: 0 }, uSeeC: { value: new THREE.Vector2() }, uSeeR: { value: 1 }, uSeeZ: { value: 0 }, uSeeCam: { value: new THREE.Matrix4() },
+    uVis: { value: null }, uVisSize: { value: new THREE.Vector2(1, 1) }, uVisOn: { value: 0 }, uUnseen: { value: new THREE.Color(0x0a0806) } };
   const SEE_HEAD = `uniform float uSeeOn; uniform vec2 uSeeC; uniform float uSeeR; uniform float uSeeZ; uniform mat4 uSeeCam;
+    uniform sampler2D uVis; uniform vec2 uVisSize; uniform float uVisOn; uniform vec3 uUnseen;
     const float SEE_B[16] = float[16](0., 8., 2., 10., 12., 4., 14., 6., 3., 11., 1., 9., 15., 7., 13., 5.);`;
+  // Яркость по клетке: боковые грани (стены, бочки) берут клетку перед собой — стену видно так же, как пол комнаты у неё.
+  // Пол не трогаем (его накрывает слой тумана), только то, что выше пола
+  const VIS_BODY = `if (uVisOn > 0.5) {
+      vec3 vW = (uSeeCam * vec4(-vViewPosition, 1.0)).xyz;
+      if (vW.y > 0.035) {
+        vec3 vN = normalize(mat3(uSeeCam) * normal);
+        vec2 vP = vW.xz + (abs(vN.y) < 0.6 ? normalize(vN.xz + 1e-5) * 0.45 : vec2(0.0));
+        vec2 vv = texture2D(uVis, vP / uVisSize).rg;
+        // Неразведанное не рисуется вовсе (как раньше — его не было), а проявляется «решёткой»: при открытии плавно возникает
+        vec2 vq = mod(floor(gl_FragCoord.xy), 4.0);
+        if ((SEE_B[int(vq.x + vq.y * 4.0)] + 0.5) / 16.0 > vv.g) discard;
+        gl_FragColor.rgb *= vv.r;
+      }
+    }`;
   const SEE_BODY = `if (uSeeOn > 0.5 && gl_FragCoord.z < uSeeZ) {
       float sd = length(gl_FragCoord.xy - uSeeC) / uSeeR;
       if (sd < 1.0 && (uSeeCam * vec4(-vViewPosition, 1.0)).y > 0.12) {
@@ -88,9 +109,11 @@ export function create(wrap, api) {
       prev.call(this, sh, r);
       if (!sh.fragmentShader.includes('vViewPosition') || !sh.fragmentShader.includes('#include <clipping_planes_fragment>')) return;
       Object.assign(sh.uniforms, SEE);
-      sh.fragmentShader = sh.fragmentShader.replace('#include <common>', `#include <common>\n${SEE_HEAD}`).replace('#include <clipping_planes_fragment>', `#include <clipping_planes_fragment>\n${SEE_BODY}`);
+      const out = sh.fragmentShader.includes('#include <opaque_fragment>') ? '#include <opaque_fragment>' : '#include <output_fragment>';
+      sh.fragmentShader = sh.fragmentShader.replace('#include <common>', `#include <common>\n${SEE_HEAD}`).replace('#include <clipping_planes_fragment>', `#include <clipping_planes_fragment>\n${SEE_BODY}`)
+        .replace(out, `${out}\n${VIS_BODY}`);
     };
-    m.customProgramCacheKey = () => `${k0}|see1`; // у разных материалов свои добавки в шейдер — не смешивать программы
+    m.customProgramCacheKey = () => `${k0}|see2`; // у разных материалов свои добавки в шейдер — не смешивать программы
     m.onBeforeCompile._lm = prev._lm; // карта света уже подключена ниже по цепочке — не подключать второй раз
     m.needsUpdate = true;
   }
@@ -184,7 +207,7 @@ export function create(wrap, api) {
       : new THREE.MeshStandardMaterial({ map: tex, roughness: 1, metalness: 0, emissive: 0xffffff, emissiveMap: tex, emissiveIntensity: 0.55 }); // краски поля рассчитаны на показ без света — пол немного светится сам
     const mesh = new THREE.Mesh(unit, mat); mesh.position.y = i * 0.012; mesh.renderOrder = i; mesh.receiveShadow = !i;
     scene.add(mesh);
-    layers[name] = { cv, tex, mesh, w: 0, h: 0 };
+    layers[name] = { cv, tex, mesh, mat, w: 0, h: 0 };
   });
   // Местность. С картой-подложкой холст 2D и есть пол. Без неё пол рисуется здесь (paintGround) — плиты, трава, песок,
   // вода с неровным берегом, — а холст 2D ложится сверху прозрачным слоем пометок (сетка, заметки, значки мастера)
@@ -193,8 +216,58 @@ export function create(wrap, api) {
   groundTex.colorSpace = THREE.SRGBColorSpace; groundTex.anisotropy = renderer.capabilities.getMaxAnisotropy();
   const groundMesh = new THREE.Mesh(unit, new THREE.MeshStandardMaterial({ map: groundTex, bumpMap: groundTex, bumpScale: 2.2, roughness: 0.9, emissive: 0xffffff, emissiveMap: groundTex, emissiveIntensity: 0.1 }));
   groundMesh.receiveShadow = true; groundMesh.renderOrder = -1; scene.add(groundMesh);
+  // Слой тумана на полу при видимости в шейдере: та же маленькая текстура, сглаженная между клетками — край тьмы мягкий,
+  // а большая картинка тумана больше не перезаливается в видеокарту на каждом шаге
+  const visFogMat = new THREE.ShaderMaterial({
+    uniforms: SEE, transparent: true, depthWrite: false, toneMapped: false,
+    vertexShader: 'varying vec2 vW; void main(){ vec4 w = modelMatrix * vec4(position, 1.0); vW = w.xz; gl_Position = projectionMatrix * viewMatrix * w; }',
+    fragmentShader: `uniform sampler2D uVis; uniform vec2 uVisSize; uniform vec3 uUnseen; varying vec2 vW;
+      void main(){ vec2 v = texture2D(uVis, vW / uVisSize).rg; gl_FragColor = vec4(uUnseen, clamp(1.0 - v.r * v.g, 0.0, 1.0));
+      #include <colorspace_fragment>
+      }`,
+  });
+  // Видимость от table.js: shade — яркость каждой клетки по строкам (-1 — не видна и не разведана), null — тумана нет
+  function vision(shade, w, h) {
+    if (!shade) {
+      if (VIS.on) { VIS.on = false; SEE.uVisOn.value = 0; layers.fog.mesh.material = layers.fog.mat; layers.fog.tex.needsUpdate = true; kick(); }
+      return;
+    }
+    if (!VIS.tex || VIS.w !== w || VIS.h !== h) {
+      if (VIS.tex) VIS.tex.dispose();
+      VIS.w = w; VIS.h = h; VIS.data = new Uint8Array(w * h * 4); VIS.cur = new Float32Array(w * h * 2); VIS.tgt = new Float32Array(w * h * 2); VIS.first = true;
+      VIS.tex = new THREE.DataTexture(VIS.data, w, h, THREE.RGBAFormat); VIS.tex.magFilter = VIS.tex.minFilter = THREE.LinearFilter;
+      SEE.uVis.value = VIS.tex; SEE.uVisSize.value.set(w, h);
+    }
+    // Стена: у верха — самая светлая из соседних клеток пола (стену видно, если видно пол рядом с ней)
+    const wall = (x, y) => !!S && S.map[`${x}_${y}`] === 'wall';
+    for (let y = 0; y < h; y++) for (let x = 0; x < w; x++) {
+      let s = shade[y * w + x];
+      if (wall(x, y)) for (let dy = -1; dy <= 1; dy++) for (let dx = -1; dx <= 1; dx++) {
+        const nx = x + dx, ny = y + dy; if ((dx || dy) && nx >= 0 && ny >= 0 && nx < w && ny < h && !wall(nx, ny)) s = Math.max(s, shade[ny * w + nx]);
+      }
+      VIS.tgt[(y * w + x) * 2] = s < 0 ? 0 : s; VIS.tgt[(y * w + x) * 2 + 1] = s < 0 ? 0 : 1;
+    }
+    if (VIS.first) { VIS.cur.set(VIS.tgt); VIS.first = false; } // первый раз — сразу, без проявления из темноты
+    VIS.moving = true;
+    if (!VIS.on) { VIS.on = true; SEE.uVisOn.value = 1; layers.fog.mesh.material = visFogMat; }
+    visStep(0); kick(400);
+  }
+  // Плавно к новой видимости (каждый кадр, пока не дошли): ~0,3 с
+  function visStep(dt) {
+    if (!VIS.on || !VIS.moving) return false;
+    const k = dt ? 1 - Math.exp(-dt * 10) : 0, C = VIS.cur, T = VIS.tgt, D = VIS.data;
+    let left = false;
+    for (let i = 0, j = 0; i < C.length; i += 2, j += 4) {
+      for (let c = 0; c < 2; c++) { const d = T[i + c] - C[i + c]; if (Math.abs(d) > 0.004) { C[i + c] += d * k; left = true; } else C[i + c] = T[i + c]; }
+      D[j] = Math.round(C[i] * 255); D[j + 1] = Math.round(C[i + 1] * 255); D[j + 3] = 255;
+    }
+    VIS.tex.needsUpdate = true;
+    VIS.moving = left;
+    return left;
+  }
   function tex(name) {
     const L = layers[name]; if (!L) return;
+    if (name === 'fog' && VIS.on) { zoneStale = true; return; } // туман в шейдере — большую картинку не грузим
     if (name === 'fog') softFog();
     // Холст поменял размер — текстуру создаём заново (память под неё выделяется один раз)
     if (L.w !== L.cv.width || L.h !== L.cv.height) { L.tex.dispose(); L.w = L.cv.width; L.h = L.cv.height; }
@@ -1858,6 +1931,7 @@ export function create(wrap, api) {
   }
   function pull() {
     stale = false; S = api.state();
+    S.shade = () => 1; // видимость теперь в шейдере (VIS): строим всё целиком и одинаково, туман войны сборку не меняет
     [groundMesh, ...Object.values(layers).map((L) => L.mesh)].forEach((m) => { m.scale.set(S.w, 1, S.h); m.position.x = S.w / 2; m.position.z = S.h / 2; });
     terr.mesh.material = S.bg ? terrLit : terrMarks; terr.mesh.position.y = S.bg ? 0 : 0.004; groundMesh.visible = !S.bg;
     // Камень подземелий — влажный, чуть глаже: от факелов и огня на плитах мягкие блики (в затопленных руинах — сильнее)
@@ -2155,6 +2229,7 @@ export function create(wrap, api) {
   const sv = [new THREE.Vector3(), new THREE.Vector3(), new THREE.Vector3(), new THREE.Vector3()], sbuf = new THREE.Vector2();
   function seeAt(F) {
     SEE.uSeeOn.value = F ? 1 : 0;
+    SEE.uSeeCam.value.copy(camera.matrixWorld); // нужно и видимости (туману войны) — каждый кадр, даже без своего персонажа
     if (!F) return;
     const top = (F.top || 1) + BASE_H, s = F.t.size || 1;
     renderer.getDrawingBufferSize(sbuf);
@@ -2962,9 +3037,10 @@ export function create(wrap, api) {
   function update(dt) {
     time += dt;
     if (stale) { pull(); seeT = 0; }
-    if ((seeT -= dt) <= 0) { seeT = 1; seePatch(); } // новые предметы (и подгруженные модели) — тоже сквозные
+    if ((seeT -= dt) <= 0) { seeT = 0.25; seePatch(); } // новые предметы и подгруженные модели — сразу под туман войны и сквозные
     let busy = camStep(dt);
     if (wxStep(dt)) busy = true;
+    if (visStep(dt)) busy = true; // туман войны плавно перетекает к новой видимости
     toks.forEach((T) => {
       const t = T.t;
       if (T.mt < 1 && T.walk) {
@@ -3068,6 +3144,6 @@ export function create(wrap, api) {
   }
   // Для проверок: прогнать кадры без requestAnimationFrame (в скрытой вкладке он стоит)
   function step(k = 1, dt = 1 / 30) { resize(); for (let i = 0; i < k; i++) update(dt); draw(); }
-  return { _toks: toks, rune, missiles, heal: healFx, setOn, tokens, tex, ground, pick, project, tokTop, dragTo, walkTo, hit, kick, step, attack, burst, fx: fxBox, refresh() { stale = true; kick(); }, info: () => ({ toks: toks.size, props: propBox.children.reduce((a, m) => a + m.count, 0), walls: wallMesh ? wallMesh.geometry.index.count / 3 : 0, ground: [groundCv.width, groundCv.height], liquids: Object.keys(liquids).filter((k) => liquids[k].mesh && liquids[k].mesh.visible), doors: doorBox.children.length, lamps: LAMPS.filter((L) => L.intensity > 0).length, sparks: SPARK.ps.length, smoke: SMOKE.ps.length, fx: FX.length, zones: zones.map((z) => z.kind), zoneMeshes: zoneBox.children.length, anims: [...toks.values()].filter((T) => T.anim).map((T) => `${T.id}:${T.anim.cur}`), sizes: [...toks.values()].map((T) => { const v = new THREE.Box3().setFromObject(T.body, true).getSize(new THREE.Vector3()); return `${T.id}:${v.x.toFixed(2)}x${v.y.toFixed(2)}x${v.z.toFixed(2)}`; }), calls: renderer.info.render.calls, tris: renderer.info.render.triangles, cam: { ...cur },
+  return { _toks: toks, rune, missiles, heal: healFx, setOn, tokens, tex, vision, ground, pick, project, tokTop, dragTo, walkTo, hit, kick, step, attack, burst, fx: fxBox, refresh() { stale = true; kick(); }, info: () => ({ toks: toks.size, props: propBox.children.reduce((a, m) => a + m.count, 0), walls: wallMesh ? wallMesh.geometry.index.count / 3 : 0, ground: [groundCv.width, groundCv.height], liquids: Object.keys(liquids).filter((k) => liquids[k].mesh && liquids[k].mesh.visible), doors: doorBox.children.length, lamps: LAMPS.filter((L) => L.intensity > 0).length, sparks: SPARK.ps.length, smoke: SMOKE.ps.length, fx: FX.length, zones: zones.map((z) => z.kind), zoneMeshes: zoneBox.children.length, anims: [...toks.values()].filter((T) => T.anim).map((T) => `${T.id}:${T.anim.cur}`), sizes: [...toks.values()].map((T) => { const v = new THREE.Box3().setFromObject(T.body, true).getSize(new THREE.Vector3()); return `${T.id}:${v.x.toFixed(2)}x${v.y.toFixed(2)}x${v.z.toFixed(2)}`; }), calls: renderer.info.render.calls, tris: renderer.info.render.triangles, cam: { ...cur },
     lm: { w: LM.w, h: LM.h, srcs: LM.cache.size, k: +LMU.uLMk.value.toFixed(2), max: LM.sum ? +Math.max(...LM.sum.filter((_, i) => i % 3 === 0)).toFixed(2) : 0, real: (S.lights || []).filter((s) => s.real).length } }) };
 }

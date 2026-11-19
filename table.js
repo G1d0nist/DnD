@@ -1170,6 +1170,12 @@ function drawFog() {
   const cv = $('#tblFog'), g = cv.getContext('2d');
   g.clearRect(0, 0, cv.width, cv.height);
   fogVis = fogOn() ? computeVision() : null;
+  // Объёмный вид: видимость — маленькой текстурой «точка на клетку», стены и предметы темнеют по ней в шейдере (без пересборки)
+  if (g3on && g3) {
+    let sh = null;
+    if (fogVis) { sh = new Float32Array(W() * H()); for (let y = 0; y < H(); y++) for (let x = 0; x < W(); x++) sh[y * W() + x] = cellShade(`${x}_${y}`); }
+    g3.vision(sh, W(), H());
+  }
   // Без тумана войны, но со временем суток: ночью и в сумерки поле чуть темнее (с учётом источников света)
   if (!fogVis && (game.meta || {}).timeLight && dayPart().amb !== 'bright') {
     const L = lightMap(), dark = dayPart().amb === 'dark';
