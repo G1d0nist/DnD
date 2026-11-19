@@ -13,14 +13,14 @@ const MODEL_DIR = 'lab/models/';
 // Оружие, щиты и луки сделаны в Blender из примитивов (lab/models/in/scripts/weapons.py), длинный меч — по сгенерированной модели.
 const PC_HEAD = { 'Человек': 'human', 'Дварф': 'dwarf', 'Драконорождённый': 'dragonborn' };
 // Тело — по надетому доспеху, без доспеха — по классу. Все тела на одном скелете (pc_rig), поэтому оружие и движения общие.
-// Пока сделаны латы и мантия; недостающее тело заменяется ближайшим из готовых (PC_BODY_ALT)
-const PC_BODY_HAVE = new Set(['plate', 'robe']);
-const PC_BODY_ALT = { mail: 'plate', leather: 'plate', barb: 'plate', monk: 'robe', clothes: 'robe' };
+// Сделаны латы, кольчуга, кожаный доспех, мантия и варвар; недостающее тело заменяется ближайшим из готовых (PC_BODY_ALT)
+const PC_BODY_HAVE = new Set(['plate', 'mail', 'leather', 'robe', 'barb']);
+const PC_BODY_ALT = { monk: 'robe', clothes: 'leather' };
 const PC_ARM_LIGHT = new Set(['padded', 'leather', 'studded']);
 function pcBody(L) {
   const a = L.arm || '';
   const want = PC_HEAVY.has(a) && !/^(halfplate|breastplate)$/.test(a) ? 'plate' : a === 'hide' ? 'barb' : a && !PC_ARM_LIGHT.has(a) ? 'mail' : a ? 'leather'
-    : /варвар/i.test(L.c || '') ? 'barb' : /монах/i.test(L.c || '') ? 'monk' : /волшебн|чародей|колдун/i.test(L.c || '') ? 'robe' : 'clothes';
+    : /варвар/i.test(L.c || '') ? 'barb' : /монах/i.test(L.c || '') ? 'monk' : /волшебн|чародей|колдун|жрец|друид/i.test(L.c || '') ? 'robe' : 'clothes';
   return `pc_${PC_BODY_HAVE.has(want) ? want : PC_BODY_ALT[want] || 'plate'}`;
 }
 // Женские головы по виду (пол берётся из листа); пока нет — берётся общая голова вида
